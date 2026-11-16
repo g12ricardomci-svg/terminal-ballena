@@ -1,6 +1,5 @@
 import streamlit as st
 import ccxt
-import ccxt.pro as ccxtpro
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -15,8 +14,7 @@ from datetime import datetime
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
-# Whale Alert (obtén tu key gratis en https://whale-alert.io/signup)
-WHALE_ALERT_KEY = "TU_WHALE_ALERT_API_KEY"
+WHALE_ALERT_KEY = "TU_WHALE_ALERT_API_KEY"  # Opcional, pero recomendado
 
 st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
 
@@ -30,14 +28,12 @@ def enviar_telegram(mensaje):
     except: pass
 
 def calcular_obi(bids, asks, levels=20):
-    """Order Book Imbalance: presión compradora vs vendedora (-1 a +1)"""
     qb = sum(a for _, a in bids[:levels])
     qa = sum(a for _, a in asks[:levels])
     if qb + qa == 0: return 0.0
     return (qb - qa) / (qb + qa)
 
 def obtener_flujo_ballenas():
-    """Consulta Whale Alert: últimos movimientos > $1M hacia/desde exchanges"""
     if WHALE_ALERT_KEY == "TU_WHALE_ALERT_API_KEY":
         return "NEUTRO (sin API key)"
     try:
@@ -59,7 +55,7 @@ def calcular_vwap(df):
     return (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
 
 # ==========================================
-# 🤖 AUTOPILOTO CON CONFLUENCIA + OBI + ON-CHAIN
+# 🤖 AUTOPILOTO (sin cambios)
 # ==========================================
 def escanear_confluencia():
     exchange = ccxt.okx()
@@ -68,24 +64,20 @@ def escanear_confluencia():
 
     for symbol in activos:
         try:
-            # 1. Tendencia Macro (1H)
             ohlcv_1h = exchange.fetch_ohlcv(symbol, '1h', limit=200)
             df_1h = pd.DataFrame(ohlcv_1h, columns=['timestamp','open','high','low','close','volume'])
             ema200 = df_1h['close'].ewm(span=200, adjust=False).mean().iloc[-1]
             tendencia_macro = "ALCISTA" if df_1h['close'].iloc[-1] > ema200 else "BAJISTA"
 
-            # 2. Sesgo VWAP (15m)
             ohlcv_15m = exchange.fetch_ohlcv(symbol, '15m', limit=50)
             df_15m = pd.DataFrame(ohlcv_15m, columns=['timestamp','open','high','low','close','volume'])
             df_15m['vwap'] = calcular_vwap(df_15m)
             sesgo_15m = "ALCISTA" if df_15m['close'].iloc[-1] > df_15m['vwap'].iloc[-1] else "BAJISTA"
 
-            # 3. Order Book Imbalance (OBI)
             ob = exchange.fetch_order_book(symbol, limit=20)
             obi = calcular_obi(ob["bids"], ob["asks"], levels=20)
-            filtro_obi = obi > -0.3  # no comprar si la presión vendedora es extrema
+            filtro_obi = obi > -0.3
 
-            # 4. Gatillo Wyckoff (5m)
             ohlcv_5m = exchange.fetch_ohlcv(symbol, '5m', limit=50)
             df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp','open','high','low','close','volume'])
             df_5m['soporte'] = df_5m['low'].rolling(window=20).min()
@@ -93,11 +85,9 @@ def escanear_confluencia():
             ultima = df_5m.iloc[-1]
             precio = ultima['close']
 
-            # 5. Flujo on-chain (Whale Alert)
             flujo = obtener_flujo_ballenas()
             onchain_ok = "PRESIÓN BAJISTA" not in flujo
 
-            # --- SETUP A+ (COMPRA) ---
             if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']
                 and tendencia_macro == "ALCISTA" and sesgo_15m == "ALCISTA"
                 and filtro_obi and onchain_ok):
@@ -122,7 +112,6 @@ def escanear_confluencia():
                            f"⚠️ *Gestión:* Arriesga solo el 1% de tu capital.")
                 enviar_telegram(mensaje)
 
-            # --- SETUP A+ (VENTA) ---
             elif (ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']
                   and tendencia_macro == "BAJISTA" and sesgo_15m == "BAJISTA"
                   and obi < 0.3 and not onchain_ok):
@@ -150,13 +139,12 @@ def escanear_confluencia():
         except:
             pass
 
-# Hilo en segundo plano
 @st.cache_resource
 def iniciar_autopiloto():
     def loop():
         while True:
             escanear_confluencia()
-            time.sleep(300)  # escanea cada 5 minutos
+            time.sleep(300)
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
@@ -167,7 +155,7 @@ iniciar_autopiloto()
 # 📊 INTERFAZ GRÁFICA
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Autopilot ON | Wyckoff + OBI + On-chain + WebSockets</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Autopilot ON | Wyckoff + OBI + On-chain</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
@@ -180,19 +168,17 @@ st.sidebar.markdown("---")
 st.sidebar.header("🔔 Alertas")
 activar_alertas = st.sidebar.checkbox("Activar Alertas Manuales en Telegram", value=True)
 if st.sidebar.button("🚀 Probar Alerta Telegram"):
-    enviar_telegram("✅ *SISTEMA EN LÍNEA:* Terminal Ballena + OBI + On-chain + WebSockets.")
+    enviar_telegram("✅ *SISTEMA EN LÍNEA:* Terminal Ballena + OBI + On-chain.")
     st.sidebar.success("¡Mensaje enviado!")
 
 st.sidebar.info("🤖 Autopiloto escaneando: Macro 1H + VWAP 15m + OBI + On-chain + Wyckoff 5m.")
 
-# --- GRÁFICO EN VIVO CON WEBSOCKETS (CCXT Pro) ---
+# --- GRÁFICO EN VIVO (corregido) ---
 @st.fragment(run_every="5s")
 def render_trading_panel(symbol, timeframe):
-    # WebSockets: escucha actualizaciones de velas en tiempo real
-    exchange_ws = ccxtpro.okx()
+    exchange = ccxt.okx()
     try:
-        # watch_ohlcv recibe cada nueva vela cerrada o actualización
-        ohlcv = exchange_ws.watch_ohlcv(symbol, timeframe, limit=150)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=150)
         df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df['vwap'] = calcular_vwap(df)
@@ -200,12 +186,8 @@ def render_trading_panel(symbol, timeframe):
         df['resistencia'] = df['high'].rolling(window=20).max()
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
     except Exception as e:
-        st.error(f"Error WebSocket: {e}")
+        st.error(f"Error de conexión: {e}")
         return
-    finally:
-        # Cerrar el WebSocket para no acumular conexiones
-        try: exchange_ws.close()
-        except: pass
 
     col_grafico, col_paneles = st.columns([2.5, 1])
 
