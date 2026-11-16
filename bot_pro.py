@@ -5,7 +5,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 import feedparser
-from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
 # ⚙️ CONFIGURACIÓN GLOBAL
@@ -15,14 +14,11 @@ TELEGRAM_CHAT_ID = "1496321437"
 
 st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
 
-# 🔄 REFRESCO AUTOMÁTICO CADA 1000 MILISEGUNDOS (1 SEGUNDO)
-count = st_autorefresh(interval=1000, limit=None, key="quant_refresh")
-
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Live Market Data & Wyckoff Order Flow (1s Refresh)</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Live Market Data & Wyckoff Order Flow (Smart Refresh)</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-# --- BARRA LATERAL ---
+# --- BARRA LATERAL (Estática, no parpadea) ---
 st.sidebar.header("🌐 10 Mercados Globales (Crypto 24/7)")
 activos = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "MATIC/USDT"]
 symbol = st.sidebar.selectbox("Selecciona el Activo", activos)
@@ -42,7 +38,7 @@ if st.sidebar.button("🚀 Probar Alerta Telegram"):
         st.sidebar.error(f"Error: {e}")
 
 # ==========================================
-# 🧠 FUNCIONES DEL MOTOR
+# 🧠 FUNCIONES (Noticias y Telegram)
 # ==========================================
 def enviar_telegram(mensaje):
     if not activar_alertas: return
@@ -70,34 +66,28 @@ def obtener_noticias():
     except Exception as e:
         return [], "ERROR", 0.0, str(e)
 
-# 🔥 CONEXIÓN CAMBIADA A KRAKEN (Sin geobloqueo en la nube de EE. UU.)
-@st.cache_data(ttl=1) 
-def get_data(symbol, timeframe):
-    exchange = ccxt.kraken() # <--- CAMBIO A KRAKEN
+# ==========================================
+# 📊 EL FRAGMENTO EN VIVO (Aquí está la magia)
+# ==========================================
+# Todo lo que esté dentro de esta función se actualiza cada 1 segundo.
+# El resto de la página web se queda quieto.
+@st.fragment(run_every="1s") 
+def render_trading_panel(symbol, timeframe):
+    exchange = ccxt.kraken()
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=150)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return df
+        
+        # Cálculos
+        df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
+        df['soporte'] = df['low'].rolling(window=20).min()
+        df['resistencia'] = df['high'].rolling(window=20).max()
+        df['vol_ma'] = df['volume'].rolling(window=20).mean()
     except Exception as e:
-        st.error(f"Error de conexión con Kraken: {e}")
-        return None
+        st.error(f"Error de conexión con el exchange: {e}")
+        return
 
-def calcular_indicadores(df):
-    df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
-    df['soporte'] = df['low'].rolling(window=20).min()
-    df['resistencia'] = df['high'].rolling(window=20).max()
-    df['vol_ma'] = df['volume'].rolling(window=20).mean()
-    return df
-
-# ==========================================
-# 📊 EJECUCIÓN PRINCIPAL
-# ==========================================
-df = get_data(symbol, timeframe)
-noticias, sentimiento_global, score, api_status = obtener_noticias()
-
-if df is not None:
-    df = calcular_indicadores(df)
     col_grafico, col_paneles = st.columns([2.5, 1])
     
     with col_grafico:
@@ -138,15 +128,28 @@ if df is not None:
             if vela_anterior['high'] <= vela_anterior['resistencia']:
                 enviar_telegram(f"🔴 *UPTHRUST DETECTADO* en {symbol}\nPrecio: ${precio_actual:,.2f}")
 
-        st.markdown("---")
-        st.markdown("### 📰 Contexto Global")
-        if sentimiento_global == "POSITIVO": st.success(f"Sentimiento: {sentimiento_global} ({score:.2f})")
-        elif sentimiento_global == "NEGATIVO": st.error(f"Sentimiento: {sentimiento_global} ({score:.2f})")
-        else: st.info(f"Sentimiento: {sentimiento_global} ({score:.2f})")
-            
-        if noticias:
-            for n in noticias:
-                st.markdown(f"<span style='color:gray; font-size: 12px;'>● {n['fuente']}</span><br><span style='font-size: 13px;'>{n['titulo']}</span>", unsafe_allow_html=True)
-                st.markdown("---")
-        else:
-            st.caption(f"Noticias: {api_status}")
+# ==========================================
+# 📊 EJECUCIÓN PRINCIPAL
+# ==========================================
+
+# Llamamos a nuestro fragmento en vivo
+render_trading_panel(symbol, timeframe)
+
+# El contexto global (Noticias) va afuera del fragmento para que NO se recargue cada segundo
+st.markdown("---")
+st.markdown("### 📰 Contexto Global")
+noticias, sentimiento_global, score, api_status = obtener_noticias()
+
+if sentimiento_global == "POSITIVO": st.success(f"Sentimiento: {sentimiento_global} ({score:.2f})")
+elif sentimiento_global == "NEGATIVO": st.error(f"Sentimiento: {sentimiento_global} ({score:.2f})")
+else: st.info(f"Sentimiento: {sentimiento_global} ({score:.2f})")
+    
+if noticias:
+    # Para que se vea ordenado, ponemos las noticias en columnas
+    cols = st.columns(2)
+    for i, n in enumerate(noticias):
+        with cols[i % 2]:
+            st.markdown(f"<span style='color:gray; font-size: 12px;'>● {n['fuente']}</span><br><span style='font-size: 13px;'>{n['titulo']}</span>", unsafe_allow_html=True)
+            st.markdown("---")
+else:
+    st.caption(f"Noticias: {api_status}")
