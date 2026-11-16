@@ -55,7 +55,7 @@ def calcular_vwap(df):
     return (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
 
 # ==========================================
-# 🤖 AUTOPILOTO (sin cambios)
+# 🤖 AUTOPILOTO (Segundo plano)
 # ==========================================
 def escanear_confluencia():
     exchange = ccxt.okx()
@@ -106,9 +106,8 @@ def escanear_confluencia():
                            f"🐋 *On-chain:* {flujo}\n\n"
                            f"🎯 *ENTRADA:* ${entry:,.2f}\n"
                            f"🛑 *STOP LOSS:* ${sl:,.2f}\n"
-                           f"💰 *TP1:* ${tp1:,.2f} (Cierra 50%)\n"
-                           f"💰 *TP2:* ${tp2:,.2f} (Deja correr)\n\n"
-                           f"⚖️ *Ratio R:B:* 1:1.5 y 1:3\n"
+                           f"💰 *TP1:* ${tp1:,.2f}\n"
+                           f"💰 *TP2:* ${tp2:,.2f}\n\n"
                            f"⚠️ *Gestión:* Arriesga solo el 1% de tu capital.")
                 enviar_telegram(mensaje)
 
@@ -130,9 +129,8 @@ def escanear_confluencia():
                            f"🐋 *On-chain:* {flujo}\n\n"
                            f"🎯 *ENTRADA:* ${entry:,.2f}\n"
                            f"🛑 *STOP LOSS:* ${sl:,.2f}\n"
-                           f"💰 *TP1:* ${tp1:,.2f} (Cierra 50%)\n"
-                           f"💰 *TP2:* ${tp2:,.2f} (Deja correr)\n\n"
-                           f"⚖️ *Ratio R:B:* 1:1.5 y 1:3\n"
+                           f"💰 *TP1:* ${tp1:,.2f}\n"
+                           f"💰 *TP2:* ${tp2:,.2f}\n\n"
                            f"⚠️ *Gestión:* Arriesga solo el 1% de tu capital.")
                 enviar_telegram(mensaje)
 
@@ -144,12 +142,71 @@ def iniciar_autopiloto():
     def loop():
         while True:
             escanear_confluencia()
-            time.sleep(300)
+            time.sleep(300) # Escanea cada 5 minutos
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
 
 iniciar_autopiloto()
+
+# ==========================================
+# 🦅 FUNCIÓN DEL ESCÁNER TOP 50
+# ==========================================
+def ejecutar_escaner_top50(tf):
+    exchange = ccxt.okx()
+    try:
+        tickers = exchange.fetch_tickers()
+    except:
+        return pd.DataFrame()
+
+    mercados_usdt = []
+    for sym, data in tickers.items():
+        if sym.endswith('/USDT') and data.get('quoteVolume') is not None:
+            mercados_usdt.append((sym, data['quoteVolume'], data.get('percentage', 0)))
+            
+    top50 = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
+    
+    resultados = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, (sym, vol, cambio) in enumerate(top50):
+        status_text.text(f"Escaneando {sym} ({i+1}/50)...")
+        try:
+            ohlcv = exchange.fetch_ohlcv(sym, tf, limit=30)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            
+            df['vwap'] = calcular_vwap(df)
+            df['soporte'] = df['low'].rolling(window=20).min()
+            df['resistencia'] = df['high'].rolling(window=20).max()
+            df['vol_ma'] = df['volume'].rolling(window=20).mean()
+            
+            ultima = df.iloc[-1]
+            precio = ultima['close']
+            sesgo = "ALCISTA" if precio > ultima['vwap'] else "BAJISTA"
+            señal = "NEUTRAL"
+            
+            if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
+                señal = "🟢 SPRING"
+            elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
+                señal = "🔴 UPTHRUST"
+            elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
+                señal = "⚠️ VOL CLÍMAX"
+                
+            resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio})
+            time.sleep(0.05)
+        except:
+            pass
+        progress_bar.progress((i + 1) / 50)
+    
+    status_text.empty()
+    progress_bar.empty()
+    
+    df_final = pd.DataFrame(resultados)
+    if not df_final.empty:
+        df_final['Orden'] = df_final['Señal'].apply(lambda x: 1 if x != "NEUTRAL" else 2)
+        df_final = df_final.sort_values(by=['Orden', 'Cambio 24h %'], ascending=[True, False]).drop(columns=['Orden'])
+    return df_final
 
 # ==========================================
 # 📊 INTERFAZ GRÁFICA
@@ -158,6 +215,7 @@ st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL 
 st.markdown("<p style='text-align: center; color: gray;'>Autopilot ON | Wyckoff + OBI + On-chain</p>", unsafe_allow_html=True)
 st.markdown("---")
 
+# --- BARRA LATERAL ---
 st.sidebar.header("🌐 Configuración del Gráfico")
 activos = ["BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
            "ADA/USDT","DOGE/USDT","AVAX/USDT","DOT/USDT","MATIC/USDT"]
@@ -173,7 +231,24 @@ if st.sidebar.button("🚀 Probar Alerta Telegram"):
 
 st.sidebar.info("🤖 Autopiloto escaneando: Macro 1H + VWAP 15m + OBI + On-chain + Wyckoff 5m.")
 
-# --- GRÁFICO EN VIVO (corregido) ---
+# 🔍 BOTÓN DEL ESCÁNER TOP 50
+st.sidebar.markdown("---")
+st.sidebar.header("🦅 Escáner Global (Top 50)")
+if st.sidebar.button("🔍 Escanear Top 50 Mercados"):
+    with st.spinner("Analizando los 50 mercados con más volumen..."):
+        # Guardamos el resultado en session_state para que no desaparezca al actualizarse
+        st.session_state['scan_results'] = ejecutar_escaner_top50(timeframe)
+
+# --- MOSTRAR RESULTADOS DEL ESCÁNER (Si existen) ---
+if 'scan_results' in st.session_state and not st.session_state['scan_results'].empty:
+    st.success("✅ Resultados del Escáner Top 50 (Ordenados por oportunidad):")
+    st.dataframe(st.session_state['scan_results'], use_container_width=True)
+    st.markdown("---")
+elif 'scan_results' in st.session_state and st.session_state['scan_results'].empty:
+    st.warning("El escáner no encontró oportunidades o hubo un error de conexión.")
+    st.markdown("---")
+
+# --- GRÁFICO EN VIVO ---
 @st.fragment(run_every="5s")
 def render_trading_panel(symbol, timeframe):
     exchange = ccxt.okx()
