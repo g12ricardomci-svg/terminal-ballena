@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
 import feedparser
+import time
 
 # ==========================================
 # ⚙️ CONFIGURACIÓN GLOBAL
@@ -21,21 +22,24 @@ st.markdown("---")
 # --- BARRA LATERAL (Estática) ---
 st.sidebar.header("🌐 10 Mercados Globales (Crypto 24/7)")
 activos = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "MATIC/USDT"]
-symbol = st.sidebar.selectbox("Selecciona el Activo", activos)
+symbol = st.sidebar.selectbox("Selecciona el Activo para ver el Gráfico", activos)
 timeframe = st.sidebar.selectbox("Temporalidad", ["1m", "5m", "15m", "1h", "4h"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("🔔 Alertas")
+st.sidebar.header("🔔 Alertas y Escáner")
 activar_alertas = st.sidebar.checkbox("Activar Alertas en Telegram", value=True)
 
 if st.sidebar.button("🚀 Probar Alerta Telegram"):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": "✅ *SISTEMA EN LÍNEA:* Terminal Ballena operando 24/7.", "parse_mode": "Markdown"}
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": "✅ *SISTEMA EN LÍNEA:* Terminal Ballena conectada y lista para operar.", "parse_mode": "Markdown"}
     try:
         requests.post(url, json=payload)
         st.sidebar.success("¡Mensaje enviado!")
     except Exception as e:
         st.sidebar.error(f"Error: {e}")
+
+# 🔍 NUEVO BOTÓN DE ESCÁNER MASIVO
+escanear_todo = st.sidebar.button("🔍 Escanear los 10 Mercados Ahora")
 
 # ==========================================
 # 🧠 FUNCIONES (Noticias y Telegram)
@@ -66,9 +70,58 @@ def obtener_noticias():
     except Exception as e:
         return [], "ERROR", 0.0, str(e)
 
+def analizar_mercado(exchange, sym, tf):
+    """Función auxiliar para analizar un solo mercado"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(sym, tf, limit=50)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        
+        df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
+        df['soporte'] = df['low'].rolling(window=20).min()
+        df['resistencia'] = df['high'].rolling(window=20).max()
+        df['vol_ma'] = df['volume'].rolling(window=20).mean()
+        
+        ultima = df.iloc[-1]
+        precio = ultima['close']
+        sesgo = "ALCISTA" if precio > ultima['vwap'] else "BAJISTA"
+        señal = "NEUTRAL"
+        
+        if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
+            señal = "SPRING"
+        elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
+            señal = "UPTHRUST"
+        elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
+            señal = "VOL CLÍMAX"
+            
+        return {"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio": precio - df.iloc[-2]['close']}
+    except:
+        return None
+
 # ==========================================
-# 📊 EL FRAGMENTO EN VIVO (Ajustado a 5s)
+# 📊 EJECUCIÓN PRINCIPAL
 # ==========================================
+
+# 1. MOSTRAR ESCÁNER SI SE PRESIONA EL BOTÓN
+if escanear_todo:
+    st.info("🔎 Escaneando los 10 mercados en busca de oportunidades institucionales...")
+    exchange = ccxt.kraken()
+    resultados = []
+    
+    for sym in activos:
+        res = analizar_mercado(exchange, sym, timeframe)
+        if res:
+            resultados.append(res)
+            # Si hay una señal fuerte, mandar a Telegram
+            if res["Señal"] in ["SPRING", "UPTHRUST"]:
+                accion = "COMPRA" if res["Señal"] == "SPRING" else "VENTA"
+                enviar_telegram(f"🚨 *ESCÁNER GLOBAL:* {res['Señal']} en {sym}\nPrecio: ${res['Precio']:,.2f}\nSesgo: {res['Sesgo']}\n*Posible {accion}*")
+                
+    df_resultados = pd.DataFrame(resultados)
+    st.dataframe(df_resultados, use_container_width=True)
+    st.success("✅ Escaneo completado. Revisa tu Telegram si hubo alertas.")
+    st.markdown("---")
+
+# 2. MOSTRAR EL GRÁFICO EN VIVO (Fragmento)
 @st.fragment(run_every="5s") 
 def render_trading_panel(symbol, timeframe):
     exchange = ccxt.kraken()
@@ -77,22 +130,20 @@ def render_trading_panel(symbol, timeframe):
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         
-        # Cálculos
         df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
         df['soporte'] = df['low'].rolling(window=20).min()
         df['resistencia'] = df['high'].rolling(window=20).max()
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
     except Exception as e:
-        st.error(f"Error de conexión con el exchange: {e}")
+        st.error(f"Error de conexión: {e}")
         return
 
     col_grafico, col_paneles = st.columns([2.5, 1])
     
     with col_grafico:
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2, 0.8])
-        
         fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], 
-                                     name='Precio', increasing_line_color='#00FFAA', decreasing_line_color='#FF3333'), row=1, col=1)
+                                     increasing_line_color='#00FFAA', decreasing_line_color='#FF3333'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['vwap'], line=dict(color='#FF00FF', width=2), name='VWAP'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['soporte'], line=dict(color='#00FF00', width=1, dash='dot'), name='Soporte'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['resistencia'], line=dict(color='#FF0000', width=1, dash='dot'), name='Resistencia'), row=1, col=1)
@@ -118,22 +169,22 @@ def render_trading_panel(symbol, timeframe):
             
         if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
             st.success("🎯 SPRING: Falsa ruptura (COMPRA)")
+            entry = precio_actual
+            sl = ultima['low'] * 0.999
+            tp = entry + ((entry - sl) * 2)
             if vela_anterior['low'] >= vela_anterior['soporte']:
-                enviar_telegram(f"🟢 *SPRING DETECTADO* en {symbol}\nPrecio: ${precio_actual:,.2f}")
+                enviar_telegram(f"🟢 *SPRING* en {symbol}\nEntrada: ${entry:,.2f}\nStop: ${sl:,.2f}\nTarget: ${tp:,.2f}")
             
         elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
             st.error("🎯 UPTHRUST: Falsa ruptura (VENTA)")
+            entry = precio_actual
+            sl = ultima['high'] * 1.001
+            tp = entry - ((sl - entry) * 2)
             if vela_anterior['high'] <= vela_anterior['resistencia']:
-                enviar_telegram(f"🔴 *UPTHRUST DETECTADO* en {symbol}\nPrecio: ${precio_actual:,.2f}")
+                enviar_telegram(f"🔴 *UPTHRUST* en {symbol}\nEntrada: ${entry:,.2f}\nStop: ${sl:,.2f}\nTarget: ${tp:,.2f}")
 
-# ==========================================
-# 📊 EJECUCIÓN PRINCIPAL
-# ==========================================
-
-# Llamamos a nuestro fragmento en vivo (se actualiza solo cada 5s)
 render_trading_panel(symbol, timeframe)
 
-# El contexto global (Noticias) va afuera para que NO se recargue con el gráfico
 st.markdown("---")
 st.markdown("### 📰 Contexto Global")
 noticias, sentimiento_global, score, api_status = obtener_noticias()
