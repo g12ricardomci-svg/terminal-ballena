@@ -18,7 +18,7 @@ st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL 
 st.markdown("<p style='text-align: center; color: gray;'>Live Market Data & Wyckoff Order Flow (Smart Refresh)</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-# --- BARRA LATERAL (Estática, no parpadea) ---
+# --- BARRA LATERAL (Estática) ---
 st.sidebar.header("🌐 10 Mercados Globales (Crypto 24/7)")
 activos = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "MATIC/USDT"]
 symbol = st.sidebar.selectbox("Selecciona el Activo", activos)
@@ -67,11 +67,9 @@ def obtener_noticias():
         return [], "ERROR", 0.0, str(e)
 
 # ==========================================
-# 📊 EL FRAGMENTO EN VIVO (Aquí está la magia)
+# 📊 EL FRAGMENTO EN VIVO (Ajustado a 5s)
 # ==========================================
-# Todo lo que esté dentro de esta función se actualiza cada 1 segundo.
-# El resto de la página web se queda quieto.
-@st.fragment(run_every="1s") 
+@st.fragment(run_every="5s") 
 def render_trading_panel(symbol, timeframe):
     exchange = ccxt.kraken()
     try:
@@ -132,10 +130,10 @@ def render_trading_panel(symbol, timeframe):
 # 📊 EJECUCIÓN PRINCIPAL
 # ==========================================
 
-# Llamamos a nuestro fragmento en vivo
+# Llamamos a nuestro fragmento en vivo (se actualiza solo cada 5s)
 render_trading_panel(symbol, timeframe)
 
-# El contexto global (Noticias) va afuera del fragmento para que NO se recargue cada segundo
+# El contexto global (Noticias) va afuera para que NO se recargue con el gráfico
 st.markdown("---")
 st.markdown("### 📰 Contexto Global")
 noticias, sentimiento_global, score, api_status = obtener_noticias()
@@ -145,7 +143,6 @@ elif sentimiento_global == "NEGATIVO": st.error(f"Sentimiento: {sentimiento_glob
 else: st.info(f"Sentimiento: {sentimiento_global} ({score:.2f})")
     
 if noticias:
-    # Para que se vea ordenado, ponemos las noticias en columnas
     cols = st.columns(2)
     for i, n in enumerate(noticias):
         with cols[i % 2]:
