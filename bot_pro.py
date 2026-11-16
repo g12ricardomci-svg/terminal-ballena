@@ -16,17 +16,17 @@ TELEGRAM_CHAT_ID = "1496321437"
 st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
 
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Live Market Data & Wyckoff Order Flow (Smart Refresh)</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Global Market Scanner & Wyckoff Order Flow</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-# --- BARRA LATERAL (Estática) ---
-st.sidebar.header("🌐 10 Mercados Globales (Crypto 24/7)")
+# --- BARRA LATERAL ---
+st.sidebar.header("🌐 Configuración del Gráfico")
 activos = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "DOT/USDT", "MATIC/USDT"]
-symbol = st.sidebar.selectbox("Selecciona el Activo para ver el Gráfico", activos)
+symbol = st.sidebar.selectbox("Ver Gráfico de:", activos)
 timeframe = st.sidebar.selectbox("Temporalidad", ["1m", "5m", "15m", "1h", "4h"])
 
 st.sidebar.markdown("---")
-st.sidebar.header("🔔 Alertas y Escáner")
+st.sidebar.header("🔔 Alertas")
 activar_alertas = st.sidebar.checkbox("Activar Alertas en Telegram", value=True)
 
 if st.sidebar.button("🚀 Probar Alerta Telegram"):
@@ -38,11 +38,13 @@ if st.sidebar.button("🚀 Probar Alerta Telegram"):
     except Exception as e:
         st.sidebar.error(f"Error: {e}")
 
-# 🔍 NUEVO BOTÓN DE ESCÁNER MASIVO
-escanear_todo = st.sidebar.button("🔍 Escanear los 10 Mercados Ahora")
+# 🔍 BOTÓN DEL ESCÁNER MASIVO
+st.sidebar.markdown("---")
+st.sidebar.header("🦅 Escáner Global (Top 50)")
+escanear_todo = st.sidebar.button("🔍 Escanear Top 50 Mercados")
 
 # ==========================================
-# 🧠 FUNCIONES (Noticias y Telegram)
+# 🧠 FUNCIONES
 # ==========================================
 def enviar_telegram(mensaje):
     if not activar_alertas: return
@@ -70,32 +72,73 @@ def obtener_noticias():
     except Exception as e:
         return [], "ERROR", 0.0, str(e)
 
-def analizar_mercado(exchange, sym, tf):
-    """Función auxiliar para analizar un solo mercado"""
+# 📊 LÓGICA DEL ESCÁNER DINÁMICO
+def ejecutar_escaner_global(tf):
+    exchange = ccxt.kraken()
+    
+    # 1. Obtener todos los pares y su volumen
     try:
-        ohlcv = exchange.fetch_ohlcv(sym, tf, limit=50)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        
-        df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
-        df['soporte'] = df['low'].rolling(window=20).min()
-        df['resistencia'] = df['high'].rolling(window=20).max()
-        df['vol_ma'] = df['volume'].rolling(window=20).mean()
-        
-        ultima = df.iloc[-1]
-        precio = ultima['close']
-        sesgo = "ALCISTA" if precio > ultima['vwap'] else "BAJISTA"
-        señal = "NEUTRAL"
-        
-        if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
-            señal = "SPRING"
-        elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
-            señal = "UPTHRUST"
-        elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
-            señal = "VOL CLÍMAX"
+        tickers = exchange.fetch_tickers()
+    except Exception as e:
+        st.error(f"Error obteniendo tickers: {e}")
+        return []
+
+    # 2. Filtrar solo pares USDT y ordenar por volumen (los más líquidos)
+    mercados_usdt = []
+    for sym, data in tickers.items():
+        if sym.endswith('/USDT') and data['quoteVolume'] is not None:
+            mercados_usdt.append((sym, data['quoteVolume']))
             
-        return {"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio": precio - df.iloc[-2]['close']}
-    except:
-        return None
+    # Ordenar de mayor a menor volumen y tomar el Top 50
+    mercados_top50 = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
+    
+    resultados = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, (sym, vol) in enumerate(mercados_top50):
+        status_text.text(f"Escaneando {sym} ({i+1}/50)...")
+        try:
+            # Pedir velas para calcular indicadores
+            ohlcv = exchange.fetch_ohlcv(sym, tf, limit=50)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            
+            df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
+            df['soporte'] = df['low'].rolling(window=20).min()
+            df['resistencia'] = df['high'].rolling(window=20).max()
+            df['vol_ma'] = df['volume'].rolling(window=20).mean()
+            
+            ultima = df.iloc[-1]
+            precio = ultima['close']
+            sesgo = "ALCISTA" if precio > ultima['vwap'] else "BAJISTA"
+            señal = "NEUTRAL"
+            
+            if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
+                señal = "SPRING"
+            elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
+                señal = "UPTHRUST"
+            elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
+                señal = "VOL CLÍMAX"
+                
+            # Solo guardar si hay una señal (Spring, Upthrust o Clímax) para no llenar la tabla de basura
+            if señal != "NEUTRAL":
+                resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal})
+                
+                # Mandar a Telegram si es una trampa
+                if señal in ["SPRING", "UPTHRUST"]:
+                    accion = "COMPRA" if señal == "SPRING" else "VENTA"
+                    enviar_telegram(f"🚨 *ESCÁNER GLOBAL:* {señal} en {sym}\nPrecio: ${precio:,.2f}\nSesgo: {sesgo}\n*Posible {accion}*")
+            
+            time.sleep(0.1) # Pausa para no saturar la API de Kraken
+            
+        except Exception:
+            pass # Si una moneda falla, que siga con la siguiente
+            
+        progress_bar.progress((i + 1) / 50)
+    
+    status_text.empty()
+    progress_bar.empty()
+    return resultados
 
 # ==========================================
 # 📊 EJECUCIÓN PRINCIPAL
@@ -103,25 +146,17 @@ def analizar_mercado(exchange, sym, tf):
 
 # 1. MOSTRAR ESCÁNER SI SE PRESIONA EL BOTÓN
 if escanear_todo:
-    st.info("🔎 Escaneando los 10 mercados en busca de oportunidades institucionales...")
-    exchange = ccxt.kraken()
-    resultados = []
+    st.info("🦅 Iniciando Escáner Global. Buscando los 50 mercados con más volumen...")
+    resultados = ejecutar_escaner_global(timeframe)
     
-    for sym in activos:
-        res = analizar_mercado(exchange, sym, timeframe)
-        if res:
-            resultados.append(res)
-            # Si hay una señal fuerte, mandar a Telegram
-            if res["Señal"] in ["SPRING", "UPTHRUST"]:
-                accion = "COMPRA" if res["Señal"] == "SPRING" else "VENTA"
-                enviar_telegram(f"🚨 *ESCÁNER GLOBAL:* {res['Señal']} en {sym}\nPrecio: ${res['Precio']:,.2f}\nSesgo: {res['Sesgo']}\n*Posible {accion}*")
-                
-    df_resultados = pd.DataFrame(resultados)
-    st.dataframe(df_resultados, use_container_width=True)
-    st.success("✅ Escaneo completado. Revisa tu Telegram si hubo alertas.")
+    if resultados:
+        st.success(f"✅ Escaneo completado. Se encontraron {len(resultados)} oportunidades en el Top 50.")
+        st.dataframe(pd.DataFrame(resultados), use_container_width=True)
+    else:
+        st.warning("✅ Escaneo completado. No hay oportunidades claras en este momento (el mercado está limpio).")
     st.markdown("---")
 
-# 2. MOSTRAR EL GRÁFICO EN VIVO (Fragmento)
+# 2. MOSTRAR EL GRÁFICO EN VIVO
 @st.fragment(run_every="5s") 
 def render_trading_panel(symbol, timeframe):
     exchange = ccxt.kraken()
