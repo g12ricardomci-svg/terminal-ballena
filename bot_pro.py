@@ -72,35 +72,31 @@ def obtener_noticias():
     except Exception as e:
         return [], "ERROR", 0.0, str(e)
 
-# 📊 LÓGICA DEL ESCÁNER DINÁMICO
+# 📊 LÓGICA DEL ESCÁNER DINÁMICO (Ahora con OKX)
 def ejecutar_escaner_global(tf):
-    exchange = ccxt.kraken()
+    exchange = ccxt.okx() # Usamos OKX para evitar bloqueos en la nube
     
-    # 1. Obtener todos los pares y su volumen
     try:
         tickers = exchange.fetch_tickers()
     except Exception as e:
         st.error(f"Error obteniendo tickers: {e}")
-        return []
+        return pd.DataFrame()
 
-    # 2. Filtrar solo pares USDT y ordenar por volumen (los más líquidos)
     mercados_usdt = []
     for sym, data in tickers.items():
         if sym.endswith('/USDT') and data['quoteVolume'] is not None:
-            mercados_usdt.append((sym, data['quoteVolume']))
+            mercados_usdt.append((sym, data['quoteVolume'], data['percentage']))
             
-    # Ordenar de mayor a menor volumen y tomar el Top 50
     mercados_top50 = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
     
     resultados = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    for i, (sym, vol) in enumerate(mercados_top50):
+    for i, (sym, vol, cambio_24h) in enumerate(mercados_top50):
         status_text.text(f"Escaneando {sym} ({i+1}/50)...")
         try:
-            # Pedir velas para calcular indicadores
-            ohlcv = exchange.fetch_ohlcv(sym, tf, limit=50)
+            ohlcv = exchange.fetch_ohlcv(sym, tf, limit=30)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             
             df['vwap'] = (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
@@ -114,52 +110,56 @@ def ejecutar_escaner_global(tf):
             señal = "NEUTRAL"
             
             if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
-                señal = "SPRING"
+                señal = "🟢 SPRING"
             elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
-                señal = "UPTHRUST"
+                señal = "🔴 UPTHRUST"
             elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
-                señal = "VOL CLÍMAX"
+                señal = "⚠️ VOL CLÍMAX"
                 
-            # Solo guardar si hay una señal (Spring, Upthrust o Clímax) para no llenar la tabla de basura
-            if señal != "NEUTRAL":
-                resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal})
+            # GUARDAMOS TODOS LOS RESULTADOS (No solo los que tienen señal)
+            resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio_24h})
                 
-                # Mandar a Telegram si es una trampa
-                if señal in ["SPRING", "UPTHRUST"]:
-                    accion = "COMPRA" if señal == "SPRING" else "VENTA"
-                    enviar_telegram(f"🚨 *ESCÁNER GLOBAL:* {señal} en {sym}\nPrecio: ${precio:,.2f}\nSesgo: {sesgo}\n*Posible {accion}*")
+            if señal in ["🟢 SPRING", "🔴 UPTHRUST"]:
+                accion = "COMPRA" if "SPRING" in señal else "VENTA"
+                enviar_telegram(f"🚨 *ESCÁNER GLOBAL:* {señal} en {sym}\nPrecio: ${precio:,.2f}\nSesgo: {sesgo}\n*Posible {accion}*")
             
-            time.sleep(0.1) # Pausa para no saturar la API de Kraken
+            time.sleep(0.05) # Pausa mínima
             
-        except Exception:
-            pass # Si una moneda falla, que siga con la siguiente
+        except Exception as e:
+            # Si falla una, la agregamos a la tabla como error para que lo sepas
+            resultados.append({"Par": sym, "Precio": 0, "Sesgo": "ERROR", "Señal": "Fallo de API", "Cambio 24h %": cambio_24h})
             
         progress_bar.progress((i + 1) / 50)
     
     status_text.empty()
     progress_bar.empty()
-    return resultados
+    
+    # Convertimos a DataFrame y ordenamos para que las señales salgan primero
+    df_final = pd.DataFrame(resultados)
+    if not df_final.empty:
+        df_final['Orden'] = df_final['Señal'].apply(lambda x: 1 if x != "NEUTRAL" else 2)
+        df_final = df_final.sort_values(by=['Orden', 'Cambio 24h %'], ascending=[True, False]).drop(columns=['Orden'])
+        
+    return df_final
 
 # ==========================================
 # 📊 EJECUCIÓN PRINCIPAL
 # ==========================================
 
-# 1. MOSTRAR ESCÁNER SI SE PRESIONA EL BOTÓN
 if escanear_todo:
-    st.info("🦅 Iniciando Escáner Global. Buscando los 50 mercados con más volumen...")
+    st.info("🦅 Iniciando Escáner Global en OKX. Buscando los 50 mercados con más volumen...")
     resultados = ejecutar_escaner_global(timeframe)
     
-    if resultados:
-        st.success(f"✅ Escaneo completado. Se encontraron {len(resultados)} oportunidades en el Top 50.")
-        st.dataframe(pd.DataFrame(resultados), use_container_width=True)
+    if not resultados.empty:
+        st.success(f"✅ Escaneo completado. Analizados {len(resultados)} mercados (Ordenados por oportunidad).")
+        st.dataframe(resultados, use_container_width=True)
     else:
-        st.warning("✅ Escaneo completado. No hay oportunidades claras en este momento (el mercado está limpio).")
+        st.warning("El escáner no pudo obtener datos. Intenta de nuevo en 1 minuto.")
     st.markdown("---")
 
-# 2. MOSTRAR EL GRÁFICO EN VIVO
 @st.fragment(run_every="5s") 
 def render_trading_panel(symbol, timeframe):
-    exchange = ccxt.kraken()
+    exchange = ccxt.okx() # Cambiado a OKX también para el gráfico principal
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=150)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
