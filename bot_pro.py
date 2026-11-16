@@ -70,17 +70,17 @@ def obtener_noticias():
     except Exception as e:
         return [], "ERROR", 0.0, str(e)
 
-# 🔥 CONEXIÓN CAMBIADA A BYBIT (Evita el bloqueo de Binance en la nube)
+# 🔥 CONEXIÓN CAMBIADA A KRAKEN (Sin geobloqueo en la nube de EE. UU.)
 @st.cache_data(ttl=1) 
 def get_data(symbol, timeframe):
-    exchange = ccxt.bybit() # <--- AQUÍ ESTÁ EL CAMBIO
+    exchange = ccxt.kraken() # <--- CAMBIO A KRAKEN
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=150)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         return df
     except Exception as e:
-        st.error(f"Error de conexión con el exchange: {e}")
+        st.error(f"Error de conexión con Kraken: {e}")
         return None
 
 def calcular_indicadores(df):
