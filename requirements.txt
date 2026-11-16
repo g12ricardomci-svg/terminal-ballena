@@ -1,0 +1,7 @@
+streamlit
+ccxt
+pandas
+plotly
+requests
+feedparser
+streamlit-autorefresh
