@@ -19,21 +19,22 @@ TELEGRAM_CHAT_ID = "1496321437"
 
 st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
 
-GLOBAL_STOCKS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NFLX", "AMD"]
+NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NFLX", "AMD"]
 FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "USDCHF=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X"]
 INDEX_MARKETS = ["^GSPC", "^DJI", "^IXIC", "^GDAXI", "^FTSE", "^N225", "DX-Y.NYB"]
 COMMODITY_MARKETS = ["GC=F", "SI=F", "CL=F", "BZ=F", "NG=F"]
 
+# 🔥 BLOQUEO PARA HILOS SEGUROS (Evita errores de concurrencia en Streamlit)
 thread_lock = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Iniciando motor de escaneo institucional..."
+AUTOPILOTO_STATUS = "Iniciando motor de escaneo..."
 
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
     try: 
         requests.post(url, json=payload, timeout=5)
-    except Exception: 
+    except: 
         pass
 
 def calcular_vwap(df):
@@ -56,6 +57,14 @@ def mercado_abierto(tipo_mercado):
         return True
     return False
 
+def clasificar_tipo_mercado(symbol):
+    if "/" in symbol and "USDT" in symbol: return "CRIPTO"
+    if symbol in NASDAQ_MARKETS: return "ACCION"
+    if symbol in FOREX_MARKETS: return "FOREX"
+    if symbol in INDEX_MARKETS: return "INDICE"
+    if symbol in COMMODITY_MARKETS: return "COMMODITY"
+    return "CRIPTO"
+
 def obtener_datos(symbol, timeframe, limit=100):
     df = pd.DataFrame()
     if "/" in symbol and "USDT" in symbol:
@@ -64,8 +73,7 @@ def obtener_datos(symbol, timeframe, limit=100):
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        except Exception: 
-            return pd.DataFrame()
+        except: return pd.DataFrame()
     else:
         interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m"} 
         yf_interval = interval_map.get(timeframe, "5m")
@@ -79,8 +87,7 @@ def obtener_datos(symbol, timeframe, limit=100):
             df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
             df['volume'] = df['volume'].fillna(0)
             df = df.tail(limit)
-        except Exception: 
-            return pd.DataFrame()
+        except: return pd.DataFrame()
 
     if not df.empty:
         df['vwap'] = calcular_vwap(df)
@@ -89,16 +96,8 @@ def obtener_datos(symbol, timeframe, limit=100):
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
     return df
 
-def clasificar_tipo_mercado(symbol):
-    if "/" in symbol and "USDT" in symbol: return "CRIPTO"
-    if symbol in GLOBAL_STOCKS: return "ACCION"
-    if symbol in FOREX_MARKETS: return "FOREX"
-    if symbol in INDEX_MARKETS: return "INDICE"
-    if symbol in COMMODITY_MARKETS: return "COMMODITY"
-    return "CRIPTO"
-
 # ==========================================
-# 🤖 LÓGICA DEL AUTOPILOTO
+# 🤖 LÓGICA DEL AUTOPILOTO (Adaptativa por Mercado)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
@@ -111,10 +110,10 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
         tickers = exchange.fetch_tickers()
         mercados_usdt = [(sym, data['quoteVolume']) for sym, data in tickers.items() if sym.endswith('/USDT') and data.get('quoteVolume')]
         top50_cripto = [sym for sym, vol in sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]]
-    except Exception:
+    except:
         top50_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
-    mercados_a_escanear = top50_cripto + GLOBAL_STOCKS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
+    mercados_a_escanear = top50_cripto + NASDAQ_MARKETS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
     alertas_nuevas = 0
 
     for i, symbol in enumerate(mercados_a_escanear):
@@ -136,6 +135,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             señal = None
             msg = ""
             
+            # Geometría de vela y umbral adaptativo por volatilidad del activo
             cuerpo_vela = abs(ultima['close'] - ultima['open'])
             mecha_inferior = min(ultima['close'], ultima['open']) - ultima['low']
             mecha_superior = ultima['high'] - max(ultima['close'], ultima['open'])
@@ -143,32 +143,33 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             
             if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']) and macro == "ALCISTA":
                 señal = "SPRING"
-                msg = f"🚀 *AUTOPILOTO: SPRING COMPRA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
+                msg = f"🚀 *AUTOPILOTO: COMPRA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
             elif (ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']) and macro == "BAJISTA":
                 señal = "UPTHRUST"
-                msg = f"🔻 *AUTOPILOTO: UPTHRUST VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
+                msg = f"🔻 *AUTOPILOTO: VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
             elif ultima['volume'] > (ultima['vol_ma'] * multiplicador_volumen):
                 cerca_soporte = ultima['low'] <= (ultima['soporte'] * 1.015)
                 cerca_resistencia = ultima['high'] >= (ultima['resistencia'] * 0.985)
                 
                 if cerca_soporte and (mecha_inferior > cuerpo_vela * 1.1 or ultima['close'] > ultima['open']):
                     señal = "CLIMAX_ABSORCION"
-                    msg = f"⚠️ *AUTOPILOTO: CLÍMAX ABSORCIÓN ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
+                    msg = f"⚠️ *AUTOPILOTO: CLÍMAX ABSORCIÓN ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Alcista) 🟢"
                 elif cerca_resistencia and (mecha_superior > cuerpo_vela * 1.1 or ultima['close'] < ultima['open']):
                     señal = "CLIMAX_EXHAUSCION"
-                    msg = f"⚠️ *AUTOPILOTO: CLÍMAX EXHAUSCIÓN ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
+                    msg = f"⚠️ *AUTOPILOTO: CLÍMAX EXHAUSCIÓN ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Bajista) 🔴"
 
             if señal and msg:
                 clave_alerta = f"{symbol}_{señal}"
                 ahora = time.time()
                 with thread_lock:
-                    if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 1800:
+                    ultimo_envio = ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0)
+                    if ahora - ultimo_envio > 1800:
                         enviar_telegram(msg)
                         ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                         alertas_nuevas += 1
 
             time.sleep(0.1)
-        except Exception: 
+        except: 
             pass
 
     with thread_lock:
@@ -179,15 +180,15 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     return alertas_nuevas
 
 # ==========================================
-# 🧵 HILO DE FONDO SEGURO
+# 🧵 HILO DE FONDO (Autopiloto real)
 # ==========================================
 @st.cache_resource
 def iniciar_hilo_autopiloto():
     def loop():
         while True:
             try: ejecutar_logica_autopiloto(es_hilo_fondo=True)
-            except Exception: pass
-            time.sleep(300)
+            except: pass
+            time.sleep(300) # 5 minutos
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
@@ -195,27 +196,30 @@ def iniciar_hilo_autopiloto():
 iniciar_hilo_autopiloto()
 
 # ==========================================
-# 🦅 ESCÁNER MANUAL ROBUSTO
+# 🦅 ESCÁNER MANUAL (Robusto y Adaptativo)
 # ==========================================
-def ejecutar_escaner_general(tf):
+def ejecutar_escaner_top50(tf):
     exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 10000})
     try: 
         tickers = exchange.fetch_tickers()
-    except Exception: 
+    except: 
         tickers = {}
 
-    mercados_usdt = [(sym, data['quoteVolume'], data.get('percentage', 0)) for sym, data in tickers.items() if sym.endswith('/USDT') and data.get('quoteVolume')]
-    top50_cripto = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
+    mercados_usdt = []
+    for sym, data in tickers.items():
+        if sym.endswith('/USDT') and data.get('quoteVolume') is not None:
+            mercados_usdt.append((sym, data['quoteVolume'], data.get('percentage', 0)))
+            
+    top50 = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
+    lista_total = [item[0] for item in top50] + NASDAQ_MARKETS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
     
-    lista_total = [item[0] for item in top50_cripto] + GLOBAL_STOCKS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
     resultados = []
-    
     progress_bar = st.progress(0)
     status_text = st.empty()
     total_mercados = len(lista_total)
     
     for i, sym in enumerate(lista_total):
-        status_text.text(f"Analizando [{i+1}/{total_mercados}]: {sym}...")
+        status_text.text(f"Escaneando [{i+1}/{total_mercados}]: {sym}...")
         try:
             tipo = clasificar_tipo_mercado(sym)
             df = obtener_datos(sym, tf, limit=30)
@@ -236,22 +240,26 @@ def ejecutar_escaner_general(tf):
             cambio_24h = 0.0
             
             if "/" in sym:
-                match = [item for item in top50_cripto if item[0] == sym]
+                match = [item for item in top50 if item[0] == sym]
                 if match: cambio_24h = match[0][2]
 
             if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
                 señal = "🟢 SPRING"
+                enviar_telegram(f"🦅 *SPRING (Manual)*\n🪙 {sym} | ${precio:,.2f}")
             elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
                 señal = "🔴 UPTHRUST"
+                enviar_telegram(f"🦅 *UPTHRUST (Manual)*\n🪙 {sym} | ${precio:,.2f}")
             elif ultima['volume'] > (ultima['vol_ma'] * 2.0) and cerca_soporte and (mecha_inf > cuerpo * 1.1 or ultima['close'] > ultima['open']):
                 señal = "⚠️ CLÍMAX ABSORCIÓN"
+                enviar_telegram(f"🦅 *CLÍMAX ABSORCIÓN (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* COMPRA 🟢")
             elif ultima['volume'] > (ultima['vol_ma'] * 2.0) and cerca_resistencia and (mecha_sup > cuerpo * 1.1 or ultima['close'] < ultima['open']):
                 señal = "⚠️ CLÍMAX EXHAUSCIÓN"
+                enviar_telegram(f"🦅 *CLÍMAX EXHAUSCIÓN (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* VENTA 🔴")
                 
-            resultados.append({"Activo": sym, "Tipo": tipo, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio %": cambio_24h})
-        except Exception: 
+            resultados.append({"Par": sym, "Tipo": tipo, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio_24h})
+        except: 
             pass
-        
+            
         progress_bar.progress((i + 1) / total_mercados)
         time.sleep(0.02)
     
@@ -261,39 +269,45 @@ def ejecutar_escaner_general(tf):
     df_final = pd.DataFrame(resultados)
     if not df_final.empty:
         df_final['Orden'] = df_final['Señal'].apply(lambda x: 1 if x != "NEUTRAL" else 2)
-        df_final = df_final.sort_values(by=['Orden', 'Cambio %'], ascending=[True, False]).drop(columns=['Orden'])
+        df_final = df_final.sort_values(by=['Orden', 'Cambio 24h %'], ascending=[True, False]).drop(columns=['Orden'])
     return df_final
 
 # ==========================================
-# 📊 INTERFAZ GRÁFICA VANTAGE QUANT TERMINAL
+# 📊 INTERFAZ GRÁFICA
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL (VANTAGE)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Multi-Asset Engine: Cripto + Acciones NASDAQ + Forex + Índices + Commodities</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Multi-Asset: Crypto + NASDAQ + Forex + Índices + Commodities</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 # --- BARRA LATERAL ---
 st.sidebar.header("🌐 Configuración del Gráfico")
 lista_grafico = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT"
-] + GLOBAL_STOCKS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
+    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
+    "ADA/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT", "MATIC/USDT"
+] + NASDAQ_MARKETS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
 
-symbol = st.sidebar.selectbox("Seleccionar Activo:", lista_grafico)
+symbol = st.sidebar.selectbox("Ver Gráfico de:", lista_grafico)
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m","15m","1h"])
 
+# --- ESTADO Y FORZAR ESCANEO ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("📡 Estado del Autopiloto")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
-if st.sidebar.button("⚡ Forzar Escaneo Autopiloto"):
-    with st.spinner("Ejecutando motor adaptativo..."):
+if st.sidebar.button("⚡ Forzar Escaneo Autopiloto Ahora"):
+    with st.spinner("Ejecutando lógica del Autopiloto..."):
         alertas = ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        st.sidebar.success(f"Escaneo finalizado. Alertas enviadas: {alertas}")
+        if alertas > 0:
+            st.sidebar.success(f"¡Se enviaron {alertas} alertas a Telegram!")
+        else:
+            st.sidebar.warning("Escaneo completado. No se encontraron nuevas señales.")
 
+# --- BOTONES MANUALES ---
 st.sidebar.markdown("---")
-st.sidebar.header("🦅 Escáner Global Masivo")
+st.sidebar.header("🦅 Escáner Global (Vantage)")
 if st.sidebar.button("🔍 Escanear Todos los Mercados (Manual)"):
-    with st.spinner("Analizando activos adaptados por volatilidad..."):
-        st.session_state['scan_results'] = ejecutar_escaner_general(timeframe)
+    with st.spinner("Analizando mercados adaptados..."):
+        st.session_state['scan_results'] = ejecutar_escaner_top50(timeframe)
 
 if 'scan_results' in st.session_state and not st.session_state['scan_results'].empty:
     st.success("✅ Resultados del Escáner Global:")
@@ -326,7 +340,7 @@ def render_trading_panel(symbol, timeframe):
         ultima = df.iloc[-1]
         anterior = df.iloc[-2]
         precio_actual = ultima['close']
-        st.metric(label=f"{symbol}", value=f"{precio_actual:,.2f}", delta=f"{precio_actual - anterior['close']:,.2f}")
+        st.metric(label=f"{symbol}", value=f"${precio_actual:,.2f}", delta=f"{precio_actual - anterior['close']:,.2f}")
         
         if precio_actual < ultima['vwap']: st.error("🔴 SESGO: BAJISTA")
         else: st.success("🟢 SESGO: ALCISTA")
@@ -344,9 +358,9 @@ def render_trading_panel(symbol, timeframe):
                 st.warning("⚠️ Clímax de Exhausción (Resistencia).")
 
         if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']: 
-            st.success("🎯 SPRING (Trampa Compra)")
+            st.success("🎯 SPRING (Trampa de Compra)")
         elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']: 
-            st.error("🎯 UPTHRUST (Trampa Venta)")
+            st.error("🎯 UPTHRUST (Trampa de Venta)")
 
 render_trading_panel(symbol, timeframe)
 
@@ -354,10 +368,12 @@ st.markdown("---")
 st.markdown("### 📰 Contexto Global")
 @st.cache_data(ttl=600)
 def obtener_noticias():
+    noticias = []
     try:
         feed = feedparser.parse("https://www.coindesk.com/arc/outboundfeeds/rss/")
-        return [{"titulo": entry.title, "fuente": "CoinDesk"} for entry in feed.entries[:4]]
-    except Exception: return []
+        for entry in feed.entries[:4]: noticias.append({"titulo": entry.title, "fuente": "CoinDesk"})
+        return noticias
+    except: return []
 
 noticias = obtener_noticias()
 if noticias:
