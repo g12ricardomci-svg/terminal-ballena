@@ -35,10 +35,12 @@ def enviar_telegram(mensaje):
     except: pass
 
 def calcular_vwap(df):
+    # Corrección para Forex (volumen 0)
+    if df['volume'].sum() == 0:
+        return df['close']
     return (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
 
 def obtener_datos(symbol, timeframe, limit=100):
-    """Enruta la petición a ccxt (Cripto) o yfinance (Acciones/Forex)"""
     df = pd.DataFrame()
     
     # 1. CRIPTOMONEDAS (OKX)
@@ -53,12 +55,9 @@ def obtener_datos(symbol, timeframe, limit=100):
             
     # 2. ACCIONES Y FOREX (Yahoo Finance)
     else:
-        # Mapeo de temporalidades de Streamlit a YFinance
-        interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m", "4h": "1h"} 
+        interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m"} 
         yf_interval = interval_map.get(timeframe, "5m")
-        
-        # YFinance requiere periodos específicos para 1m y 5m
-        period = "1d" if yf_interval in ["1m", "5m", "15m"] else "5d"
+        period = "1d" if yf_interval in ["1m", "5m", "15m"] else "1mo"
         
         try:
             ticker = yf.Ticker(symbol)
@@ -68,16 +67,11 @@ def obtener_datos(symbol, timeframe, limit=100):
             df = hist.reset_index()
             df.rename(columns={'Datetime': 'timestamp', 'Date': 'timestamp'}, inplace=True)
             df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
-            
-            # Si el volumen es 0 (común en Forex), le ponemos 1 para evitar errores matemáticos
-            df['volume'] = df['volume'].replace(0, 1)
-            
-            # Asegurar que solo tomamos las últimas X velas
+            df['volume'] = df['volume'].fillna(0)
             df = df.tail(limit)
         except Exception:
             return pd.DataFrame()
 
-    # Calcular indicadores
     if not df.empty:
         df['vwap'] = calcular_vwap(df)
         df['soporte'] = df['low'].rolling(window=20).min()
@@ -92,10 +86,10 @@ def obtener_datos(symbol, timeframe, limit=100):
 def escanear_confluencia():
     for symbol in ALL_SYMBOLS:
         try:
-            # 1. Macro (1H) - Solo si hay suficientes datos
+            # 1. Macro (1H)
             df_1h = obtener_datos(symbol, '1h', limit=50)
             if df_1h.empty: continue
-            ema200 = df_1h['close'].ewm(span=50, adjust=False).mean().iloc[-1] # Usamos 50 por falta de historia en yf 1h
+            ema200 = df_1h['close'].ewm(span=50, adjust=False).mean().iloc[-1]
             tendencia_macro = "ALCISTA" if df_1h['close'].iloc[-1] > ema200 else "BAJISTA"
 
             # 2. VWAP (15m)
@@ -103,7 +97,7 @@ def escanear_confluencia():
             if df_15m.empty: continue
             sesgo_15m = "ALCISTA" if df_15m['close'].iloc[-1] > df_15m['vwap'].iloc[-1] else "BAJISTA"
 
-            # 3. Order Book Imbalance (OBI) - SOLO PARA CRIPTO
+            # 3. OBI (Solo Cripto)
             obi = 0.0
             if "/" in symbol:
                 exchange = ccxt.okx()
@@ -118,31 +112,33 @@ def escanear_confluencia():
             ultima = df_5m.iloc[-1]
             precio = ultima['close']
 
-            # --- SEÑALES WYCKOFF ---
             es_spring = (ultima['low'] < ultima['soporte']) and (ultima['close'] > ultima['soporte'])
             es_upthrust = (ultima['high'] > ultima['resistencia']) and (ultima['close'] < ultima['resistencia'])
-            es_climax = ultima['volume'] > (ultima['vol_ma'] * 2.5)
+            es_climax = ultima['volume'] > (ultima['vol_ma'] * 2.5) and ultima['volume'] > 0
             
             tipo_mercado = "CRIPTO" if "/" in symbol else ("ACCION" if symbol in NASDAQ_MARKETS else "DIVISA")
 
+            # --- LÓGICA DE COMPRA ---
             if es_spring and tendencia_macro == "ALCISTA" and obi > -0.4:
                 entry, sl = precio, ultima['low'] * 0.998
                 tp1, tp2 = entry + ((entry - sl) * 1.5), entry + ((entry - sl) * 3.0)
                 msg = f"🚀 *SETUP A+ COMPRA ({tipo_mercado})* 🚀\n\n🪙 *Activo:* {symbol}\n⏱ *Entrada:* 5m\n🎯 *Entrada:* ${entry:,.2f}\n🛑 *SL:* ${sl:,.2f}\n💰 *TP1:* ${tp1:,.2f}\n💰 *TP2:* ${tp2:,.2f}\n📊 *OBI:* {obi:+.2f}"
                 enviar_telegram(msg)
 
+            # --- LÓGICA DE VENTA ---
             elif es_upthrust and tendencia_macro == "BAJISTA":
                 entry, sl = precio, ultima['high'] * 1.002
                 tp1, tp2 = entry - ((sl - entry) * 1.5), entry - ((sl - entry) * 3.0)
                 msg = f"🔻 *SETUP A+ VENTA ({tipo_mercado})* 🔻\n\n🪙 *Activo:* {symbol}\n⏱ *Entrada:* 5m\n🎯 *Entrada:* ${entry:,.2f}\n🛑 *SL:* ${sl:,.2f}\n💰 *TP1:* ${tp1:,.2f}\n💰 *TP2:* ${tp2:,.2f}\n📊 *OBI:* {obi:+.2f}"
                 enviar_telegram(msg)
 
+            # --- LÓGICA DE VOLUMEN CLÍMAX (La que pediste) ---
             elif es_climax:
                 msg = f"⚠️ *VOLUMEN CLÍMAX ({tipo_mercado})* ⚠️\n\n🪙 *Activo:* {symbol}\n💰 *Precio:* ${precio:,.2f}\n📊 *Sesgo:* {sesgo_15m}\n👀 *Atención:* Movimiento institucional detectado."
                 enviar_telegram(msg)
                 
-            time.sleep(0.5) # Pausa para no saturar las APIs
-        except Exception as e:
+            time.sleep(1) # Pausa para no saturar las APIs
+        except:
             pass
 
 @st.cache_resource
@@ -158,6 +154,63 @@ def iniciar_autopiloto():
 iniciar_autopiloto()
 
 # ==========================================
+# 🦅 ESCÁNER TOP 50 (Manual - Solo Cripto)
+# ==========================================
+def ejecutar_escaner_top50(tf):
+    exchange = ccxt.okx()
+    try:
+        tickers = exchange.fetch_tickers()
+    except:
+        return pd.DataFrame()
+
+    mercados_usdt = []
+    for sym, data in tickers.items():
+        if sym.endswith('/USDT') and data.get('quoteVolume') is not None:
+            mercados_usdt.append((sym, data['quoteVolume'], data.get('percentage', 0)))
+            
+    top50 = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
+    resultados = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, (sym, vol, cambio) in enumerate(top50):
+        status_text.text(f"Escaneando {sym} ({i+1}/50)...")
+        try:
+            ohlcv = exchange.fetch_ohlcv(sym, tf, limit=30)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['vwap'] = calcular_vwap(df)
+            df['soporte'] = df['low'].rolling(window=20).min()
+            df['resistencia'] = df['high'].rolling(window=20).max()
+            df['vol_ma'] = df['volume'].rolling(window=20).mean()
+            
+            ultima = df.iloc[-1]
+            precio = ultima['close']
+            sesgo = "ALCISTA" if precio > ultima['vwap'] else "BAJISTA"
+            señal = "NEUTRAL"
+            
+            if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
+                señal = "🟢 SPRING"
+            elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
+                señal = "🔴 UPTHRUST"
+            elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
+                señal = "⚠️ VOL CLÍMAX"
+                
+            resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio})
+            time.sleep(0.05)
+        except:
+            pass
+        progress_bar.progress((i + 1) / 50)
+    
+    status_text.empty()
+    progress_bar.empty()
+    
+    df_final = pd.DataFrame(resultados)
+    if not df_final.empty:
+        df_final['Orden'] = df_final['Señal'].apply(lambda x: 1 if x != "NEUTRAL" else 2)
+        df_final = df_final.sort_values(by=['Orden', 'Cambio 24h %'], ascending=[True, False]).drop(columns=['Orden'])
+    return df_final
+
+# ==========================================
 # 📊 INTERFAZ GRÁFICA
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
@@ -166,21 +219,33 @@ st.markdown("---")
 
 # --- BARRA LATERAL ---
 st.sidebar.header("🌐 Configuración del Gráfico")
-# Agrupamos por categoría para el dropdown
 symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_SYMBOLS)
-
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m","15m","1h"])
 
 st.sidebar.markdown("---")
 st.sidebar.header("🔔 Alertas")
 if st.sidebar.button("🚀 Probar Alerta Telegram"):
-    enviar_telegram("✅ *SISTEMA EN LÍNEA:* Multi-Asset Terminal conectado.")
+    enviar_telegram("✅ *SISTEMA EN LÍNEA:* Multi-Asset Terminal conectado y Autopiloto activo.")
     st.sidebar.success("¡Mensaje enviado!")
 
-st.sidebar.info("🤖 Autopiloto escaneando Cripto (OKX), Acciones (NASDAQ) y Forex en tiempo real.")
+# 🔍 BOTÓN DEL ESCÁNER TOP 50
+st.sidebar.markdown("---")
+st.sidebar.header("🦅 Escáner Global (Top 50 Cripto)")
+if st.sidebar.button("🔍 Escanear Top 50 Mercados"):
+    with st.spinner("Analizando los 50 mercados con más volumen..."):
+        st.session_state['scan_results'] = ejecutar_escaner_top50(timeframe)
+
+# --- MOSTRAR RESULTADOS DEL ESCÁNER ---
+if 'scan_results' in st.session_state and not st.session_state['scan_results'].empty:
+    st.success("✅ Resultados del Escáner Top 50 (Ordenados por oportunidad):")
+    st.dataframe(st.session_state['scan_results'], use_container_width=True)
+    st.markdown("---")
+elif 'scan_results' in st.session_state and st.session_state['scan_results'].empty:
+    st.warning("El escáner no encontró oportunidades o hubo un error de conexión.")
+    st.markdown("---")
 
 # --- GRÁFICO EN VIVO ---
-@st.fragment(run_every="10s") # 10s para no saturar Yahoo Finance
+@st.fragment(run_every="10s")
 def render_trading_panel(symbol, timeframe):
     df = obtener_datos(symbol, timeframe, limit=150)
     
@@ -214,7 +279,8 @@ def render_trading_panel(symbol, timeframe):
         if precio_actual < ultima['vwap']: st.error("🔴 SESGO: BAJISTA")
         else: st.success("🟢 SESGO: ALCISTA")
 
-        if ultima['volume'] > (ultima['vol_ma']*2.5): st.warning("🚨 Volumen Clímax.")
+        if ultima['volume'] > (ultima['vol_ma']*2.5) and ultima['volume'] > 0: 
+            st.warning("🚨 Volumen Clímax.")
 
         if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
             st.success("🎯 SPRING (Trampa de Compra)")
