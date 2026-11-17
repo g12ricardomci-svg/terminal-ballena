@@ -5,3 +5,4 @@ plotly
 requests
 feedparser
 yfinance
+pytz
