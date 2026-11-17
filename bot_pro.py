@@ -14,7 +14,7 @@ from datetime import datetime
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
-WHALE_ALERT_KEY = "TU_WHALE_ALERT_API_KEY" 
+WHALE_ALERT_KEY = "TU_WHALE_ALERT_API_KEY"  # Opcional
 
 st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
 
@@ -35,36 +35,32 @@ def calcular_obi(bids, asks, levels=20):
 
 def obtener_flujo_ballenas():
     if WHALE_ALERT_KEY == "TU_WHALE_ALERT_API_KEY":
-        return "NEUTRO"
+        return "NEUTRO (sin API key)"
     try:
         r = requests.get(
             "https://api.whale-alert.io/v1/transactions",
             params={"api_key": WHALE_ALERT_KEY, "min_value": 1000000, "limit": 5}
         )
         txs = r.json().get("transactions", [])
-        if not txs: return "SIN MOVIMIENTOS"
+        if not txs: return "SIN MOVIMIENTOS RECIENTES"
         entradas = sum(1 for t in txs if t.get("to", {}).get("owner_type") == "exchange")
         salidas = sum(1 for t in txs if t.get("from", {}).get("owner_type") == "exchange")
-        if entradas > salidas: return "🔴 PRESIÓN BAJISTA"
-        elif salidas > entradas: return "🟢 ACUMULACIÓN"
+        if entradas > salidas: return "🔴 PRESIÓN BAJISTA (ballenas depositan en exchange)"
+        elif salidas > entradas: return "🟢 ACUMULACIÓN (ballenas retiran de exchange)"
         return "⚪ NEUTRO"
     except:
-        return "ERROR API"
+        return "ERROR CONSULTANDO WHALE ALERT"
 
 def calcular_vwap(df):
     return (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
 
-# Variable global para guardar el último escaneo y mostrarlo en pantalla
-if 'ultimo_escaneo' not in st.session_state:
-    st.session_state['ultimo_escaneo'] = []
-
 # ==========================================
-# 🤖 AUTOPILOTO CORREGIDO
+# 🤖 AUTOPILOTO (Con Alertas de Wyckoff y Volumen Clímax)
 # ==========================================
 def escanear_confluencia():
     exchange = ccxt.okx()
-    activos = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", "AVAX/USDT", "LINK/USDT"]
-    log_escaner = []
+    activos = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT",
+               "ADA/USDT", "AVAX/USDT", "DOT/USDT", "MATIC/USDT", "LINK/USDT"]
 
     for symbol in activos:
         try:
@@ -83,81 +79,90 @@ def escanear_confluencia():
             # 3. Order Book Imbalance (OBI)
             ob = exchange.fetch_order_book(symbol, limit=20)
             obi = calcular_obi(ob["bids"], ob["asks"], levels=20)
+            filtro_obi = obi > -0.3
 
-            # 4. Gatillo Wyckoff (5m) - ¡USAMOS VELA CERRADA (-2)!
+            # 4. Gatillo Wyckoff (5m)
             ohlcv_5m = exchange.fetch_ohlcv(symbol, '5m', limit=50)
             df_5m = pd.DataFrame(ohlcv_5m, columns=['timestamp','open','high','low','close','volume'])
             df_5m['soporte'] = df_5m['low'].rolling(window=20).min()
             df_5m['resistencia'] = df_5m['high'].rolling(window=20).max()
+            df_5m['vol_ma'] = df_5m['volume'].rolling(window=20).mean() # NUEVO: Media de volumen
             
-            # La vela cerrada es la -2. La -1 es la que se está moviendo ahora.
-            vela_cerrada = df_5m.iloc[-2] 
-            precio = vela_cerrada['close']
+            ultima = df_5m.iloc[-1]
+            precio = ultima['close']
 
             flujo = obtener_flujo_ballenas()
+            onchain_ok = "PRESIÓN BAJISTA" not in flujo
 
-            # --- LÓGICA DE COMPRA (Relajada pero profesional) ---
-            # Solo exigimos: Macro Alcista + Spring en vela cerrada + OBI no muy negativo
-            es_spring = (vela_cerrada['low'] < vela_cerrada['soporte']) and (vela_cerrada['close'] > vela_cerrada['soporte'])
-            
-            if es_spring and tendencia_macro == "ALCISTA" and obi > -0.4:
+            # --- LÓGICA DE COMPRA (SPRING) ---
+            if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']
+                and tendencia_macro == "ALCISTA" and sesgo_15m == "ALCISTA"
+                and filtro_obi and onchain_ok):
+
                 entry = precio
-                sl = vela_cerrada['low'] * 0.998
+                sl = ultima['low'] * 0.998
                 riesgo = entry - sl
                 tp1 = entry + (riesgo * 1.5)
                 tp2 = entry + (riesgo * 3.0)
 
                 mensaje = (f"🚀 *SETUP A+ (COMPRA)* 🚀\n\n"
                            f"🪙 *Activo:* {symbol}\n"
-                           f"⏱ *Entrada:* 5m (Vela Cerrada)\n"
-                           f"📈 *Macro (1H):* {tendencia_macro}\n"
-                           f"📊 *VWAP (15m):* {sesgo_15m}\n"
-                           f"⚖️ *OBI:* {obi:+.2f} | 🐋 *Ballenas:* {flujo}\n\n"
+                           f"⏱ *Entrada:* 5m\n"
+                           f"📈 *Macro (1H):* {tendencia_macro} | *VWAP (15m):* {sesgo_15m}\n"
+                           f"📊 *OBI (20 niveles):* {obi:+.2f}\n"
+                           f"🐋 *On-chain:* {flujo}\n\n"
                            f"🎯 *ENTRADA:* ${entry:,.2f}\n"
                            f"🛑 *STOP LOSS:* ${sl:,.2f}\n"
-                           f"💰 *TP1:* ${tp1:,.2f}\n"
-                           f"💰 *TP2:* ${tp2:,.2f}")
+                           f"💰 *TP1:* ${tp1:,.2f} (Cierra 50%)\n"
+                           f"💰 *TP2:* ${tp2:,.2f} (Deja correr)\n\n"
+                           f"⚖️ *Ratio R:B:* 1:1.5 y 1:3\n"
+                           f"⚠️ *Gestión:* Arriesga solo el 1% de tu capital.")
                 enviar_telegram(mensaje)
-                log_escaner.append(f"✅ {symbol}: ¡SETUP ENVIADO! (Spring + Macro ALCISTA)")
 
-            # --- LÓGICA DE VENTA (Corregida) ---
-            es_upthrust = (vela_cerrada['high'] > vela_cerrada['resistencia']) and (vela_cerrada['close'] < vela_cerrada['resistencia'])
-            
-            if es_upthrust and tendencia_macro == "BAJISTA" and obi < 0.4:
+            # --- LÓGICA DE VENTA (UPTHRUST) ---
+            elif (ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']
+                  and tendencia_macro == "BAJISTA" and sesgo_15m == "BAJISTA"
+                  and obi < 0.3 and not onchain_ok):
+
                 entry = precio
-                sl = vela_cerrada['high'] * 1.002
+                sl = ultima['high'] * 1.002
                 riesgo = sl - entry
                 tp1 = entry - (riesgo * 1.5)
                 tp2 = entry - (riesgo * 3.0)
 
                 mensaje = (f"🔻 *SETUP A+ (VENTA)* 🔻\n\n"
                            f"🪙 *Activo:* {symbol}\n"
-                           f"⏱ *Entrada:* 5m (Vela Cerrada)\n"
-                           f"📉 *Macro (1H):* {tendencia_macro}\n"
-                           f"📊 *VWAP (15m):* {sesgo_15m}\n"
-                           f"⚖️ *OBI:* {obi:+.2f} | 🐋 *Ballenas:* {flujo}\n\n"
+                           f"⏱ *Entrada:* 5m\n"
+                           f"📉 *Macro (1H):* {tendencia_macro} | *VWAP (15m):* {sesgo_15m}\n"
+                           f"📊 *OBI (20 niveles):* {obi:+.2f}\n"
+                           f"🐋 *On-chain:* {flujo}\n\n"
                            f"🎯 *ENTRADA:* ${entry:,.2f}\n"
                            f"🛑 *STOP LOSS:* ${sl:,.2f}\n"
-                           f"💰 *TP1:* ${tp1:,.2f}\n"
-                           f"💰 *TP2:* ${tp2:,.2f}")
+                           f"💰 *TP1:* ${tp1:,.2f} (Cierra 50%)\n"
+                           f"💰 *TP2:* ${tp2:,.2f} (Deja correr)\n\n"
+                           f"⚖️ *Ratio R:B:* 1:1.5 y 1:3\n"
+                           f"⚠️ *Gestión:* Arriesga solo el 1% de tu capital.")
                 enviar_telegram(mensaje)
-                log_escaner.append(f"✅ {symbol}: ¡SETUP ENVIADO! (Upthrust + Macro BAJISTA)")
                 
-            else:
-                # Guardamos por qué NO se envió (para que lo veas en pantalla)
-                log_escaner.append(f"⏳ {symbol}: Macro {tendencia_macro} | OBI {obi:+.2f} | Sin Trampa")
+            # --- NUEVA ALERTA: VOLUMEN CLÍMAX ---
+            elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
+                mensaje = (f"⚠️ *VOLUMEN CLÍMAX DETECTADO* ⚠️\n\n"
+                           f"🪙 *Activo:* {symbol}\n"
+                           f"⏱ *Temporalidad:* 5m\n"
+                           f"💰 *Precio:* ${precio:,.2f}\n"
+                           f"📊 *Sesgo actual:* {sesgo_15m}\n\n"
+                           f"👀 *Atención:* Los grandes están moviendo el mercado. Prepárate para una posible ruptura o trampa.")
+                enviar_telegram(mensaje)
 
-        except Exception as e:
-            log_escaner.append(f"❌ {symbol}: Error {str(e)[:20]}")
-            
-    st.session_state['ultimo_escaneo'] = log_escaner
+        except:
+            pass
 
 @st.cache_resource
 def iniciar_autopiloto():
     def loop():
         while True:
             escanear_confluencia()
-            time.sleep(300) # 5 minutos
+            time.sleep(300) # Escanea cada 5 minutos
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
@@ -165,34 +170,102 @@ def iniciar_autopiloto():
 iniciar_autopiloto()
 
 # ==========================================
-# 📊 INTERFAZ GRÁFICA (Con Radar de Estado)
+# 🦅 FUNCIÓN DEL ESCÁNER TOP 50
+# ==========================================
+def ejecutar_escaner_top50(tf):
+    exchange = ccxt.okx()
+    try:
+        tickers = exchange.fetch_tickers()
+    except:
+        return pd.DataFrame()
+
+    mercados_usdt = []
+    for sym, data in tickers.items():
+        if sym.endswith('/USDT') and data.get('quoteVolume') is not None:
+            mercados_usdt.append((sym, data['quoteVolume'], data.get('percentage', 0)))
+            
+    top50 = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
+    
+    resultados = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for i, (sym, vol, cambio) in enumerate(top50):
+        status_text.text(f"Escaneando {sym} ({i+1}/50)...")
+        try:
+            ohlcv = exchange.fetch_ohlcv(sym, tf, limit=30)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            
+            df['vwap'] = calcular_vwap(df)
+            df['soporte'] = df['low'].rolling(window=20).min()
+            df['resistencia'] = df['high'].rolling(window=20).max()
+            df['vol_ma'] = df['volume'].rolling(window=20).mean()
+            
+            ultima = df.iloc[-1]
+            precio = ultima['close']
+            sesgo = "ALCISTA" if precio > ultima['vwap'] else "BAJISTA"
+            señal = "NEUTRAL"
+            
+            if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
+                señal = "🟢 SPRING"
+            elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
+                señal = "🔴 UPTHRUST"
+            elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
+                señal = "⚠️ VOL CLÍMAX"
+                
+            resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio})
+            time.sleep(0.05)
+        except:
+            pass
+        progress_bar.progress((i + 1) / 50)
+    
+    status_text.empty()
+    progress_bar.empty()
+    
+    df_final = pd.DataFrame(resultados)
+    if not df_final.empty:
+        df_final['Orden'] = df_final['Señal'].apply(lambda x: 1 if x != "NEUTRAL" else 2)
+        df_final = df_final.sort_values(by=['Orden', 'Cambio 24h %'], ascending=[True, False]).drop(columns=['Orden'])
+    return df_final
+
+# ==========================================
+# 📊 INTERFAZ GRÁFICA
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: gray;'>Autopilot ON | Wyckoff + OBI + On-chain</p>", unsafe_allow_html=True)
 st.markdown("---")
 
+# --- BARRA LATERAL ---
 st.sidebar.header("🌐 Configuración del Gráfico")
-activos = ["BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT", "ADA/USDT","DOGE/USDT","AVAX/USDT","DOT/USDT","MATIC/USDT"]
+activos = ["BTC/USDT","ETH/USDT","SOL/USDT","BNB/USDT","XRP/USDT",
+           "ADA/USDT","DOGE/USDT","AVAX/USDT","DOT/USDT","MATIC/USDT"]
 symbol = st.sidebar.selectbox("Ver Gráfico de:", activos)
 timeframe = st.sidebar.selectbox("Temporalidad", ["1m","5m","15m","1h","4h"])
 
+st.sidebar.markdown("---")
+st.sidebar.header("🔔 Alertas")
+activar_alertas = st.sidebar.checkbox("Activar Alertas Manuales en Telegram", value=True)
 if st.sidebar.button("🚀 Probar Alerta Telegram"):
-    enviar_telegram("✅ *SISTEMA EN LÍNEA:* Probando conexión.")
+    enviar_telegram("✅ *SISTEMA EN LÍNEA:* Terminal Ballena + OBI + On-chain.")
     st.sidebar.success("¡Mensaje enviado!")
 
-# --- RADAR DE ESTADO DEL AUTOPILOTO ---
+st.sidebar.info("🤖 Autopiloto escaneando: Macro 1H + VWAP 15m + OBI + On-chain + Wyckoff 5m.")
+
+# 🔍 BOTÓN DEL ESCÁNER TOP 50
 st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Radar del Autopiloto")
-if st.session_state['ultimo_escaneo']:
-    for log in st.session_state['ultimo_escaneo'][:5]: # Mostrar los primeros 5
-        if "✅" in log:
-            st.sidebar.success(log)
-        elif "❌" in log:
-            st.sidebar.error(log)
-        else:
-            st.sidebar.text(log)
-else:
-    st.sidebar.info("El autopiloto está iniciando su primer escaneo...")
+st.sidebar.header("🦅 Escáner Global (Top 50)")
+if st.sidebar.button("🔍 Escanear Top 50 Mercados"):
+    with st.spinner("Analizando los 50 mercados con más volumen..."):
+        st.session_state['scan_results'] = ejecutar_escaner_top50(timeframe)
+
+# --- MOSTRAR RESULTADOS DEL ESCÁNER (Si existen) ---
+if 'scan_results' in st.session_state and not st.session_state['scan_results'].empty:
+    st.success("✅ Resultados del Escáner Top 50 (Ordenados por oportunidad):")
+    st.dataframe(st.session_state['scan_results'], use_container_width=True)
+    st.markdown("---")
+elif 'scan_results' in st.session_state and st.session_state['scan_results'].empty:
+    st.warning("El escáner no encontró oportunidades o hubo un error de conexión.")
+    st.markdown("---")
 
 # --- GRÁFICO EN VIVO ---
 @st.fragment(run_every="5s")
@@ -236,6 +309,13 @@ def render_trading_panel(symbol, timeframe):
 
         if precio_actual < ultima['vwap']: st.error("🔴 SESGO: BAJISTA")
         else: st.success("🟢 SESGO: ALCISTA")
+
+        if ultima['volume'] > (ultima['vol_ma']*2.5): st.warning("🚨 Volumen Clímax.")
+
+        if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
+            st.success("🎯 SPRING (Trampa de Compra)")
+        elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
+            st.error("🎯 UPTHRUST (Trampa de Venta)")
 
 render_trading_panel(symbol, timeframe)
 
