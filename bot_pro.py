@@ -19,13 +19,11 @@ TELEGRAM_CHAT_ID = "1496321437"
 
 st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
 
-# Clasificación de Mercados Vantage & Crypto
 GLOBAL_STOCKS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NFLX", "AMD"]
 FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "USDCHF=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X"]
 INDEX_MARKETS = ["^GSPC", "^DJI", "^IXIC", "^GDAXI", "^FTSE", "^N225", "DX-Y.NYB"]
 COMMODITY_MARKETS = ["GC=F", "SI=F", "CL=F", "BZ=F", "NG=F"]
 
-# 🔥 BLOQUEO PARA HILOS SEGUROS
 thread_lock = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL = {}
 AUTOPILOTO_STATUS = "Iniciando motor de escaneo institucional..."
@@ -61,7 +59,7 @@ def mercado_abierto(tipo_mercado):
 def obtener_datos(symbol, timeframe, limit=100):
     df = pd.DataFrame()
     if "/" in symbol and "USDT" in symbol:
-        exchange = ccxt.okx({'enableRateLimit': True})
+        exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 10000})
         try:
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
@@ -74,7 +72,7 @@ def obtener_datos(symbol, timeframe, limit=100):
         period = "1d" if yf_interval in ["1m", "5m", "15m"] else "1mo"
         try:
             ticker = yf.Ticker(symbol)
-            hist = ticker.history(period=period, interval=yf_interval)
+            hist = ticker.history(period=period, interval=yf_interval, timeout=10)
             if hist.empty: return pd.DataFrame()
             df = hist.reset_index()
             df.rename(columns={'Datetime': 'timestamp', 'Date': 'timestamp'}, inplace=True)
@@ -100,7 +98,7 @@ def clasificar_tipo_mercado(symbol):
     return "CRIPTO"
 
 # ==========================================
-# 🤖 LÓGICA DEL AUTOPILOTO (Adaptativo por Activo)
+# 🤖 LÓGICA DEL AUTOPILOTO
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
@@ -108,7 +106,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = "Buscando mercados principales..."
     
-    exchange = ccxt.okx({'enableRateLimit': True})
+    exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 10000})
     try:
         tickers = exchange.fetch_tickers()
         mercados_usdt = [(sym, data['quoteVolume']) for sym, data in tickers.items() if sym.endswith('/USDT') and data.get('quoteVolume')]
@@ -138,25 +136,17 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             señal = None
             msg = ""
             
-            # Geometría de vela para adaptación por activo
             cuerpo_vela = abs(ultima['close'] - ultima['open'])
             mecha_inferior = min(ultima['close'], ultima['open']) - ultima['low']
             mecha_superior = ultima['high'] - max(ultima['close'], ultima['open'])
-            
-            # Umbral de volumen adaptativo según el mercado (Forex e Índices mueven volúmenes diferentes a Cripto)
             multiplicador_volumen = 2.0 if tipo in ["FOREX", "INDICE"] else 2.5
             
-            # 1. SPRING (Wyckoff)
             if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']) and macro == "ALCISTA":
                 señal = "SPRING"
                 msg = f"🚀 *AUTOPILOTO: SPRING COMPRA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
-            
-            # 2. UPTHRUST (Wyckoff)
             elif (ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']) and macro == "BAJISTA":
                 señal = "UPTHRUST"
                 msg = f"🔻 *AUTOPILOTO: UPTHRUST VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
-            
-            # 3. CLÍMAX ADAPTATIVO POR TIPO DE ACTIVO
             elif ultima['volume'] > (ultima['vol_ma'] * multiplicador_volumen):
                 cerca_soporte = ultima['low'] <= (ultima['soporte'] * 1.015)
                 cerca_resistencia = ultima['high'] >= (ultima['resistencia'] * 0.985)
@@ -177,7 +167,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                         ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                         alertas_nuevas += 1
 
-            time.sleep(0.2)
+            time.sleep(0.1)
         except Exception: 
             pass
 
@@ -205,27 +195,33 @@ def iniciar_hilo_autopiloto():
 iniciar_hilo_autopiloto()
 
 # ==========================================
-# 🦅 ESCÁNER MANUAL TOP 50 + VANTAGE MARKETS
+# 🦅 ESCÁNER MANUAL ROBUSTO
 # ==========================================
 def ejecutar_escaner_general(tf):
-    exchange = ccxt.okx({'enableRateLimit': True})
-    try: tickers = exchange.fetch_tickers()
-    except Exception: return pd.DataFrame()
+    exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 10000})
+    try: 
+        tickers = exchange.fetch_tickers()
+    except Exception: 
+        tickers = {}
 
     mercados_usdt = [(sym, data['quoteVolume'], data.get('percentage', 0)) for sym, data in tickers.items() if sym.endswith('/USDT') and data.get('quoteVolume')]
     top50_cripto = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
     
-    # Unificar con portafolio Vantage
     lista_total = [item[0] for item in top50_cripto] + GLOBAL_STOCKS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
     resultados = []
-    progress_bar = st.progress(0); status_text = st.empty()
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    total_mercados = len(lista_total)
     
     for i, sym in enumerate(lista_total):
-        status_text.text(f"Analizando {sym} ({i+1}/{len(lista_total)})...")
+        status_text.text(f"Analizando [{i+1}/{total_mercados}]: {sym}...")
         try:
             tipo = clasificar_tipo_mercado(sym)
             df = obtener_datos(sym, tf, limit=30)
-            if df.empty: continue
+            if df.empty: 
+                progress_bar.progress((i + 1) / total_mercados)
+                continue
             
             ultima = df.iloc[-1]
             precio = ultima['close']
@@ -253,11 +249,15 @@ def ejecutar_escaner_general(tf):
                 señal = "⚠️ CLÍMAX EXHAUSCIÓN"
                 
             resultados.append({"Activo": sym, "Tipo": tipo, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio %": cambio_24h})
-            time.sleep(0.03)
-        except Exception: pass
-        progress_bar.progress((i + 1) / len(lista_total))
+        except Exception: 
+            pass
+        
+        progress_bar.progress((i + 1) / total_mercados)
+        time.sleep(0.02)
     
-    status_text.empty(); progress_bar.empty()
+    status_text.empty()
+    progress_bar.empty()
+    
     df_final = pd.DataFrame(resultados)
     if not df_final.empty:
         df_final['Orden'] = df_final['Señal'].apply(lambda x: 1 if x != "NEUTRAL" else 2)
