@@ -21,14 +21,18 @@ st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", pag
 
 NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META"]
 DOLLAR_MARKETS = ["DX-Y.NYB", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDMXN=X", "USDBRL=X"]
-ALL_SYMBOLS = NASDAQ_MARKETS + DOLLAR_MARKETS # Cripto se carga dinámicamente ahora
+ALL_SYMBOLS = NASDAQ_MARKETS + DOLLAR_MARKETS
 
-# Memoria para evitar spam de alertas
+# Memoria para el estado del autopiloto y alertas
 if 'alertas_enviadas' not in st.session_state:
     st.session_state['alertas_enviadas'] = {}
+if 'autopiloto_status' not in st.session_state:
+    st.session_state['autopiloto_status'] = "Iniciando motor de escaneo..."
+if 'ultimo_escaneo_time' not in st.session_state:
+    st.session_state['ultimo_escaneo_time'] = "Esperando primer escaneo..."
 
 # ==========================================
-# 🧠 FUNCIONES DE APOYO Y HORARIOS
+# 🧠 FUNCIONES DE APOYO
 # ==========================================
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -89,26 +93,26 @@ def obtener_datos(symbol, timeframe, limit=100):
     return df
 
 # ==========================================
-# 🤖 AUTOPILOTO (Ahora escanea Top 50 Cripto + Nasdaq + Forex)
+# 🤖 AUTOPILOTO (Top 50 Cripto + Nasdaq + Forex)
 # ==========================================
 def escanear_mercados_autopiloto():
-    # 1. Obtener Top 50 Cripto dinámicamente
+    st.session_state['autopiloto_status'] = "🔍 Buscando los 50 mercados con más volumen..."
+    
     exchange = ccxt.okx()
     try:
         tickers = exchange.fetch_tickers()
         mercados_usdt = [(sym, data['quoteVolume']) for sym, data in tickers.items() if sym.endswith('/USDT') and data.get('quoteVolume')]
         top50_cripto = [sym for sym, vol in sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]]
     except:
-        top50_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"] # Fallback por si falla OKX
+        top50_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
-    # Unir todos los mercados a escanear
     mercados_a_escanear = top50_cripto + NASDAQ_MARKETS + DOLLAR_MARKETS
 
-    for symbol in mercados_a_escanear:
+    for i, symbol in enumerate(mercados_a_escanear):
+        st.session_state['autopiloto_status'] = f"Analizando {symbol} ({i+1}/{len(mercados_a_escanear)})..."
         try:
             tipo = "CRIPTO" if "/" in symbol else ("ACCION" if symbol in NASDAQ_MARKETS else "FOREX")
             
-            # Saltar si el mercado está cerrado (Acciones o Forex)
             if not mercado_abierto(tipo): continue
 
             df_5m = obtener_datos(symbol, '5m', limit=50)
@@ -119,10 +123,10 @@ def escanear_mercados_autopiloto():
             precio = ultima['close']
             macro = "ALCISTA" if df_1h['close'].iloc[-1] > df_1h['close'].ewm(span=50).mean().iloc[-1] else "BAJISTA"
             
-            # Lógica de Señales
             señal = None
             msg = ""
             
+            # Lógica de Señales
             if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']) and macro == "ALCISTA":
                 señal = "SPRING"
                 msg = f"🚀 *SETUP A+ COMPRA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
@@ -131,29 +135,32 @@ def escanear_mercados_autopiloto():
                 msg = f"🔻 *SETUP A+ VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
             elif tipo != "FOREX" and ultima['volume'] > (ultima['vol_ma'] * 2.5):
                 señal = "CLIMAX"
-                msg = f"⚠️ *VOLUMEN CLÍMAX ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
+                # DETERMINAR DIRECCIÓN DEL CLÍMAX
+                direccion = "COMPRA (Alcista) 🟢" if ultima['close'] > ultima['open'] else "VENTA (Bajista) 🔴"
+                msg = f"⚠️ *VOLUMEN CLÍMAX ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* {direccion}"
 
-            # FILTRO ANTI-SPAM: Enviar solo si no se envió en los últimos 30 minutos
+            # Filtro anti-spam (30 min)
             if señal and msg:
                 clave_alerta = f"{symbol}_{señal}"
                 ahora = time.time()
                 ultimo_envio = st.session_state['alertas_enviadas'].get(clave_alerta, 0)
                 
-                if ahora - ultimo_envio > 1800: # 1800 segundos = 30 minutos
+                if ahora - ultimo_envio > 1800:
                     enviar_telegram(msg)
                     st.session_state['alertas_enviadas'][clave_alerta] = ahora
 
-            time.sleep(0.5) # Pausa entre cada moneda para no saturar APIs
-
-        except:
-            pass
+            time.sleep(0.5)
+        except: pass
+    
+    st.session_state['autopiloto_status'] = "✅ Escaneo completado. Esperando 5 min..."
+    st.session_state['ultimo_escaneo_time'] = datetime.now().strftime("%H:%M:%S")
 
 @st.cache_resource
 def iniciar_autopiloto():
     def loop():
         while True:
             escanear_mercados_autopiloto()
-            time.sleep(300) # Escanea el Top 50 completo cada 5 minutos
+            time.sleep(300) # 5 minutos
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
@@ -200,7 +207,9 @@ def ejecutar_escaner_top50(tf):
                 enviar_telegram(f"🦅 *UPTHRUST (Top 50)*\n🪙 {sym} | ${precio:,.2f}")
             elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
                 señal = "⚠️ VOL CLÍMAX"
-                enviar_telegram(f"🦅 *VOLUMEN CLÍMAX (Top 50)*\n🪙 {sym} | ${precio:,.2f}")
+                # DETERMINAR DIRECCIÓN DEL CLÍMAX
+                direccion = "COMPRA (Alcista) 🟢" if ultima['close'] > ultima['open'] else "VENTA (Bajista) 🔴"
+                enviar_telegram(f"🦅 *VOLUMEN CLÍMAX (Top 50)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* {direccion}")
                 
             resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio})
             time.sleep(0.05)
@@ -223,18 +232,22 @@ st.markdown("---")
 
 # --- BARRA LATERAL ---
 st.sidebar.header("🌐 Configuración del Gráfico")
-# Lista estática para el gráfico (para que cargue rápido)
 lista_grafico = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", "ADA/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT", "MATIC/USDT"] + NASDAQ_MARKETS + DOLLAR_MARKETS
 symbol = st.sidebar.selectbox("Ver Gráfico de:", lista_grafico)
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m","15m","1h"])
 
+# --- PANEL DE ESTADO DEL AUTOPILOTO ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Estado del Autopiloto")
+st.sidebar.info(f"{st.session_state['autopiloto_status']}\n\n*Último escaneo:* {st.session_state['ultimo_escaneo_time']}")
+
+# --- BOTONES Y ALERTAS ---
 st.sidebar.markdown("---")
 st.sidebar.header("🔔 Alertas")
 if st.sidebar.button("🚀 Probar Alerta Telegram"):
     enviar_telegram("✅ *SISTEMA EN LÍNEA:* Autopiloto Top 50 activado.")
     st.sidebar.success("¡Mensaje enviado!")
 
-# 🔍 BOTÓN DEL ESCÁNER TOP 50 (Manual)
 st.sidebar.markdown("---")
 st.sidebar.header("🦅 Escáner Global (Top 50 Cripto)")
 if st.sidebar.button("🔍 Escanear Top 50 Mercados"):
