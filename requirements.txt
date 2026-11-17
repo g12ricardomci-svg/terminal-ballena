@@ -4,4 +4,4 @@ pandas
 plotly
 requests
 feedparser
-streamlit-autorefresh
+yfinance
