@@ -1,8 +1,9 @@
 streamlit
 ccxt
+yfinance
 pandas
+numpy
 plotly
 requests
 feedparser
-yfinance
 pytz
