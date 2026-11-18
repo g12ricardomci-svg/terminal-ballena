@@ -12,14 +12,14 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL & ACTIVOS ESPECÍFICOS
+# ⚙️ CONFIGURACIÓN GLOBAL & LISTA CERRADA
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
 st.set_page_config(page_title="Institutional Quant Terminal - ADX 50+", layout="wide", page_icon="🏦")
 
-# Listas estrictas solicitadas por el usuario
+# Listas estrictas y cerradas (Sin criptomonedas ni activos externos)
 CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
 FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "AUDUSD=X", "XAUUSD=X"]
 NASDAQ_MARKETS = [
@@ -31,7 +31,7 @@ NASDAQ_MARKETS = [
 ALL_TRACKED_SYMBOLS = CRYPTO_MARKETS + FOREX_MARKETS + NASDAQ_MARKETS
 
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Radar activo: Escaneando activos seleccionados (ADX > 50)..."
+AUTOPILOTO_STATUS = "Radar activo: Escaneando exclusivamente tu lista cerrada (ADX > 50)..."
 
 # ==========================================
 # 🧠 FUNCIONES MATEMÁTICAS Y DE RED
@@ -131,7 +131,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
     
     if not es_hilo_fondo: 
-        AUTOPILOTO_STATUS = "Escaneando activos..."
+        AUTOPILOTO_STATUS = "Escaneando lista autorizada..."
     
     temporalidades = ["5m", "15m", "1h"]
     alertas_nuevas = 0
@@ -188,7 +188,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = f"✅ Escaneo completado. Alertas enviadas: {alertas_nuevas}"
     else:
-        AUTOPILOTO_STATUS = "⚡ Radar 5s activo vigilando ADX > 50..."
+        AUTOPILOTO_STATUS = "⚡ Radar 5s activo vigilando lista cerrada (ADX > 50)..."
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
@@ -197,7 +197,7 @@ def iniciar_hilo_autopiloto():
             try:
                 ejecutar_logica_autopiloto(es_hilo_fondo=True)
             except: pass
-            time.sleep(5) # Ciclo exacto cada 5 segundos
+            time.sleep(5)
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
@@ -208,7 +208,7 @@ iniciar_hilo_autopiloto()
 # 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL (ADX > 50)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Escaneo Masivo (5s) - BNB, ETH, BTC | Forex, XAUUSD & Todos los Nasdaq</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Escaneo Masivo (5s) - BNB, ETH, BTC, Forex (EUR, GBP, AUD, XAU) & Nasdaq</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
@@ -220,7 +220,7 @@ st.sidebar.subheader("📡 Estado del Radar (5s)")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
 if st.sidebar.button("⚡ Forzar Escaneo Inmediato"):
-    with st.spinner("Escaneando activos con ADX > 50..."):
+    with st.spinner("Escaneando lista autorizada con ADX > 50..."):
         ejecutar_logica_autopiloto(es_hilo_fondo=False)
         st.sidebar.success("¡Escaneo forzado finalizado!")
 
@@ -250,7 +250,7 @@ def render_trading_panel(symbol, timeframe):
         ultima = df.iloc[-1]
         anterior = df.iloc[-2]
         precio_actual = ultima['close']
-        st.metric(label=f"{symbol}", value=f"${precio_actual:,.4f}", delta=f"{precio_actual - anterior['close']:,.2f}")
+        st.metric(label=f"{symbol}", value=f"${precio_actual:,.4f}", delta=f"${precio_actual - anterior['close']:,.4f}")
         
         if precio_actual < ultima['vwap']: st.error("🔴 SESGO: BAJISTA")
         else: st.success("🟢 SESGO: ALCISTA")
