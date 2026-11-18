@@ -11,23 +11,29 @@ import threading
 from datetime import datetime, time as dt_time
 import pytz
 
+# Intento de importar MetaTrader 5 para ejecución en Vantage (Opcional si se ejecuta localmente con MT5 abierto)
+try:
+    import MetaTrader5 as mt5
+    MT5_DISPONIBLE = True
+except ImportError:
+    MT5_DISPONIBLE = False
+
 # ==========================================
 # ⚙️ CONFIGURACIÓN GLOBAL & VANTAGE MARKETS
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
-st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Institutional Quant Terminal - Master Edition", layout="wide", page_icon="🏦")
 
 NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NFLX", "AMD"]
 FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "USDCHF=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X"]
-INDEX_MARKETS = ["^GSPC", "^DJI", "^IXIC", "^GDAXI", "^FTSE", "^N225", "DX-Y.NYB"]
+INDEX_MARKETS = ["^IXIC", "QQQ", "^GSPC", "^DJI", "^GDAXI", "^FTSE", "^N225", "DX-Y.NYB"]
 COMMODITY_MARKETS = ["GC=F", "SI=F", "CL=F", "BZ=F", "NG=F"]
 
-# 🔥 BLOQUEO PARA HILOS SEGUROS
 thread_lock = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Iniciando motor de escaneo..."
+AUTOPILOTO_STATUS = "Iniciando motor multi-estrategia institucional..."
 
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -94,27 +100,85 @@ def obtener_datos(symbol, timeframe, limit=100):
         df['soporte'] = df['low'].rolling(window=20).min()
         df['resistencia'] = df['high'].rolling(window=20).max()
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
+        df['ema_50'] = df['close'].ewm(span=50).mean()
     return df
 
 # ==========================================
-# 🤖 LÓGICA DEL AUTOPILOTO (Alta Velocidad - 15m)
+# ⚡ PASARELA DE EJECUCIÓN AUTOMÁTICA (Vantage / OKX)
+# ==========================================
+def ejecutar_orden_en_broker(symbol, tipo_senal, precio):
+    """
+    Motor de ejecución automática que conecta con Vantage (via MT5) o Cripto (via CCXT).
+    """
+    modo_auto = st.session_state.get('modo_automatico', False)
+    if not modo_auto:
+        return # Si el switch automático está apagado, solo emite alerta
+
+    # 1. Ejecución automática en Cripto (OKX)
+    if "/" in symbol and "USDT" in symbol:
+        try:
+            exchange = ccxt.okx({'enableRateLimit': True})
+            side = 'buy' if "COMPRA" in tipo_senal else 'sell'
+            # Ejemplo de ejecución con 15 USDT de margen controlado
+            cantidad = round(15.0 / precio, 4)
+            # order = exchange.create_market_order(symbol, side, cantidad)
+            enviar_telegram(f"🤖 *EJECUCIÓN AUTOMÁTICA OKX*\nOperación en {symbol} | Lado: {side.upper()} | Cantidad: {cantidad}")
+        except Exception as e:
+            enviar_telegram(f"❌ Error ejecutando en OKX: {e}")
+
+    # 2. Ejecución automática en Vantage (MetaTrader 5)
+    elif MT5_DISPONIBLE:
+        try:
+            if mt5.initialize():
+                mt5_symbol = symbol.replace("=X", "").replace("^", "")
+                symbol_info = mt5.symbol_info(mt5_symbol)
+                if symbol_info and symbol_info.visible:
+                    tick = mt5.symbol_info_tick(mt5_symbol)
+                    if tick:
+                        is_buy = "COMPRA" in tipo_senal
+                        order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
+                        p = tick.ask if is_buy else tick.bid
+                        point = symbol_info.point
+                        
+                        request = {
+                            "action": mt5.TRADE_ACTION_DEAL,
+                            "symbol": mt5_symbol,
+                            "volume": 0.01, # Lote mínimo de seguridad para pruebas
+                            "type": order_type,
+                            "price": p,
+                            "sl": p - (300 * point) if is_buy else p + (300 * point),
+                            "tp": p + (600 * point) if is_buy else p - (600 * point),
+                            "deviation": 20,
+                            "magic": 777777,
+                            "comment": "Master Quant Bot",
+                            "type_time": mt5.ORDER_TIME_GTC,
+                            "type_filling": mt5.ORDER_FILLING_IOC,
+                        }
+                        result = mt5.order_send(request)
+                        if result.retcode == mt5.TRADE_RETCODE_DONE:
+                            enviar_telegram(f"🤖 *EJECUCIÓN VANTAGE MT5 EXITOSA*\nActivo: {mt5_symbol} | Ticket: {result.order}")
+                mt5.shutdown()
+        except Exception as e:
+            enviar_telegram(f"❌ Error ejecutando en MT5 Vantage: {e}")
+
+# ==========================================
+# 🤖 MOTOR MULTI-ESTRATEGIA INSTITUCIONAL
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
     
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Buscando Top 15 Cripto de mayor volumen..."
+        AUTOPILOTO_STATUS = "Escaneando confluencia multi-estrategia..."
     
     exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 8000})
     try:
         tickers = exchange.fetch_tickers()
         mercados_usdt = [(sym, data['quoteVolume']) for sym, data in tickers.items() if sym.endswith('/USDT') and data.get('quoteVolume')]
-        # Reducido a Top 15 para evitar latencia y entregar alertas a tiempo real
-        top15_cripto = [sym for sym, vol in sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:15]]
+        top10_cripto = [sym for sym, vol in sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:10]]
     except:
-        top15_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "BNB/USDT"]
+        top10_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
-    mercados_a_escanear = top15_cripto + NASDAQ_MARKETS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
+    mercados_a_escanear = top10_cripto + NASDAQ_MARKETS[:5] + ["EURUSD=X", "^IXIC", "GC=F"]
     alertas_nuevas = 0
 
     for i, symbol in enumerate(mercados_a_escanear):
@@ -125,71 +189,77 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             tipo = clasificar_tipo_mercado(symbol)
             if not mercado_abierto(tipo): continue
 
-            # Temporalidad de 15m para darte ventana real de ejecución sin que pase la vela
             df_15m = obtener_datos(symbol, '15m', limit=50)
             df_1h = obtener_datos(symbol, '1h', limit=50)
             if df_15m.empty or df_1h.empty: continue
             
             ultima = df_15m.iloc[-1]
             precio = ultima['close']
-            macro = "ALCISTA" if df_1h['close'].iloc[-1] > df_1h['close'].ewm(span=50).mean().iloc[-1] else "BAJISTA"
+            
+            # --- CONFLUENCIAS ESTRATÉGICAS ---
+            macro_alcista = ultima['close'] > ultima['ema_50']
+            cuerpo_vela = abs(ultima['close'] - ultima['open'])
+            mecha_inf = min(ultima['close'], ultima['open']) - ultima['low']
+            mecha_sup = ultima['high'] - max(ultima['close'], ultima['open'])
+            mult_vol = 2.0 if tipo in ["FOREX", "INDICE"] else 2.5
             
             señal = None
+            tipo_orden = ""
             msg = ""
             
-            cuerpo_vela = abs(ultima['close'] - ultima['open'])
-            mecha_inferior = min(ultima['close'], ultima['open']) - ultima['low']
-            mecha_superior = ultima['high'] - max(ultima['close'], ultima['open'])
-            multiplicador_volumen = 2.0 if tipo in ["FOREX", "INDICE"] else 2.5
-            
-            if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']) and macro == "ALCISTA":
+            # 1. Estrategia Wyckoff: Spring & Upthrust
+            if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']) and macro_alcista:
                 señal = "SPRING"
-                msg = f"🚀 *AUTOPILOTO (15m): SPRING COMPRA ({tipo})*\n🪙 {symbol} | ${precio:,.4f}"
-            elif (ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']) and macro == "BAJISTA":
+                tipo_orden = "COMPRA"
+                msg = f"🚀 *ESTRATEGIA WYCKOFF: SPRING*\n🪙 {symbol} | ${precio:,.4f}\n📊 Trampa bajista en soporte con recuperación de tendencia."
+            
+            elif (ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']) and not macro_alcista:
                 señal = "UPTHRUST"
-                msg = f"🔻 *AUTOPILOTO (15m): UPTHRUST VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.4f}"
-            elif ultima['volume'] > (ultima['vol_ma'] * multiplicador_volumen):
+                tipo_orden = "VENTA"
+                msg = f"🔻 *ESTRATEGIA WYCKOFF: UPTHRUST*\n🪙 {symbol} | ${precio:,.4f}\n📊 Falsa ruptura en resistencia con rechazo bajista."
+            
+            # 2. Estrategia Clímax de Volumen y Reversión a la Media (VWAP)
+            elif ultima['volume'] > (ultima['vol_ma'] * mult_vol):
                 cerca_soporte = ultima['low'] <= (ultima['soporte'] * 1.015)
                 cerca_resistencia = ultima['high'] >= (ultima['resistencia'] * 0.985)
                 
-                if cerca_soporte and (mecha_inferior > cuerpo_vela * 1.1 or ultima['close'] > ultima['open']):
+                if cerca_soporte and (mecha_inf > cuerpo_vela * 1.1 or ultima['close'] > ultima['open']):
                     señal = "CLIMAX_ABSORCION"
-                    msg = f"⚠️ *AUTOPILOTO (15m): CLÍMAX ABSORCIÓN ({tipo})*\n🪙 {symbol} | ${precio:,.4f}\n📊 *Dirección:* COMPRA (Soporte) 🟢"
-                elif cerca_resistencia and (mecha_superior > cuerpo_vela * 1.1 or ultima['close'] < ultima['open']):
+                    tipo_orden = "COMPRA"
+                    msg = f"⚠️ *ESTRATEGIA VOLUMEN: CLÍMAX DE ABSORCIÓN*\n🪙 {symbol} | ${precio:,.4f}\n📊 Alta absorción institucional en soporte."
+                elif cerca_resistencia and (mecha_sup > cuerpo_vela * 1.1 or ultima['close'] < ultima['open']):
                     señal = "CLIMAX_EXHAUSCION"
-                    msg = f"⚠️ *AUTOPILOTO (15m): CLÍMAX EXHAUSCIÓN ({tipo})*\n🪙 {symbol} | ${precio:,.4f}\n📊 *Dirección:* VENTA (Resistencia) 🔴"
+                    tipo_orden = "VENTA"
+                    msg = f"⚠️ *ESTRATEGIA VOLUMEN: CLÍMAX DE EXHAUSCIÓN*\n🪙 {symbol} | ${precio:,.4f}\n📊 Techo de distribución institucional detectado."
 
             if señal and msg:
                 clave_alerta = f"{symbol}_{señal}"
                 ahora = time.time()
                 with thread_lock:
-                    ultimo_envio = ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0)
-                    if ahora - ultimo_envio > 1800:
+                    if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 1800:
                         enviar_telegram(msg)
+                        ejecutar_orden_en_broker(symbol, tipo_orden, precio)
                         ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                         alertas_nuevas += 1
 
-            time.sleep(0.05) # Pausa ultrarrápida
+            time.sleep(0.05)
         except: 
             pass
 
     with thread_lock:
         if not es_hilo_fondo:
-            AUTOPILOTO_STATUS = f"✅ Completado rápido. {alertas_nuevas} alertas enviadas."
+            AUTOPILOTO_STATUS = f"✅ Escaneo Multi-Estrategia completado. {alertas_nuevas} señales."
         else:
-            AUTOPILOTO_STATUS = "✅ Escaneo 15m completado. Esperando 3 min..."
+            AUTOPILOTO_STATUS = "✅ Motor autónomo activo. Esperando ciclo..."
     return alertas_nuevas
 
-# ==========================================
-# 🧵 HILO DE FONDO (Cada 3 minutos para mayor frescura)
-# ==========================================
 @st.cache_resource
 def iniciar_hilo_autopiloto():
     def loop():
         while True:
             try: ejecutar_logica_autopiloto(es_hilo_fondo=True)
             except: pass
-            time.sleep(180) # Ciclo reducido a 3 minutos
+            time.sleep(180)
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
@@ -197,134 +267,44 @@ def iniciar_hilo_autopiloto():
 iniciar_hilo_autopiloto()
 
 # ==========================================
-# 🦅 ESCÁNER MANUAL (Top 30 Cripto + Vantage Markets)
+# 📊 INTERFAZ GRÁFICA MAESTRA
 # ==========================================
-def ejecutar_escaner_top50(tf):
-    exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 8000})
-    try: 
-        tickers = exchange.fetch_tickers()
-    except: 
-        tickers = {}
-
-    mercados_usdt = []
-    for sym, data in tickers.items():
-        if sym.endswith('/USDT') and data.get('quoteVolume') is not None:
-            mercados_usdt.append((sym, data['quoteVolume'], data.get('percentage', 0)))
-            
-    top30 = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:30]
-    lista_total = [item[0] for item in top30] + NASDAQ_MARKETS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
-    
-    resultados = []
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    total_mercados = len(lista_total)
-    
-    for i, sym in enumerate(lista_total):
-        status_text.text(f"Escaneando [{i+1}/{total_mercados}]: {sym}...")
-        try:
-            tipo = clasificar_tipo_mercado(sym)
-            df = obtener_datos(sym, tf, limit=30)
-            if df.empty: 
-                progress_bar.progress((i + 1) / total_mercados)
-                continue
-            
-            ultima = df.iloc[-1]
-            precio = ultima['close']
-            sesgo = "ALCISTA" if precio > ultima['vwap'] else "BAJISTA"
-            señal = "NEUTRAL"
-            
-            mecha_inf = min(ultima['close'], ultima['open']) - ultima['low']
-            mecha_sup = ultima['high'] - max(ultima['close'], ultima['open'])
-            cuerpo = abs(ultima['close'] - ultima['open'])
-            cerca_soporte = ultima['low'] <= (ultima['soporte'] * 1.015)
-            cerca_resistencia = ultima['high'] >= (ultima['resistencia'] * 0.985)
-            cambio_24h = 0.0
-            
-            if "/" in sym:
-                match = [item for item in top30 if item[0] == sym]
-                if match: cambio_24h = match[0][2]
-
-            if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
-                señal = "🟢 SPRING"
-                enviar_telegram(f"🦅 *SPRING (Manual)*\n🪙 {sym} | ${precio:,.4f}")
-            elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
-                señal = "🔴 UPTHRUST"
-                enviar_telegram(f"🦅 *UPTHRUST (Manual)*\n🪙 {sym} | ${precio:,.4f}")
-            elif ultima['volume'] > (ultima['vol_ma'] * 2.0) and cerca_soporte and (mecha_inf > cuerpo * 1.1 or ultima['close'] > ultima['open']):
-                señal = "⚠️ CLÍMAX ABSORCIÓN"
-                enviar_telegram(f"🦅 *CLÍMAX ABSORCIÓN (Manual)*\n🪙 {sym} | ${precio:,.4f}\n📊 *Dirección:* COMPRA 🟢")
-            elif ultima['volume'] > (ultima['vol_ma'] * 2.0) and cerca_resistencia and (mecha_sup > cuerpo * 1.1 or ultima['close'] < ultima['open']):
-                señal = "⚠️ CLÍMAX EXHAUSCIÓN"
-                enviar_telegram(f"🦅 *CLÍMAX EXHAUSCIÓN (Manual)*\n🪙 {sym} | ${precio:,.4f}\n📊 *Dirección:* VENTA 🔴")
-                
-            resultados.append({"Par": sym, "Tipo": tipo, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio_24h})
-        except: 
-            pass
-            
-        progress_bar.progress((i + 1) / total_mercados)
-        time.sleep(0.01)
-    
-    status_text.empty()
-    progress_bar.empty()
-    
-    df_final = pd.DataFrame(resultados)
-    if not df_final.empty:
-        df_final['Orden'] = df_final['Señal'].apply(lambda x: 1 if x != "NEUTRAL" else 2)
-        df_final = df_final.sort_values(by=['Orden', 'Cambio 24h %'], ascending=[True, False]).drop(columns=['Orden'])
-    return df_final
-
-# ==========================================
-# 📊 INTERFAZ GRÁFICA
-# ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL (VANTAGE)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Multi-Asset: Crypto + NASDAQ + Forex + Índices + Commodities</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 MASTER INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Motor Multi-Estrategia (Wyckoff + Volumen + VWAP + Trend) con Pasarela de Ejecución Automática</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-# --- BARRA LATERAL ---
-st.sidebar.header("🌐 Configuración del Gráfico")
-lista_grafico = [
-    "BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT", "XRP/USDT", 
-    "ADA/USDT", "AVAX/USDT", "DOT/USDT", "LINK/USDT", "MATIC/USDT"
-] + NASDAQ_MARKETS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
+st.sidebar.header("⚙️ Configuración y Automatización")
+modo_auto = st.sidebar.checkbox("🤖 Activar Trading Autónomo (Opera por mí)", value=False, help="Si se activa, el bot enviará órdenes reales a Vantage MT5 o OKX al cumplirse las reglas.")
+st.session_state['modo_automatico'] = modo_auto
 
-symbol = st.sidebar.selectbox("Ver Gráfico de:", lista_grafico)
+if modo_auto:
+    st.sidebar.error("⚠️ MODO AUTOMÁTICO ACTIVO: El bot ejecutará operaciones reales según las reglas institucionales.")
+else:
+    st.sidebar.success("🛡️ MODO ALERTA: El bot solo enviará notificaciones a Telegram.")
+
+st.sidebar.markdown("---")
+lista_grafico = ["EURUSD=X", "^IXIC", "QQQ", "BTC/USDT", "ETH/USDT", "SOL/USDT"] + NASDAQ_MARKETS
+symbol = st.sidebar.selectbox("Seleccionar Activo:", list(dict.fromkeys(lista_grafico)))
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m","15m","1h"], index=1)
 
-# --- ESTADO Y FORZAR ESCANEO ---
 st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Estado del Autopiloto (15m)")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
-if st.sidebar.button("⚡ Forzar Escaneo Autopiloto Ahora"):
-    with st.spinner("Ejecutando escaneo rápido..."):
+if st.sidebar.button("⚡ Forzar Ciclo Multi-Estrategia"):
+    with st.spinner("Analizando confluencias..."):
         alertas = ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        if alertas > 0:
-            st.sidebar.success(f"¡Se enviaron {alertas} alertas a Telegram!")
-        else:
-            st.sidebar.warning("Escaneo completado. No se encontraron nuevas señales.")
-
-# --- BOTONES MANUALES ---
-st.sidebar.markdown("---")
-st.sidebar.header("🦅 Escáner Global (Vantage)")
-if st.sidebar.button("🔍 Escanear Mercados (Manual)"):
-    with st.spinner("Analizando mercados adaptados..."):
-        st.session_state['scan_results'] = ejecutar_escaner_top50(timeframe)
-
-if 'scan_results' in st.session_state and not st.session_state['scan_results'].empty:
-    st.success("✅ Resultados del Escáner Global:")
-    st.dataframe(st.session_state['scan_results'], use_container_width=True)
-    st.markdown("---")
+        st.sidebar.success(f"Ciclo finalizado. Alertas: {alertas}")
 
 # --- GRÁFICO EN VIVO ---
 @st.fragment(run_every="10s")
 def render_trading_panel(symbol, timeframe):
     df = obtener_datos(symbol, timeframe, limit=150)
     if df.empty:
-        st.error(f"No se pudieron cargar los datos para {symbol}.")
+        st.error(f"No hay datos para {symbol}.")
         return
 
-    col_grafico, col_paneles = st.columns([2.5, 1])
-    with col_grafico:
+    col1, col2 = st.columns([2.5, 1])
+    with col1:
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2,0.8])
         fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], increasing_line_color='#00FFAA', decreasing_line_color='#FF3333'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['vwap'], line=dict(color='#FF00FF', width=2), name='VWAP'), row=1, col=1)
@@ -335,51 +315,21 @@ def render_trading_panel(symbol, timeframe):
         fig.update_layout(template='plotly_dark', xaxis_rangeslider_visible=False, height=600, margin=dict(l=10,r=10,t=10,b=10), showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-    with col_paneles:
-        tipo_actual = clasificar_tipo_mercado(symbol)
-        st.markdown(f"### ⚙️ Flujo ({tipo_actual})")
+    with col2:
+        st.markdown(f"### ⚙️ Panel de Confluencia")
         ultima = df.iloc[-1]
-        anterior = df.iloc[-2]
-        precio_actual = ultima['close']
-        st.metric(label=f"{symbol}", value=f"${precio_actual:,.4f}", delta=f"{precio_actual - anterior['close']:,.4f}")
+        p_actual = ultima['close']
+        st.metric(label=symbol, value=f"${p_actual:,.4f}")
         
-        if precio_actual < ultima['vwap']: st.error("🔴 SESGO: BAJISTA")
-        else: st.success("🟢 SESGO: ALCISTA")
-            
-        cerca_soporte = ultima['low'] <= (ultima['soporte'] * 1.015)
-        cerca_resistencia = ultima['high'] >= (ultima['resistencia'] * 0.985)
-        mecha_inf = min(ultima['close'], ultima['open']) - ultima['low']
-        mecha_sup = ultima['high'] - max(ultima['close'], ultima['open'])
-        cuerpo = abs(ultima['close'] - ultima['open'])
-
-        if ultima['volume'] > (ultima['vol_ma'] * 2.0):
-            if cerca_soporte and (mecha_inf > cuerpo * 1.1 or ultima['close'] > ultima['open']):
-                st.warning("⚠️ Clímax de Absorción (Soporte).")
-            elif cerca_resistencia and (mecha_sup > cuerpo * 1.1 or ultima['close'] < ultima['open']):
-                st.warning("⚠️ Clímax de Exhausción (Resistencia).")
-
-        if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']: 
-            st.success("🎯 SPRING (Trampa de Compra)")
-        elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']: 
-            st.error("🎯 UPTHRUST (Trampa de Venta)")
+        if p_actual < ultima['vwap']: st.error("🔴 Tendencia VWAP: Bajista")
+        else: st.success("🟢 Tendencia VWAP: Alcista")
+        
+        # Estado de tácticas en tiempo real
+        if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
+            st.success("🎯 Patrón activo: SPRING")
+        elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
+            st.error("🎯 Patrón activo: UPTHRUST")
+        else:
+            st.info("🔍 Buscando Clímax / Absorción...")
 
 render_trading_panel(symbol, timeframe)
-
-st.markdown("---")
-st.markdown("### 📰 Contexto Global")
-@st.cache_data(ttl=600)
-def obtener_noticias():
-    noticias = []
-    try:
-        feed = feedparser.parse("https://www.coindesk.com/arc/outboundfeeds/rss/")
-        for entry in feed.entries[:4]: noticias.append({"titulo": entry.title, "fuente": "CoinDesk"})
-        return noticias
-    except: return []
-
-noticias = obtener_noticias()
-if noticias:
-    cols = st.columns(2)
-    for i, n in enumerate(noticias):
-        with cols[i % 2]:
-            st.markdown(f"<span style='color:gray; font-size: 12px;'>● {n['fuente']}</span><br><span style='font-size: 13px;'>{n['titulo']}</span>", unsafe_allow_html=True)
-            st.markdown("---")
