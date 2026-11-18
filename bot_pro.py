@@ -11,7 +11,7 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL (EXCLUSIVO CRUCE DORADO)
+# ⚙️ CONFIGURACIÓN GLOBAL (PURGADO Y EXCLUSIVO)
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
@@ -25,7 +25,7 @@ COMMODITY_MARKETS = ["GC=F", "SI=F", "CL=F", "NG=F"]
 
 thread_lock = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Radar exclusivo de Cruce Dorado (5m) en espera..."
+AUTOPILOTO_STATUS = "Radar purgado: Únicamente Cruce Dorado (5m) activo..."
 
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -76,13 +76,13 @@ def obtener_datos(symbol, timeframe="5m", limit=300):
     return df
 
 # ==========================================
-# 📡 MOTOR EXCLUSIVO: CRUCE DORADO MULTI-MERCADO
+# 📡 MOTOR PURGADO: SOLO CRUCE DORADO
 # ==========================================
-def ejecutar_escaneo_cruce_dorado(es_hilo_fondo=False):
+def ejecutar_escaneo_cruce_dorado_puro(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
     
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Escaneando Cruce Dorado en todos los mercados..."
+        AUTOPILOTO_STATUS = "Escaneando puramente Cruce Dorado..."
     
     exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 8000})
     try:
@@ -108,11 +108,12 @@ def ejecutar_escaneo_cruce_dorado(es_hilo_fondo=False):
             precio = actual['close']
             tipo_mercado = clasificar_tipo_mercado(symbol)
             
-            # --- ÚNICA ESTRATEGIA: CRUCE DORADO (SMA 50 / SMA 200)[cite: 1, 2] ---
+            # --- CONDICIÓN ÚNICA: CRUCE DORADO (SMA 50 / SMA 200)[cite: 1, 2] ---
             cruce_dorado = (anterior['sma_rapida'] <= anterior['sma_lenta']) and (actual['sma_rapida'] > actual['sma_lenta'])
             volumen_valido = actual['volume'] > (actual['vol_ma'] * 1.5)
             precio_sobre_vwap = precio > actual['vwap']
 
+            # Si se cumple la única estrategia permitida
             if cruce_dorado and volumen_valido and precio_sobre_vwap:
                 mensaje = (f"🟡 *ESTRATEGIA: CRUCE DORADO (5M)*\n"
                            f"🌐 Mercado: `{tipo_mercado}`\n"
@@ -122,7 +123,7 @@ def ejecutar_escaneo_cruce_dorado(es_hilo_fondo=False):
                            f"🚀 *Aplicación:* **OPERAR ARRIBA (LONG)** 🟢\n"
                            f"💡 *Instrucción:* Ejecutar orden manual en Vantage / OKX.")
 
-                clave_alerta = f"{symbol}_CRUCE_DORADO_EXCLUSIVO"
+                clave_alerta = f"{symbol}_CRUCE_DORADO_PURGADO"
                 ahora = time.time()
                 with thread_lock:
                     if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 14400:
@@ -136,29 +137,29 @@ def ejecutar_escaneo_cruce_dorado(es_hilo_fondo=False):
 
     with thread_lock:
         if not es_hilo_fondo:
-            AUTOPILOTO_STATUS = f"✅ Escaneo de Cruce Dorado finalizado. {alertas_nuevas} alertas."
+            AUTOPILOTO_STATUS = f"✅ Escaneo limpio finalizado. {alertas_nuevas} alertas."
         else:
-            AUTOPILOTO_STATUS = "✅ Radar exclusivo de Cruce Dorado activo..."
+            AUTOPILOTO_STATUS = "✅ Radar activo exclusivamente para Cruce Dorado..."
     return alertas_nuevas
 
 @st.cache_resource
-def iniciar_hilo_cruce_dorado():
+def iniciar_hilo_puro():
     def loop():
         while True:
-            try: ejecutar_escaneo_cruce_dorado(es_hilo_fondo=True)
+            try: ejecutar_escaneo_cruce_dorado_puro(es_hilo_fondo=True)
             except: pass
             time.sleep(300)
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
 
-iniciar_hilo_cruce_dorado()
+iniciar_hilo_puro()
 
 # ==========================================
-# 📊 INTERFAZ GRÁFICA EXCLUSIVA
+# 📊 INTERFAZ GRÁFICA LIMPIA
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #FFD700;'>🟡 TERMINAL CUANTITATIVA - CRUCE DORADO (5M)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Sistema Exclusivo de Cruce Dorado Multi-Mercado (Sin Estrategias Secundarias)</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #FFD700;'>🟡 TERMINAL CUANTITATIVA - CRUCE DORADO PURO (5M)</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Sistema 100% Exclusivo de Cruce Dorado (Sin rastro de otras estrategias)</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Selector de Activos")
@@ -168,14 +169,14 @@ symbol = st.sidebar.selectbox("Seleccionar Activo para Ver Gráfico:", list(dict
 st.sidebar.markdown("---")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
-if st.sidebar.button("⚡ Forzar Escaneo de Cruce Dorado"):
-    with st.spinner("Buscando Cruces Dorados en todos los mercados..."):
-        alertas = ejecutar_escaneo_cruce_dorado(es_hilo_fondo=False)
+if st.sidebar.button("⚡ Forzar Escaneo Limpio"):
+    with st.spinner("Buscando Cruces Dorados puros..."):
+        alertas = ejecutar_escaneo_cruce_dorado_puro(es_hilo_fondo=False)
         st.sidebar.success(f"Escaneo completado. Alertas enviadas: {alertas}")
 
 # --- GRÁFICO EN VIVO ---
 @st.fragment(run_every="10s")
-def render_panel_cruce(symbol):
+def render_panel_puro(symbol):
     df = obtener_datos(symbol, '5m', limit=300)
     if df.empty:
         st.error(f"No hay datos disponibles para {symbol}.")
@@ -195,7 +196,7 @@ def render_panel_cruce(symbol):
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        st.markdown(f"### ⚙️ Estado del Cruce Dorado")
+        st.markdown(f"### ⚙️ Estado Exclusivo")
         actual = df.iloc[-1]
         st.metric("Precio Actual", f"${actual['close']:,.4f}")
         st.metric("SMA 50", f"${actual['sma_rapida']:,.4f}")
@@ -206,4 +207,4 @@ def render_panel_cruce(symbol):
         else:
             st.error("🔴 SMA 50 bajo SMA 200 (Bajista)")
 
-render_panel_cruce(symbol)
+render_panel_puro(symbol)
