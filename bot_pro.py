@@ -6,25 +6,32 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
-import feedparser
 import time
 import threading
 from datetime import datetime, time as dt_time
 import pytz
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL (MULTI-MERCADO & FOREX)
+# ⚙️ CONFIGURACIÓN GLOBAL & ACTIVOS ESPECÍFICOS
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
 st.set_page_config(page_title="Institutional Quant Terminal - ADX 50+", layout="wide", page_icon="🏦")
 
-NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META"]
-FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "USDMXN=X", "USDBRL=X", "DX-Y.NYB"]
+# Listas estrictas solicitadas por el usuario
+CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
+FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "AUDUSD=X", "XAUUSD=X"]
+NASDAQ_MARKETS = [
+    "NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", 
+    "NFLX", "AMD", "AVGO", "COST", "PEP", "ADBE", "QCOM", 
+    "INTC", "CSCO", "TMUS", "CMCSA", "TXN", "HON", "AMGN"
+]
+
+ALL_TRACKED_SYMBOLS = CRYPTO_MARKETS + FOREX_MARKETS + NASDAQ_MARKETS
 
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Radar activo: Escaneando cada 5s (ADX > 50)..."
+AUTOPILOTO_STATUS = "Radar activo: Escaneando activos seleccionados (ADX > 50)..."
 
 # ==========================================
 # 🧠 FUNCIONES MATEMÁTICAS Y DE RED
@@ -64,7 +71,7 @@ def calcular_adx(df, period=14):
 # 🛠️ OBTENER DATOS ROBUSTO MULTI-TEMPORALIDAD
 def obtener_datos(symbol, timeframe, limit=100):
     df = pd.DataFrame()
-    if "/" in symbol and "USDT" in symbol:
+    if symbol in CRYPTO_MARKETS:
         try:
             exchange = ccxt.okx({'enableRateLimit': True})
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
@@ -92,7 +99,7 @@ def obtener_datos(symbol, timeframe, limit=100):
 
     if df.empty or not all(col in df.columns for col in ['open', 'high', 'low', 'close', 'volume', 'timestamp']):
         fechas = pd.date_range(end=datetime.now(), periods=limit, freq='h' if timeframe=='1h' else '15min')
-        base_val = 1.08 if "EUR" in symbol else 100.0
+        base_val = 2000.0 if "XAU" in symbol else (1.08 if "EUR" in symbol else 150.0)
         np.random.seed(abs(hash(symbol + timeframe)) % 10000)
         returns = np.random.normal(0.0001, 0.002, limit)
         prices = base_val * np.cumprod(1 + returns)
@@ -118,34 +125,19 @@ def obtener_datos(symbol, timeframe, limit=100):
     return df
 
 # ==========================================
-# 🤖 MOTOR DE FONDO: ESCANEO CADA 5 SEGUNDOS (ADX > 50)
+# 🤖 MOTOR DE FONDO: ESCANEO CADA 5s (ADX > 50)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
     
     if not es_hilo_fondo: 
-        AUTOPILOTO_STATUS = "Escaneando todos los mercados..."
+        AUTOPILOTO_STATUS = "Escaneando activos..."
     
-    try:
-        exchange = ccxt.okx({'enableRateLimit': True})
-        tickers = exchange.fetch_tickers()
-        mercados_usdt = []
-        for sym, data in tickers.items():
-            if sym.endswith('/USDT') and data.get('quoteVolume'):
-                precio = data.get('last', 1)
-                if not (0.99 <= precio <= 1.01): 
-                    mercados_usdt.append((sym, data['quoteVolume']))
-        top30_cripto = [sym for sym, vol in sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:30]]
-    except:
-        top30_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
-
-    # Todos los mercados unificados
-    mercados_a_escanear = top30_cripto + NASDAQ_MARKETS + FOREX_MARKETS
     temporalidades = ["5m", "15m", "1h"]
     alertas_nuevas = 0
 
-    for symbol in mercados_a_escanear:
-        tipo = "CRIPTO" if "/" in symbol else ("ACCION" in symbol or symbol in NASDAQ_MARKETS and "X" not in symbol and "=" not in symbol) and "ACCION" or "FOREX"
+    for symbol in ALL_TRACKED_SYMBOLS:
+        tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else ("FOREX/METAL" if symbol in FOREX_MARKETS else "NASDAQ")
         
         for tf in temporalidades:
             if not es_hilo_fondo: 
@@ -164,7 +156,6 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     cruce_alcista = (ultima['ema_fast'] > ultima['ema_slow']) and (df.iloc[-2]['ema_fast'] <= df.iloc[-2]['ema_slow'])
                     cruce_bajista = (ultima['ema_fast'] < ultima['ema_slow']) and (df.iloc[-2]['ema_fast'] >= df.iloc[-2]['ema_slow'])
                     
-                    direccion = ""
                     if cruce_alcista:
                         direccion = "COMPRA (LONG) 🟢"
                     elif cruce_bajista:
@@ -175,6 +166,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                         direccion = "TENDENCIA FUERTE BAJISTA 🔴"
 
                     msg = (f"🔥 *ALERTA INSTITUCIONAL: ADX EXTREMO (> 50)*\n"
+                           f"🌐 Mercado: `{tipo}`\n"
                            f"🪙 Activo: `{symbol}` | Temporalidad: `{tf}`\n"
                            f"💲 Precio: `${precio:,.4f}`\n"
                            f"📊 *ADX Actual:* `{adx_val:.1f}` (Super tendencia)\n"
@@ -183,20 +175,20 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     clave_alerta = f"{symbol}_{tf}_ADX50"
                     ahora = time.time()
                     
-                    # Anti-spam de 10 minutos por activo/temporalidad
+                    # Anti-spam de 10 minutos
                     if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 600:
                         enviar_telegram(msg)
                         ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                         alertas_nuevas += 1
                 
-                time.sleep(0.05) # Pausa micro para optimizar flujo
+                time.sleep(0.02)
             except: 
                 pass
 
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = f"✅ Escaneo completado. Alertas enviadas: {alertas_nuevas}"
     else:
-        AUTOPILOTO_STATUS = "⚡ Radar 5s activo vigilando ADX > 50 en todos los mercados..."
+        AUTOPILOTO_STATUS = "⚡ Radar 5s activo vigilando ADX > 50..."
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
@@ -216,12 +208,11 @@ iniciar_hilo_autopiloto()
 # 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL (ADX > 50)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Escaneo Masivo Multi-Temporalidad (5s) - Cripto + Nasdaq + Forex</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Escaneo Masivo (5s) - BNB, ETH, BTC | Forex, XAUUSD & Todos los Nasdaq</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
-lista_grafico = ["BTC/USDT", "ETH/USDT", "SOL/USDT"] + NASDAQ_MARKETS + FOREX_MARKETS
-symbol = st.sidebar.selectbox("Ver Gráfico de:", list(dict.fromkeys(lista_grafico)))
+symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_TRACKED_SYMBOLS)
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m","15m","1h"])
 
 st.sidebar.markdown("---")
@@ -229,7 +220,7 @@ st.sidebar.subheader("📡 Estado del Radar (5s)")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
 if st.sidebar.button("⚡ Forzar Escaneo Inmediato"):
-    with st.spinner("Escaneando todos los mercados con ADX > 50..."):
+    with st.spinner("Escaneando activos con ADX > 50..."):
         ejecutar_logica_autopiloto(es_hilo_fondo=False)
         st.sidebar.success("¡Escaneo forzado finalizado!")
 
