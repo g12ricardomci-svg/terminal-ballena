@@ -11,7 +11,7 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL (PURGADO Y EXCLUSIVO)
+# ⚙️ CONFIGURACIÓN GLOBAL (EXCLUSIVO CRUCE DORADO)
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
@@ -113,7 +113,6 @@ def ejecutar_escaneo_cruce_dorado_puro(es_hilo_fondo=False):
             volumen_valido = actual['volume'] > (actual['vol_ma'] * 1.5)
             precio_sobre_vwap = precio > actual['vwap']
 
-            # Si se cumple la única estrategia permitida
             if cruce_dorado and volumen_valido and precio_sobre_vwap:
                 mensaje = (f"🟡 *ESTRATEGIA: CRUCE DORADO (5M)*\n"
                            f"🌐 Mercado: `{tipo_mercado}`\n"
