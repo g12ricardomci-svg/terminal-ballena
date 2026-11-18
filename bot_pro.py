@@ -12,20 +12,25 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL & LISTA CERRADA
+# ⚙️ CONFIGURACIÓN GLOBAL & LISTA CERRADA ESTRICTA
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
 st.set_page_config(page_title="Institutional Quant Terminal - ADX 50+", layout="wide", page_icon="🏦")
 
-# Listas estrictas y cerradas (Sin criptomonedas ni activos externos)
+# ÚNICOS CRIPTO ACTIVOS PERMITIDOS
 CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
-FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "AUDUSD=X", "XAUUSD=X"]
+
+# FOREX Y METALES SELECCIONADOS
+FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "AUDUSD=X", "XAUUSD=X", "XAUUSD"]
+
+# ACCIONES DEL NASDAQ COMPLETAS
 NASDAQ_MARKETS = [
     "NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", 
     "NFLX", "AMD", "AVGO", "COST", "PEP", "ADBE", "QCOM", 
-    "INTC", "CSCO", "TMUS", "CMCSA", "TXN", "HON", "AMGN"
+    "INTC", "CSCO", "TMUS", "CMCSA", "TXN", "HON", "AMGN",
+    "SBUX", "INTU", "AMAT", "BKNG", "ISRG", "MDLZ", "PYPL", "ADI"
 ]
 
 ALL_TRACKED_SYMBOLS = CRYPTO_MARKETS + FOREX_MARKETS + NASDAQ_MARKETS
@@ -181,7 +186,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                         ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                         alertas_nuevas += 1
                 
-                time.sleep(0.02)
+                time.sleep(0.01)
             except: 
                 pass
 
@@ -250,7 +255,7 @@ def render_trading_panel(symbol, timeframe):
         ultima = df.iloc[-1]
         anterior = df.iloc[-2]
         precio_actual = ultima['close']
-        st.metric(label=f"{symbol}", value=f"${precio_actual:,.4f}", delta=f"${precio_actual - anterior['close']:,.4f}")
+        st.metric(label=f"{symbol}", value=f"${precio_actual:,.4f}", delta=f"${precio_actual - anterior['close']:,.2f}")
         
         if precio_actual < ultima['vwap']: st.error("🔴 SESGO: BAJISTA")
         else: st.success("🟢 SESGO: ALCISTA")
