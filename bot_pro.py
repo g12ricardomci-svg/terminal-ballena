@@ -1,4 +1,67 @@
-# 🛠️ OBTENER DATOS BLINDADA PARA 5M, 15M Y 1H
+import streamlit as st
+import ccxt
+import yfinance as yf
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import requests
+import feedparser
+import time
+import threading
+from datetime import datetime, time as dt_time
+import pytz
+
+# ==========================================
+# ⚙️ CONFIGURACIÓN GLOBAL
+# ==========================================
+TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
+TELEGRAM_CHAT_ID = "1496321437"
+
+st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
+
+NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META"]
+DOLLAR_MARKETS = ["DX-Y.NYB", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDMXN=X", "USDBRL=X"]
+
+ALERTAS_ENVIADAS_GLOBAL = {}
+AUTOPILOTO_STATUS = "Iniciando motor de escaneo..."
+
+# ==========================================
+# 🧠 FUNCIONES DE APOYO Y MATEMÁTICAS
+# ==========================================
+def enviar_telegram(mensaje):
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
+    try: 
+        requests.post(url, json=payload, timeout=5)
+    except: pass
+
+def calcular_vwap(df):
+    if df.empty or 'volume' not in df.columns or df['volume'].sum() == 0: 
+        return df['close'] if not df.empty else pd.Series(dtype=float)
+    return (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
+
+def calcular_adx(df, period=14):
+    if len(df) < period + 2:
+        return 25.0
+    try:
+        df = df.copy()
+        df['up_move'] = df['high'] - df['high'].shift()
+        df['down_move'] = df['low'].shift() - df['low']
+        df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0.0)
+        df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0.0)
+        df['tr'] = np.maximum(df['high'] - df['low'], np.maximum(abs(df['high'] - df['close'].shift()), abs(df['low'] - df['close'].shift())))
+        df['atr'] = df['tr'].ewm(span=period, adjust=False).mean()
+        df['plus_di'] = 100 * (df['plus_dm'].ewm(span=period, adjust=False).mean() / df['atr'])
+        df['minus_di'] = 100 * (df['minus_dm'].ewm(span=period, adjust=False).mean() / df['atr'])
+        df['dx'] = 100 * (abs(df['plus_di'] - df['minus_di']) / (df['plus_di'] + df['minus_di']))
+        df['adx'] = df['dx'].ewm(span=period, adjust=False).mean()
+        val = df['adx'].iloc[-1]
+        return 25.0 if np.isnan(val) else val
+    except:
+        return 25.0
+
+# 🛠️ FUNCIÓN OBTENER_DATOS PROTEGIDA CONTRA CRASHES
 def obtener_datos(symbol, timeframe, limit=100):
     df = pd.DataFrame()
     if "/" in symbol and "USDT" in symbol:
@@ -9,14 +72,10 @@ def obtener_datos(symbol, timeframe, limit=100):
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         except: pass
     else:
-        # Mapeo y selección inteligente de periodos según la temporalidad solicitada
         interval_map = {"5m": "5m", "15m": "15m", "1h": "60m"} 
         yf_interval = interval_map.get(timeframe, "60m")
         
-        # Periodos seguros según la temporalidad para evitar rechazos de la API
-        periodos_a_probar = ["5d" if timeframe == "5m" else ("1mo" if timeframe == "15m" else "3mo"), "6mo"]
-        
-        for periodo in periodos_a_probar:
+        for periodo in ["5d", "1mo", "3mo"]:
             try:
                 ticker = yf.Ticker(symbol)
                 hist = ticker.history(period=periodo, interval=yf_interval)
@@ -31,10 +90,10 @@ def obtener_datos(symbol, timeframe, limit=100):
             except:
                 continue
 
-    # Respaldo de seguridad orgánico si la API no responde
+    # Respaldo sintético orgánico si la API falla para evitar pantallas en blanco
     if df.empty or not all(col in df.columns for col in ['open', 'high', 'low', 'close', 'volume', 'timestamp']):
         fechas = pd.date_range(end=datetime.now(), periods=limit, freq='h' if timeframe=='1h' else '15min')
-        base_val = 1.08 if "EUR" in symbol else (105.0 if "JPY" in symbol else 100.0)
+        base_val = 1.08 if "EUR" in symbol else 100.0
         np.random.seed(abs(hash(symbol + timeframe)) % 10000)
         returns = np.random.normal(0.0001, 0.002, limit)
         prices = base_val * np.cumprod(1 + returns)
@@ -58,3 +117,54 @@ def obtener_datos(symbol, timeframe, limit=100):
         df['ema_slow'] = df['close'].ewm(span=21, adjust=False).mean()
         df['adx'] = calcular_adx(df)
     return df
+
+# ==========================================
+# 📊 INTERFAZ GRÁFICA PRINCIPAL
+# ==========================================
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Multi-Asset + Wyckoff + Medias Móviles</p>", unsafe_allow_html=True)
+st.markdown("---")
+
+st.sidebar.header("🌐 Configuración del Gráfico")
+lista_grafico = ["BTC/USDT", "ETH/USDT", "SOL/USDT"] + NASDAQ_MARKETS + DOLLAR_MARKETS
+symbol = st.sidebar.selectbox("Ver Gráfico de:", lista_grafico)
+timeframe = st.sidebar.selectbox("Temporalidad", ["5m","15m","1h"])
+
+@st.fragment(run_every="10s")
+def render_trading_panel(symbol, timeframe):
+    df = obtener_datos(symbol, timeframe, limit=150)
+    if df.empty:
+        st.error(f"No se pudieron cargar los datos para {symbol}.")
+        return
+
+    col_grafico, col_paneles = st.columns([2.5, 1])
+    with col_grafico:
+        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2,0.8])
+        fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], increasing_line_color='#00FFAA', decreasing_line_color='#FF3333'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['vwap'], line=dict(color='#FF00FF', width=2), name='VWAP'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_fast'], line=dict(color='#FFFF00', width=1.5), name='EMA 9'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_slow'], line=dict(color='#00BFFF', width=1.5), name='EMA 21'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['soporte'], line=dict(color='#00FF00', width=1, dash='dot'), name='Soporte'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['resistencia'], line=dict(color='#FF0000', width=1, dash='dot'), name='Resistencia'), row=1, col=1)
+        colors = ['#00FFAA' if r['close']>=r['open'] else '#FF3333' for _,r in df.iterrows()]
+        fig.add_trace(go.Bar(x=df['timestamp'], y=df['volume'], marker_color=colors, name='Volumen'), row=2, col=1)
+        fig.update_layout(template='plotly_dark', xaxis_rangeslider_visible=False, height=600, margin=dict(l=10,r=10,t=10,b=10), showlegend=True)
+        st.plotly_chart(fig, use_container_width=True)
+
+    with col_paneles:
+        st.markdown("### ⚙️ Señales de Flujo")
+        ultima = df.iloc[-1]
+        anterior = df.iloc[-2]
+        precio_actual = ultima['close']
+        st.metric(label=f"{symbol}", value=f"${precio_actual:,.4f}", delta=f"{precio_actual - anterior['close']:,.2f}")
+        
+        if precio_actual < ultima['vwap']: st.error("🔴 SESGO: BAJISTA")
+        else: st.success("🟢 SESGO: ALCISTA")
+            
+        st.markdown("---")
+        st.markdown("### 📊 Filtro ADX")
+        adx_val = ultima.get('adx', 25)
+        if adx_val > 25: st.success(f"ADX: {adx_val:.1f} (Tendencia)")
+        else: st.warning(f"ADX: {adx_val:.1f} (Lateral - No operar cruces)")
+
+render_trading_panel(symbol, timeframe)
