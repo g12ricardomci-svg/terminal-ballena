@@ -42,6 +42,8 @@ def calcular_vwap(df):
     return (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
 
 def calcular_adx(df, period=14):
+    if len(df) < period + 2:
+        return 20.0 # Valor por defecto seguro si hay pocos datos
     df['up_move'] = df['high'] - df['high'].shift()
     df['down_move'] = df['low'].shift() - df['low']
     df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0.0)
@@ -70,7 +72,7 @@ def mercado_abierto(tipo_mercado):
         return True
     return False
 
-# 🛠️ FUNCIÓN OBTENER_DATOS CORREGIDA Y ROBUSTA PARA YFINANCE
+# 🛠️ FUNCIÓN OBTENER_DATOS ROBUSTA CON FALLBACK
 def obtener_datos(symbol, timeframe, limit=100):
     df = pd.DataFrame()
     if "/" in symbol and "USDT" in symbol:
@@ -81,37 +83,36 @@ def obtener_datos(symbol, timeframe, limit=100):
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         except: return pd.DataFrame()
     else:
-        # Mapeo seguro para Yahoo Finance
         interval_map = {"1m": "1m", "5m": "5m", "15m": "15m", "1h": "60m"} 
         yf_interval = interval_map.get(timeframe, "5m")
         
-        # Para Forex/Acciones en yfinance, usar periodos seguros de 5 días para intradía
+        # Usar 5d en lugar de 1d para evitar fallos en intradía de Forex y Acciones
         period = "5d" if yf_interval in ["1m", "5m", "15m"] else "1mo"
         try:
             ticker = yf.Ticker(symbol)
             hist = ticker.history(period=period, interval=yf_interval)
+            
+            # Si falla el intradía, respaldo con datos diarios
             if hist.empty:
-                # Intento de respaldo con periodo diario si falla el intradía
                 hist = ticker.history(period="1mo", interval="1d")
             
             if hist.empty: return pd.DataFrame()
             
             df = hist.reset_index()
-            # yfinance puede devolver 'Datetime' o 'Date' como columna de tiempo
             time_col = 'Datetime' if 'Datetime' in df.columns else ('Date' if 'Date' in df.columns else df.columns[0])
             df.rename(columns={time_col: 'timestamp'}, inplace=True)
             
             df['timestamp'] = pd.to_datetime(df['timestamp']).dt.tz_localize(None)
             df['volume'] = df['volume'].fillna(0)
             df = df.tail(limit)
-        except Exception as e:
+        except:
             return pd.DataFrame()
 
     if not df.empty:
         df['vwap'] = calcular_vwap(df)
-        df['soporte'] = df['low'].rolling(window=20).min()
-        df['resistencia'] = df['high'].rolling(window=20).max()
-        df['vol_ma'] = df['volume'].rolling(window=20).mean()
+        df['soporte'] = df['low'].rolling(window=min(20, len(df))).min()
+        df['resistencia'] = df['high'].rolling(window=min(20, len(df))).max()
+        df['vol_ma'] = df['volume'].rolling(window=min(20, len(df))).mean()
         df['ema_fast'] = df['close'].ewm(span=9, adjust=False).mean()
         df['ema_slow'] = df['close'].ewm(span=21, adjust=False).mean()
         df['adx'] = calcular_adx(df)
@@ -162,7 +163,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             cruce_alcista_reciente = False
             cruce_bajista_reciente = False
             
-            for j in range(1, 4):
+            for j in range(1, min(4, len(df_5m))):
                 if (df_5m['ema_fast'].iloc[-j] > df_5m['ema_slow'].iloc[-j]) and (df_5m['ema_fast'].iloc[-j-1] <= df_5m['ema_slow'].iloc[-j-1]):
                     cruce_alcista_reciente = True
                     break
@@ -178,13 +179,9 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                 msg = f"🔻 *AUTOPILOTO WYCKOFF: VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴"
             elif cruce_alcista_reciente and ultima['adx'] > 25:
                 señal = "GOLDEN_CROSS"
-                sl = df_5m['low'].tail(5).min() * 0.998
-                tp = precio + ((precio - sl) * 2)
                 msg = f"🌟 *CRUCE DORADO RECIENTE ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢"
             elif cruce_bajista_reciente and ultima['adx'] > 25:
                 señal = "DEATH_CROSS"
-                sl = df_5m['high'].tail(5).max() * 1.002
-                tp = precio - ((sl - precio) * 2)
                 msg = f"💀 *CRUCE DE LA MUERTE RECIENTE ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴"
             elif tipo != "FOREX" and ultima['volume'] > (ultima['vol_ma'] * 2.5):
                 señal = "CLIMAX"
@@ -246,7 +243,7 @@ if st.sidebar.button("⚡ Forzar Escaneo Autopiloto Ahora"):
 def render_trading_panel(symbol, timeframe):
     df = obtener_datos(symbol, timeframe, limit=150)
     if df.empty:
-        st.error(f"No se pudieron cargar los datos para {symbol} (Verifica si el mercado está abierto o el símbolo en Yahoo Finance).")
+        st.error(f"No se pudieron cargar los datos para {symbol}. Verifica el símbolo en Yahoo Finance o si el mercado se encuentra abierto.")
         return
 
     col_grafico, col_paneles = st.columns([2.5, 1])
