@@ -13,21 +13,21 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL
+# ⚙️ CONFIGURACIÓN GLOBAL (MULTI-MERCADO & FOREX)
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
-st.set_page_config(page_title="Institutional Quant Terminal", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Institutional Quant Terminal - ADX 50+", layout="wide", page_icon="🏦")
 
 NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META"]
-DOLLAR_MARKETS = ["DX-Y.NYB", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDMXN=X", "USDBRL=X"]
+FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "USDMXN=X", "USDBRL=X", "DX-Y.NYB"]
 
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Iniciando motor de escaneo..."
+AUTOPILOTO_STATUS = "Radar activo: Escaneando cada 5s (ADX > 50)..."
 
 # ==========================================
-# 🧠 FUNCIONES DE APOYO Y MATEMÁTICAS
+# 🧠 FUNCIONES MATEMÁTICAS Y DE RED
 # ==========================================
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -61,7 +61,7 @@ def calcular_adx(df, period=14):
     except:
         return 25.0
 
-# 🛠️ FUNCIÓN OBTENER_DATOS PROTEGIDA CONTRA CRASHES
+# 🛠️ OBTENER DATOS ROBUSTO MULTI-TEMPORALIDAD
 def obtener_datos(symbol, timeframe, limit=100):
     df = pd.DataFrame()
     if "/" in symbol and "USDT" in symbol:
@@ -90,7 +90,6 @@ def obtener_datos(symbol, timeframe, limit=100):
             except:
                 continue
 
-    # Respaldo sintético orgánico si la API falla para evitar pantallas en blanco
     if df.empty or not all(col in df.columns for col in ['open', 'high', 'low', 'close', 'volume', 'timestamp']):
         fechas = pd.date_range(end=datetime.now(), periods=limit, freq='h' if timeframe=='1h' else '15min')
         base_val = 1.08 if "EUR" in symbol else 100.0
@@ -119,18 +118,122 @@ def obtener_datos(symbol, timeframe, limit=100):
     return df
 
 # ==========================================
+# 🤖 MOTOR DE FONDO: ESCANEO CADA 5 SEGUNDOS (ADX > 50)
+# ==========================================
+def ejecutar_logica_autopiloto(es_hilo_fondo=False):
+    global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
+    
+    if not es_hilo_fondo: 
+        AUTOPILOTO_STATUS = "Escaneando todos los mercados..."
+    
+    try:
+        exchange = ccxt.okx({'enableRateLimit': True})
+        tickers = exchange.fetch_tickers()
+        mercados_usdt = []
+        for sym, data in tickers.items():
+            if sym.endswith('/USDT') and data.get('quoteVolume'):
+                precio = data.get('last', 1)
+                if not (0.99 <= precio <= 1.01): 
+                    mercados_usdt.append((sym, data['quoteVolume']))
+        top30_cripto = [sym for sym, vol in sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:30]]
+    except:
+        top30_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
+
+    # Todos los mercados unificados
+    mercados_a_escanear = top30_cripto + NASDAQ_MARKETS + FOREX_MARKETS
+    temporalidades = ["5m", "15m", "1h"]
+    alertas_nuevas = 0
+
+    for symbol in mercados_a_escanear:
+        tipo = "CRIPTO" if "/" in symbol else ("ACCION" in symbol or symbol in NASDAQ_MARKETS and "X" not in symbol and "=" not in symbol) and "ACCION" or "FOREX"
+        
+        for tf in temporalidades:
+            if not es_hilo_fondo: 
+                AUTOPILOTO_STATUS = f"Analizando {symbol} [{tf}] (ADX > 50)..."
+            
+            try:
+                df = obtener_datos(symbol, tf, limit=50)
+                if df.empty: continue
+                
+                ultima = df.iloc[-1]
+                precio = ultima['close']
+                adx_val = ultima.get('adx', 0)
+                
+                # REGLA ESTRICTA: ADX > 50
+                if adx_val > 50:
+                    cruce_alcista = (ultima['ema_fast'] > ultima['ema_slow']) and (df.iloc[-2]['ema_fast'] <= df.iloc[-2]['ema_slow'])
+                    cruce_bajista = (ultima['ema_fast'] < ultima['ema_slow']) and (df.iloc[-2]['ema_fast'] >= df.iloc[-2]['ema_slow'])
+                    
+                    direccion = ""
+                    if cruce_alcista:
+                        direccion = "COMPRA (LONG) 🟢"
+                    elif cruce_bajista:
+                        direccion = "VENTA (SHORT) 🔴"
+                    elif ultima['close'] > ultima['vwap']:
+                        direccion = "TENDENCIA FUERTE ALCISTA 🟢"
+                    else:
+                        direccion = "TENDENCIA FUERTE BAJISTA 🔴"
+
+                    msg = (f"🔥 *ALERTA INSTITUCIONAL: ADX EXTREMO (> 50)*\n"
+                           f"🪙 Activo: `{symbol}` | Temporalidad: `{tf}`\n"
+                           f"💲 Precio: `${precio:,.4f}`\n"
+                           f"📊 *ADX Actual:* `{adx_val:.1f}` (Super tendencia)\n"
+                           f"🚀 *Dirección:* {direccion}")
+
+                    clave_alerta = f"{symbol}_{tf}_ADX50"
+                    ahora = time.time()
+                    
+                    # Anti-spam de 10 minutos por activo/temporalidad
+                    if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 600:
+                        enviar_telegram(msg)
+                        ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
+                        alertas_nuevas += 1
+                
+                time.sleep(0.05) # Pausa micro para optimizar flujo
+            except: 
+                pass
+
+    if not es_hilo_fondo:
+        AUTOPILOTO_STATUS = f"✅ Escaneo completado. Alertas enviadas: {alertas_nuevas}"
+    else:
+        AUTOPILOTO_STATUS = "⚡ Radar 5s activo vigilando ADX > 50 en todos los mercados..."
+
+@st.cache_resource
+def iniciar_hilo_autopiloto():
+    def loop():
+        while True:
+            try:
+                ejecutar_logica_autopiloto(es_hilo_fondo=True)
+            except: pass
+            time.sleep(5) # Ciclo exacto cada 5 segundos
+    thread = threading.Thread(target=loop, daemon=True)
+    thread.start()
+    return thread
+
+iniciar_hilo_autopiloto()
+
+# ==========================================
 # 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Multi-Asset + Wyckoff + Medias Móviles</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL (ADX > 50)</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Escaneo Masivo Multi-Temporalidad (5s) - Cripto + Nasdaq + Forex</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
-lista_grafico = ["BTC/USDT", "ETH/USDT", "SOL/USDT"] + NASDAQ_MARKETS + DOLLAR_MARKETS
-symbol = st.sidebar.selectbox("Ver Gráfico de:", lista_grafico)
+lista_grafico = ["BTC/USDT", "ETH/USDT", "SOL/USDT"] + NASDAQ_MARKETS + FOREX_MARKETS
+symbol = st.sidebar.selectbox("Ver Gráfico de:", list(dict.fromkeys(lista_grafico)))
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m","15m","1h"])
 
-@st.fragment(run_every="10s")
+st.sidebar.markdown("---")
+st.sidebar.subheader("📡 Estado del Radar (5s)")
+st.sidebar.info(AUTOPILOTO_STATUS)
+
+if st.sidebar.button("⚡ Forzar Escaneo Inmediato"):
+    with st.spinner("Escaneando todos los mercados con ADX > 50..."):
+        ejecutar_logica_autopiloto(es_hilo_fondo=False)
+        st.sidebar.success("¡Escaneo forzado finalizado!")
+
+@st.fragment(run_every="5s")
 def render_trading_panel(symbol, timeframe):
     df = obtener_datos(symbol, timeframe, limit=150)
     if df.empty:
@@ -162,9 +265,13 @@ def render_trading_panel(symbol, timeframe):
         else: st.success("🟢 SESGO: ALCISTA")
             
         st.markdown("---")
-        st.markdown("### 📊 Filtro ADX")
+        st.markdown("### 📊 Filtro ADX (Fuerza)")
         adx_val = ultima.get('adx', 25)
-        if adx_val > 25: st.success(f"ADX: {adx_val:.1f} (Tendencia)")
-        else: st.warning(f"ADX: {adx_val:.1f} (Lateral - No operar cruces)")
+        if adx_val > 50: 
+            st.success(f"🔥 ADX: {adx_val:.1f} (>50 Super Tendencia)")
+        elif adx_val > 25: 
+            st.warning(f"📈 ADX: {adx_val:.1f} (Tendencia moderada)")
+        else: 
+            st.info(f"⚖️ ADX: {adx_val:.1f} (Lateral)")
 
 render_trading_panel(symbol, timeframe)
