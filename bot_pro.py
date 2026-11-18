@@ -17,7 +17,7 @@ import pytz
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
-st.set_page_config(page_title="Institutional Quant Terminal - Price Action & Structure", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Institutional Quant Terminal - Multi-Strategy", layout="wide", page_icon="🏦")
 
 NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NFLX", "AMD"]
 FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "USDCHF=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X"]
@@ -26,7 +26,7 @@ COMMODITY_MARKETS = ["GC=F", "SI=F", "CL=F", "BZ=F", "NG=F"]
 
 thread_lock = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Iniciando radar de estructura institucional (5m - 15m)..."
+AUTOPILOTO_STATUS = "Iniciando radar multi-estrategia (Reversión & Tendencia)..."
 
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -39,6 +39,13 @@ def enviar_telegram(mensaje):
 def calcular_vwap(df):
     if df['volume'].sum() == 0: return df['close']
     return (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
+
+def calcular_rsi(series, period=7):
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs))
 
 def mercado_abierto(tipo_mercado):
     ny_tz = pytz.timezone('America/New_York')
@@ -94,16 +101,18 @@ def obtener_datos(symbol, timeframe, limit=100):
         df['resistencia'] = df['high'].rolling(window=20).max()
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
         df['ema_50'] = df['close'].ewm(span=50).mean()
+        df['ema_200'] = df['close'].ewm(span=200).mean() if len(df) >= 200 else df['close'].ewm(span=len(df)).mean()
+        df['rsi'] = calcular_rsi(df['close'], period=7)
     return df
 
 # ==========================================
-# 📡 MOTOR DE RADAR TÁCTICO (5m y 15m)
+# 📡 MOTOR DE RADAR TÁCTICO MULTI-ESTRATEGIA
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
     
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Escaneando estructuras en 5m y 15m..."
+        AUTOPILOTO_STATUS = "Escaneando Reversión a la Media y Tendencia..."
     
     exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 8000})
     try:
@@ -124,52 +133,74 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             tipo = clasificar_tipo_mercado(symbol)
             if not mercado_abierto(tipo): continue
 
-            # Cargamos temporalidades de 15m (Estructura/Setup) y 5m (Gatillo de entrada)
+            df_1h = obtener_datos(symbol, '1h', limit=100)
             df_15m = obtener_datos(symbol, '15m', limit=50)
             df_5m = obtener_datos(symbol, '5m', limit=50)
             
-            if df_15m.empty or df_5m.empty: continue
+            if df_1h.empty or df_15m.empty or df_5m.empty: continue
             
+            u_1h = df_1h.iloc[-1]
             u_15m = df_15m.iloc[-1]
             u_5m = df_5m.iloc[-1]
-            penultimo_5m = df_5m.iloc[-2]
             
             precio = u_5m['close']
-            
-            # --- CÁLCULO DEL PATRÓN DE ENTRADA (ESTILO IMAGEN) ---
-            cuerpo_5m = abs(u_5m['close'] - u_5m['open'])
-            mecha_inf_5m = min(u_5m['close'], u_5m['open']) - u_5m['low']
-            mecha_sup_5m = u_5m['high'] - max(u_5m['close'], u_5m['open'])
-            
-            # Confluencia con soporte/resistencia y volumen en 15m
-            cerca_soporte_15m = u_15m['low'] <= (u_15m['soporte'] * 1.015)
-            cerca_resistencia_15m = u_15m['high'] >= (u_15m['resistencia'] * 0.985)
-            volumen_relevante = u_5m['volume'] > u_5m['vol_ma']
-            
             señal = None
             msg = ""
-            
-            # Regla de Compra (Patrón de giro en soporte con mecha inferior y confirmación sobre VWAP en 5m)
-            if cerca_soporte_15m and (mecha_inf_5m > cuerpo_5m * 1.5) and (u_5m['close'] > u_5m['vwap']) and (u_5m['close'] > penultimo_5m['high']):
-                señal = "PATRON_GIRO_COMPRA"
-                msg = (f"🚀 *RADAR 5m/15m: ENTRADA DE COMPRA (PATRÓN DE GIRO)* 🟢\n"
-                       f"🪙 Activo: `{symbol}` ({tipo})\n"
-                       f"💲 Precio Actual: `${precio:,.4f}`\n\n"
-                       f"📊 *Detalles Tácticos:*\n"
-                       f"• Setup 15m: Testeo de soporte crítico.\n"
-                       f"• Gatillo 5m: Mecha de absorción + cierre alcista sobre el VWAP.\n\n"
-                       f"💡 *Instrucción:* Momento idóneo para entrada en Long gestionando el riesgo bajo la mecha.")
 
-            # Regla de Venta (Patrón de giro en resistencia con mecha superior y rechazo bajo el VWAP en 5m)
-            elif cerca_resistencia_15m and (mecha_sup_5m > cuerpo_5m * 1.5) and (u_5m['close'] < u_5m['vwap']) and (u_5m['close'] < penultimo_5m['low']):
-                señal = "PATRON_GIRO_VENTA"
-                msg = (f"🔻 *RADAR 5m/15m: ENTRADA DE VENTA (PATRÓN DE GIRO)* 🔴\n"
+            # ==========================================
+            # ESTRATEGIA 1: REVERSIÓN A LA MEDIA (MEAN REVERSION)[cite: 1, 2]
+            # ==========================================
+            # Detecta desviaciones extremas con RSI corto y filtros de tendencia/soporte en 15m/5m
+            rsi_actual = u_5m['rsi']
+            
+            # Sobreventa extrema -> Apuesta a que vuelve a la normalidad (Operar Arriba / Long)
+            if rsi_actual < 25 and u_5m['low'] <= (u_5m['soporte'] * 1.01):
+                señal = "REVERSION_COMPRA"
+                msg = (f"🎯 *ESTRATEGIA: REVERSIÓN A LA MEDIA*\n"
                        f"🪙 Activo: `{symbol}` ({tipo})\n"
                        f"💲 Precio Actual: `${precio:,.4f}`\n\n"
-                       f"📊 *Detalles Tácticos:*\n"
-                       f"• Setup 15m: Testeo de resistencia institucional.\n"
-                       f"• Gatillo 5m: Rechazo con mecha superior + quiebre bajo el VWAP.\n\n"
-                       f"💡 *Instrucción:* Momento idóneo para entrada en Short protegiendo sobre la mecha.")
+                       f"📊 *Análisis:* RSI de corto plazo en sobreventa extrema ({rsi_actual:.1f}) apoyado en soporte.\n"
+                       f"🚀 *Aplicación:* **OPERAR ARRIBA (LONG)** 🟢\n"
+                       f"💡 Esperar rebote hacia la media / VWAP.")
+
+            # Sobrecompra extrema -> Apuesta a corrección (Operar Abajo / Short)
+            elif rsi_actual > 75 and u_5m['high'] >= (u_5m['resistencia'] * 0.99):
+                señal = "REVERSION_VENTA"
+                msg = (f"🎯 *ESTRATEGIA: REVERSIÓN A LA MEDIA*\n"
+                       f"🪙 Activo: `{symbol}` ({tipo})\n"
+                       f"💲 Precio Actual: `${precio:,.4f}`\n\n"
+                       f"📊 *Análisis:* RSI de corto plazo en sobrecompra extrema ({rsi_actual:.1f}) en zona de resistencia.\n"
+                       f"🔻 *Aplicación:* **OPERAR ABAJO (SHORT)** 🔴\n"
+                       f"💡 Esperar corrección hacia la media / VWAP.")
+
+            # ==========================================
+            # ESTRATEGIA 2: SEGUIMIENTO DE TENDENCIAS (TREND FOLLOWING / MOMENTUM)[cite: 1, 2]
+            # ==========================================
+            # Captura movimientos direccionales fuertes por rompimiento de niveles clave o EMA de largo plazo
+            rompe_resistencia_15m = u_15m['close'] > u_15m['resistencia']
+            tendencia_alcista_1h = u_1h['close'] > u_1h['ema_50']
+            volumen_impulso = u_5m['volume'] > (u_5m['vol_ma'] * 2.0)
+
+            rompe_soporte_15m = u_15m['close'] < u_15m['soporte']
+            tendencia_bajista_1h = u_1h['close'] < u_1h['ema_50']
+
+            if rompe_resistencia_15m and tendencia_alcista_1h and volumen_impulso:
+                señal = "TREND_COMPRA"
+                msg = (f"📈 *ESTRATEGIA: SEGUIMIENTO DE TENDENCIAS (MOMENTUM)*[cite: 1, 2]\n"
+                       f"🪙 Activo: `{symbol}` ({tipo})\n"
+                       f"💲 Precio Actual: `${precio:,.4f}`\n\n"
+                       f"📊 *Análisis:* Rompimiento institucional de resistencia en 15m con volumen masivo y macro alcista en 1h[cite: 1, 2].\n"
+                       f"🚀 *Aplicación:* **OPERAR ARRIBA (LONG)** 🟢\n"
+                       f"💡 Capturar expansión de tendencia.")
+
+            elif rompe_soporte_15m and tendencia_bajista_1h and volumen_impulso:
+                señal = "TREND_VENTA"
+                msg = (f"📉 *ESTRATEGIA: SEGUIMIENTO DE TENDENCIAS (MOMENTUM)*[cite: 1, 2]\n"
+                       f"🪙 Activo: `{symbol}` ({tipo})\n"
+                       f"💲 Precio Actual: `${precio:,.4f}`\n\n"
+                       f"📊 *Análisis:* Quiebre bajista de soporte en 15m con volumen institucional y macro bajista en 1h[cite: 1, 2].\n"
+                       f"🔻 *Aplicación:* **OPERAR ABAJO (SHORT)** 🔴\n"
+                       f"💡 Capturar caída tendencial.")
 
             if señal and msg:
                 clave_alerta = f"{symbol}_{señal}"
@@ -186,9 +217,9 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
 
     with thread_lock:
         if not es_hilo_fondo:
-            AUTOPILOTO_STATUS = f"✅ Escaneo 5m/15m completado. {alertas_nuevas} alertas enviadas."
+            AUTOPILOTO_STATUS = f"✅ Escaneo completado. {alertas_nuevas} alertas enviadas."
         else:
-            AUTOPILOTO_STATUS = "✅ Radar 5m/15m activo vigilando el mercado..."
+            AUTOPILOTO_STATUS = "✅ Radar multi-estrategia activo en segundo plano..."
     return alertas_nuevas
 
 @st.cache_resource
@@ -207,22 +238,22 @@ iniciar_hilo_autopiloto()
 # ==========================================
 # 📊 INTERFAZ GRÁFICA
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL (5m & 15m SETUP)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Detección Automática de Patrones de Giro Institucional y Testeo de VWAP</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 QUANT TERMINAL: REVERSIÓN & TENDENCIA</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Sistema Cuantitativo Institucional Multi-Estrategia con Indicación Directa de Operativa</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración y Radar")
 lista_grafico = ["EURUSD=X", "^IXIC", "QQQ", "BTC/USDT", "ETH/USDT", "SOL/USDT"] + NASDAQ_MARKETS
 symbol = st.sidebar.selectbox("Seleccionar Activo:", list(dict.fromkeys(lista_grafico)))
-timeframe = st.sidebar.selectbox("Temporalidad Gráfico", ["5m","15m","1h"], index=0)
+timeframe = st.sidebar.selectbox("Temporalidad Gráfico", ["5m","15m","1h"], index=1)
 
 st.sidebar.markdown("---")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
-if st.sidebar.button("⚡ Forzar Escaneo 5m/15m Ahora"):
-    with st.spinner("Analizando estructuras y gatillos..."):
+if st.sidebar.button("⚡ Forzar Escaneo Multi-Estrategia"):
+    with st.spinner("Analizando Reversión y Tendencias..."):
         alertas = ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        st.sidebar.success(f"Escaneo completado. Alertas enviadas: {alertas}")
+        st.sidebar.success(f"Escaneo finalizado. Alertas enviadas: {alertas}")
 
 # --- GRÁFICO EN VIVO ---
 @st.fragment(run_every="10s")
@@ -245,23 +276,23 @@ def render_trading_panel(symbol, timeframe):
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        st.markdown(f"### ⚙️ Estado del Gatillo 5m/15m")
-        df_15m = obtener_datos(symbol, '15m', limit=20)
+        st.markdown(f"### ⚙️ Métricas de Estrategia")
         df_5m = obtener_datos(symbol, '5m', limit=20)
         
-        if not df_15m.empty and not df_5m.empty:
-            u_15 = df_15m.iloc[-1]
+        if not df_5m.empty:
             u_5 = df_5m.iloc[-1]
+            rsi_val = u_5['rsi']
             
-            cercania_soporte = "EN SOPORTE 🟢" if u_15['low'] <= (u_15['soporte'] * 1.015) else "NEUTRAL"
-            st.metric("Setup 15m", cercania_soporte)
+            st.metric("RSI Rápido (7p)", f"{rsi_val:.1f}")
             
-            relacion_vwap = "SOBRE VWAP 🟢" if u_5['close'] > u_5['vwap'] else "BAJO VWAP 🔴"
-            st.metric("Gatillo 5m (VWAP)", relacion_vwap)
-            
-            cuerpo = abs(u_5['close'] - u_5['open'])
-            mecha_inf = min(u_5['close'], u_5['open']) - u_5['low']
-            formacion_mecha = "DETECTADA ⚠️" if mecha_inf > cuerpo * 1.5 else "NORMAL"
-            st.metric("Absorción (Mecha 5m)", formacion_mecha)
+            if rsi_val < 25:
+                st.success("🟢 Reversión: SOBREVENTA (Operar Arriba)")
+            elif rsi_val > 75:
+                st.error("🔴 Reversión: SOBRECOMPRA (Operar Abajo)")
+            else:
+                st.info("⚖️ RSI en Zona Neutral")
+                
+            tendencia_txt = "ALCISTA 🟢" if u_5['close'] > u_5['ema_50'] else "BAJISTA 🔴"
+            st.metric("Tendencia EMA 50", tendencia_txt)
 
 render_trading_panel(symbol, timeframe)
