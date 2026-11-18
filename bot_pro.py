@@ -11,12 +11,12 @@ from datetime import datetime, time as dt_time
 import pytz
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL MULTI-MERCADO
+# ⚙️ CONFIGURACIÓN GLOBAL (EXCLUSIVO CRUCE DORADO)
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
-st.set_page_config(page_title="Institutional Quant Terminal - Global Multi-Asset", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Institutional Quant Terminal - Cruce Dorado Puro", layout="wide", page_icon="🟡")
 
 NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NFLX", "AMD"]
 FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X"]
@@ -25,7 +25,7 @@ COMMODITY_MARKETS = ["GC=F", "SI=F", "CL=F", "NG=F"]
 
 thread_lock = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Radar global multi-mercado en espera..."
+AUTOPILOTO_STATUS = "Radar exclusivo de Cruce Dorado (5m) en espera..."
 
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -76,15 +76,14 @@ def obtener_datos(symbol, timeframe="5m", limit=300):
     return df
 
 # ==========================================
-# 📡 MOTOR DE BARRIDO GLOBAL MULTI-MERCADO
+# 📡 MOTOR EXCLUSIVO: CRUCE DORADO MULTI-MERCADO
 # ==========================================
-def ejecutar_escaneo_global(es_hilo_fondo=False):
+def ejecutar_escaneo_cruce_dorado(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
     
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Escaneando todos los mercados simultáneamente..."
+        AUTOPILOTO_STATUS = "Escaneando Cruce Dorado en todos los mercados..."
     
-    # Obtener Top Cripto en OKX
     exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 8000})
     try:
         tickers = exchange.fetch_tickers()
@@ -93,13 +92,12 @@ def ejecutar_escaneo_global(es_hilo_fondo=False):
     except:
         top15_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
 
-    # Lista unificada absoluta de todos los mercados a la vez
     mercados_totales = top15_cripto + NASDAQ_MARKETS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
     alertas_nuevas = 0
 
     for i, symbol in enumerate(mercados_totales):
         if not es_hilo_fondo:
-            AUTOPILOTO_STATUS = f"Leyendo [{i+1}/{len(mercados_totales)}]: {symbol}..."
+            AUTOPILOTO_STATUS = f"Analizando [{i+1}/{len(mercados_totales)}]: {symbol}..."
             
         try:
             df = obtener_datos(symbol, '5m', limit=300)
@@ -110,21 +108,21 @@ def ejecutar_escaneo_global(es_hilo_fondo=False):
             precio = actual['close']
             tipo_mercado = clasificar_tipo_mercado(symbol)
             
-            # --- REGLA DE ORO: CRUCE DORADO + VOLUMEN + VWAP ---
+            # --- ÚNICA ESTRATEGIA: CRUCE DORADO (SMA 50 / SMA 200)[cite: 1, 2] ---
             cruce_dorado = (anterior['sma_rapida'] <= anterior['sma_lenta']) and (actual['sma_rapida'] > actual['sma_lenta'])
             volumen_valido = actual['volume'] > (actual['vol_ma'] * 1.5)
             precio_sobre_vwap = precio > actual['vwap']
 
             if cruce_dorado and volumen_valido and precio_sobre_vwap:
-                mensaje = (f"🟡 *RADAR GLOBAL: CRUCE DORADO (5M)*\n"
+                mensaje = (f"🟡 *ESTRATEGIA: CRUCE DORADO (5M)*\n"
                            f"🌐 Mercado: `{tipo_mercado}`\n"
                            f"🪙 Activo: `{symbol}`\n"
                            f"💲 Precio Actual: `${precio:,.4f}`\n\n"
-                           f"📊 *Estrategia:* Cruce SMA 50 sobre SMA 200 con volumen institucional y filtro VWAP.\n"
+                           f"📊 *Detalle:* SMA 50 cruzó al alza la SMA 200 con volumen institucional y soporte de VWAP[cite: 1, 2].\n"
                            f"🚀 *Aplicación:* **OPERAR ARRIBA (LONG)** 🟢\n"
                            f"💡 *Instrucción:* Ejecutar orden manual en Vantage / OKX.")
 
-                clave_alerta = f"{symbol}_GLOBAL_CRUCE"
+                clave_alerta = f"{symbol}_CRUCE_DORADO_EXCLUSIVO"
                 ahora = time.time()
                 with thread_lock:
                     if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 14400:
@@ -132,52 +130,52 @@ def ejecutar_escaneo_global(es_hilo_fondo=False):
                         ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                         alertas_nuevas += 1
 
-            time.sleep(0.02) # Barrido rápido y seguro
+            time.sleep(0.02)
         except: 
             pass
 
     with thread_lock:
         if not es_hilo_fondo:
-            AUTOPILOTO_STATUS = f"✅ Barrido global finalizado. {alertas_nuevas} alertas enviadas."
+            AUTOPILOTO_STATUS = f"✅ Escaneo de Cruce Dorado finalizado. {alertas_nuevas} alertas."
         else:
-            AUTOPILOTO_STATUS = "✅ Radar global activo vigilando todos los mercados..."
+            AUTOPILOTO_STATUS = "✅ Radar exclusivo de Cruce Dorado activo..."
     return alertas_nuevas
 
 @st.cache_resource
-def iniciar_hilo_global():
+def iniciar_hilo_cruce_dorado():
     def loop():
         while True:
-            try: ejecutar_escaneo_global(es_hilo_fondo=True)
+            try: ejecutar_escaneo_cruce_dorado(es_hilo_fondo=True)
             except: pass
-            time.sleep(300) # Ciclo automático cada 5 minutos
+            time.sleep(300)
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
 
-iniciar_hilo_global()
+iniciar_hilo_cruce_dorado()
 
 # ==========================================
-# 📊 INTERFAZ GRÁFICA GLOBAL
+# 📊 INTERFAZ GRÁFICA EXCLUSIVA
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 GLOBAL QUANT TERMINAL (MULTI-MERCADO)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Escaneo Simultáneo: Cripto + Nasdaq + Forex + Índices + Commodities</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #FFD700;'>🟡 TERMINAL CUANTITATIVA - CRUCE DORADO (5M)</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Sistema Exclusivo de Cruce Dorado Multi-Mercado (Sin Estrategias Secundarias)</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-st.sidebar.header("🌐 Selector de Activos Globales")
+st.sidebar.header("🌐 Selector de Activos")
 lista_global = ["BTC/USDT", "ETH/USDT", "SOL/USDT"] + NASDAQ_MARKETS + FOREX_MARKETS + INDEX_MARKETS + COMMODITY_MARKETS
 symbol = st.sidebar.selectbox("Seleccionar Activo para Ver Gráfico:", list(dict.fromkeys(lista_global)))
 
 st.sidebar.markdown("---")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
-if st.sidebar.button("⚡ Forzar Barrido Global Ahora"):
-    with st.spinner("Leyendo todos los mercados a la vez..."):
-        alertas = ejecutar_escaneo_global(es_hilo_fondo=False)
-        st.sidebar.success(f"Barrido completado. Alertas enviadas: {alertas}")
+if st.sidebar.button("⚡ Forzar Escaneo de Cruce Dorado"):
+    with st.spinner("Buscando Cruces Dorados en todos los mercados..."):
+        alertas = ejecutar_escaneo_cruce_dorado(es_hilo_fondo=False)
+        st.sidebar.success(f"Escaneo completado. Alertas enviadas: {alertas}")
 
-# --- GRÁFICO EN VIVO MULTI-MERCADO ---
+# --- GRÁFICO EN VIVO ---
 @st.fragment(run_every="10s")
-def render_panel_global(symbol):
+def render_panel_cruce(symbol):
     df = obtener_datos(symbol, '5m', limit=300)
     if df.empty:
         st.error(f"No hay datos disponibles para {symbol}.")
@@ -197,17 +195,15 @@ def render_panel_global(symbol):
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        st.markdown(f"### ⚙️ Estado Global")
+        st.markdown(f"### ⚙️ Estado del Cruce Dorado")
         actual = df.iloc[-1]
         st.metric("Precio Actual", f"${actual['close']:,.4f}")
         st.metric("SMA 50", f"${actual['sma_rapida']:,.4f}")
         st.metric("SMA 200", f"${actual['sma_lenta']:,.4f}")
         
-        if actual['sma_rapida'] > actual['sma_lenta'] and actual['close'] > actual['vwap']:
-            st.success("🟢 Tendencia: Alcista (Operar Arriba)")
-        elif actual['sma_rapida'] < actual['sma_lenta'] and actual['close'] < actual['vwap']:
-            st.error("🔴 Tendencia: Bajista (Operar Abajo)")
+        if actual['sma_rapida'] > actual['sma_lenta']:
+            st.success("🟢 SMA 50 sobre SMA 200 (Alcista)")
         else:
-            st.info("⚖️ Consolidación / Neutro")
+            st.error("🔴 SMA 50 bajo SMA 200 (Bajista)")
 
-render_panel_global(symbol)
+render_panel_cruce(symbol)
