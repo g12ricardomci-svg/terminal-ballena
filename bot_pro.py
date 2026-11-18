@@ -11,19 +11,13 @@ import threading
 from datetime import datetime, time as dt_time
 import pytz
 
-try:
-    import MetaTrader5 as mt5
-    MT5_DISPONIBLE = True
-except ImportError:
-    MT5_DISPONIBLE = False
-
 # ==========================================
 # ⚙️ CONFIGURACIÓN GLOBAL & VANTAGE MARKETS
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
-st.set_page_config(page_title="Institutional Quant Terminal - Multi-TF", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Institutional Quant Terminal - Alertas 3-TF", layout="wide", page_icon="🏦")
 
 NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META", "NFLX", "AMD"]
 FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "USDJPY=X", "AUDUSD=X", "USDCAD=X", "NZDUSD=X", "USDCHF=X", "EURGBP=X", "EURJPY=X", "GBPJPY=X"]
@@ -32,7 +26,7 @@ COMMODITY_MARKETS = ["GC=F", "SI=F", "CL=F", "BZ=F", "NG=F"]
 
 thread_lock = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL = {}
-AUTOPILOTO_STATUS = "Iniciando motor multi-temporalidad..."
+AUTOPILOTO_STATUS = "Iniciando radar de confluencia táctica..."
 
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -103,13 +97,13 @@ def obtener_datos(symbol, timeframe, limit=100):
     return df
 
 # ==========================================
-# 🤖 MOTOR MULTI-TEMPORALIDAD (1h + 15m + 5m)
+# 📡 MOTOR DE RADAR TÁCTICO (3 Temporalidades)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
     
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Buscando confluencia en 3 temporalidades..."
+        AUTOPILOTO_STATUS = "Escaneando confluencia multi-TF para alertas..."
     
     exchange = ccxt.okx({'enableRateLimit': True, 'timeout': 8000})
     try:
@@ -124,62 +118,56 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
 
     for i, symbol in enumerate(mercados_a_escanear):
         if not es_hilo_fondo:
-            AUTOPILOTO_STATUS = f"Analizando {symbol} (Multi-TF {i+1}/{len(mercados_a_escanear)})..."
+            AUTOPILOTO_STATUS = f"Analizando {symbol} ({i+1}/{len(mercados_a_escanear)})..."
             
         try:
             tipo = clasificar_tipo_mercado(symbol)
             if not mercado_abierto(tipo): continue
 
-            # 1. CARGAR LAS TRES TEMPORALIDADES
+            # Lectura simultánea de las 3 temporalidades
             df_1h = obtener_datos(symbol, '1h', limit=50)
             df_15m = obtener_datos(symbol, '15m', limit=50)
             df_5m = obtener_datos(symbol, '5m', limit=50)
             
             if df_1h.empty or df_15m.empty or df_5m.empty: continue
             
-            # Últimas velas de cada temporalidad
             u_1h = df_1h.iloc[-1]
             u_15m = df_15m.iloc[-1]
             u_5m = df_5m.iloc[-1]
             
             precio = u_5m['close']
             
-            # --- FILTRO DE CONFLUENCIA MULTI-TEMPORALIDAD ---
-            # Tendencia Macro (1h)
+            # Confluencia institucional
             tendencia_1h = "ALCISTA" if u_1h['close'] > u_1h['ema_50'] else "BAJISTA"
-            
-            # Estructura en 15m (Clímax o Spring/Upthrust)
             volumen_anomalo_15m = u_15m['volume'] > (u_15m['vol_ma'] * 2.0)
             cerca_soporte_15m = u_15m['low'] <= (u_15m['soporte'] * 1.015)
             cerca_resistencia_15m = u_15m['high'] >= (u_15m['resistencia'] * 0.985)
-            
-            # Gatillo en 5m (Rechazo o cruce de VWAP)
             respeta_vwap_5m = u_5m['close'] > u_5m['vwap'] if tendencia_1h == "ALCISTA" else u_5m['close'] < u_5m['vwap']
             
             señal = None
-            tipo_orden = ""
             msg = ""
             
-            # REGLA DE CONFLUENCIA COMPLETA:
-            # Si 1h es alcista, 15m hace clímax en soporte y 5m confirma sobre el VWAP -> COMPRA
             if tendencia_1h == "ALCISTA" and volumen_anomalo_15m and cerca_soporte_15m and respeta_vwap_5m:
                 señal = "MULTITF_COMPRA"
-                tipo_orden = "COMPRA"
-                msg = (f"🚀 *CONFLUENCIA 3-TF: COMPRA INSTITUCIONAL*\n"
+                msg = (f"🚀 *RADAR TÁCTICO: OPORTUNIDAD DE COMPRA* 🟢\n"
                        f"🪙 Activo: `{symbol}` ({tipo})\n"
-                       f"💲 Precio: `${precio:,.4f}`\n"
-                       f"📈 *1h:* Alcista | *15m:* Clímax Soporte | *5m:* Confirmado en VWAP.\n"
-                       f"💡 *Acción:* Zona ideal para pullback sin pagar spread excesivo.")
+                       f"💲 Precio Actual: `${precio:,.4f}`\n\n"
+                       f"📊 *Confluencia Verificada:*\n"
+                       f"• Macro 1h: Alcista\n"
+                       f"• Setup 15m: Clímax / Absorción en Soporte\n"
+                       f"• Gatillo 5m: Sostenido sobre el VWAP\n\n"
+                       f"💡 *Instrucción:* Prepárate para ejecutar tu orden en Vantage/OKX.")
 
-            # Si 1h es bajista, 15m hace clímax en resistencia y 5m confirma bajo el VWAP -> VENTA
             elif tendencia_1h == "BAJISTA" and volumen_anomalo_15m and cerca_resistencia_15m and respeta_vwap_5m:
                 señal = "MULTITF_VENTA"
-                tipo_orden = "VENTA"
-                msg = (f"🔻 *CONFLUENCIA 3-TF: VENTA INSTITUCIONAL*\n"
+                msg = (f"🔻 *RADAR TÁCTICO: OPORTUNIDAD DE VENTA* 🔴\n"
                        f"🪙 Activo: `{symbol}` ({tipo})\n"
-                       f"💲 Precio: `${precio:,.4f}`\n"
-                       f"📉 *1h:* Bajista | *15m:* Clímax Resistencia | *5m:* Confirmado bajo VWAP.\n"
-                       f"💡 *Acción:* Giro bajista validado por las 3 temporalidades.")
+                       f"💲 Precio Actual: `${precio:,.4f}`\n\n"
+                       f"📊 *Confluencia Verificada:*\n"
+                       f"• Macro 1h: Bajista\n"
+                       f"• Setup 15m: Clímax / Exhausción en Resistencia\n"
+                       f"• Gatillo 5m: Rechazado bajo el VWAP\n\n"
+                       f"💡 *Instrucción:* Prepárate para ejecutar tu orden en Vantage/OKX.")
 
             if señal and msg:
                 clave_alerta = f"{symbol}_{señal}"
@@ -196,9 +184,9 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
 
     with thread_lock:
         if not es_hilo_fondo:
-            AUTOPILOTO_STATUS = f"✅ Escaneo Multi-TF completado. {alertas_nuevas} alertas."
+            AUTOPILOTO_STATUS = f"✅ Escaneo táctico finalizado. {alertas_nuevas} alertas enviadas."
         else:
-            AUTOPILOTO_STATUS = "✅ Radar 3-TF activo. Esperando ciclo..."
+            AUTOPILOTO_STATUS = "✅ Radar activo en segundo plano vigilando..."
     return alertas_nuevas
 
 @st.cache_resource
@@ -217,11 +205,11 @@ iniciar_hilo_autopiloto()
 # ==========================================
 # 📊 INTERFAZ GRÁFICA
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL (MULTI-TF)</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Sistema de Confluencia Simultánea: 1 Hora + 15 Minutos + 5 Minutos</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL (TACTICAL ALERTS)</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Radar Multi-Temporalidad de Alta Precisión (Tú ejecutas con control total)</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-st.sidebar.header("🌐 Configuración")
+st.sidebar.header("🌐 Configuración y Radar")
 lista_grafico = ["EURUSD=X", "^IXIC", "QQQ", "BTC/USDT", "ETH/USDT", "SOL/USDT"] + NASDAQ_MARKETS
 symbol = st.sidebar.selectbox("Seleccionar Activo:", list(dict.fromkeys(lista_grafico)))
 timeframe = st.sidebar.selectbox("Temporalidad Gráfico", ["5m","15m","1h"], index=1)
@@ -229,10 +217,10 @@ timeframe = st.sidebar.selectbox("Temporalidad Gráfico", ["5m","15m","1h"], ind
 st.sidebar.markdown("---")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
-if st.sidebar.button("⚡ Forzar Ciclo Multi-TF Ahora"):
-    with st.spinner("Analizando 1h + 15m + 5m..."):
+if st.sidebar.button("⚡ Forzar Escaneo Táctico Ahora"):
+    with st.spinner("Analizando confluencias 3-TF..."):
         alertas = ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        st.sidebar.success(f"Escaneo finalizado. Alertas enviadas: {alertas}")
+        st.sidebar.success(f"Escaneo completado. Alertas enviadas: {alertas}")
 
 # --- GRÁFICO EN VIVO ---
 @st.fragment(run_every="10s")
@@ -255,19 +243,19 @@ def render_trading_panel(symbol, timeframe):
         st.plotly_chart(fig, use_container_width=True)
 
     with col2:
-        st.markdown(f"### ⚙️ Estado Multi-TF")
+        st.markdown(f"### ⚙️ Confluencia Activa")
         df_1h = obtener_datos(symbol, '1h', limit=20)
         df_15m = obtener_datos(symbol, '15m', limit=20)
         df_5m = obtener_datos(symbol, '5m', limit=20)
         
         if not df_1h.empty and not df_15m.empty and not df_5m.empty:
             t_1h = "ALCISTA 🟢" if df_1h.iloc[-1]['close'] > df_1h.iloc[-1]['ema_50'] else "BAJISTA 🔴"
-            st.metric("Tendencia 1h (Macro)", t_1h)
+            st.metric("Macro (1h)", t_1h)
             
             vol_15m = "ANÓMALO ⚠️" if df_15m.iloc[-1]['volume'] > (df_15m.iloc[-1]['vol_ma'] * 2.0) else "NORMAL 📊"
-            st.metric("Setup 15m (Volumen)", vol_15m)
+            st.metric("Setup (15m)", vol_15m)
             
             vwap_5m = "SOBRE VWAP 🟢" if df_5m.iloc[-1]['close'] > df_5m.iloc[-1]['vwap'] else "BAJO VWAP 🔴"
-            st.metric("Gatillo 5m (VWAP)", vwap_5m)
+            st.metric("Gatillo (5m)", vwap_5m)
 
 render_trading_panel(symbol, timeframe)
