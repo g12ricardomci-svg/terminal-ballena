@@ -24,17 +24,17 @@ NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META"]
 DOLLAR_MARKETS = ["DX-Y.NYB", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDMXN=X", "USDBRL=X"]
 ALL_SYMBOLS = NASDAQ_MARKETS + DOLLAR_MARKETS
 
-# 🔥 VARIABLES GLOBALES
 ALERTAS_ENVIADAS_GLOBAL = {}
 AUTOPILOTO_STATUS = "Iniciando motor de escaneo..."
 
 # ==========================================
-# 🧠 FUNCIONES MATEMÁTICAS AVANZADAS
+# 🧠 FUNCIONES MATEMÁTICAS
 # ==========================================
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
-    try: requests.post(url, json=payload)
+    try: 
+        requests.post(url, json=payload, timeout=5)
     except: pass
 
 def calcular_vwap(df):
@@ -105,7 +105,7 @@ def obtener_datos(symbol, timeframe, limit=100):
     return df
 
 # ==========================================
-# 🤖 LÓGICA DEL AUTOPILOTO
+# 🤖 LÓGICA DEL AUTOPILOTO (Corregida)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
@@ -115,15 +115,12 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     exchange = ccxt.okx()
     try:
         tickers = exchange.fetch_tickers()
-        # Filtrar stablecoins y buscar top 50
         mercados_usdt = []
         for sym, data in tickers.items():
             if sym.endswith('/USDT') and data.get('quoteVolume'):
                 precio = data.get('last', 1)
-                # Ignorar stablecoins (precio entre 0.99 y 1.01)
-                if not (0.99 <= precio <= 1.01):
+                if not (0.99 <= precio <= 1.01): # Ignorar stablecoins
                     mercados_usdt.append((sym, data['quoteVolume']))
-                    
         top50_cripto = [sym for sym, vol in sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]]
     except:
         top50_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
@@ -143,13 +140,27 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             if df_5m.empty or df_1h.empty: continue
             
             ultima = df_5m.iloc[-1]
-            anterior = df_5m.iloc[-2]
             precio = ultima['close']
             macro = "ALCISTA" if df_1h['close'].iloc[-1] > df_1h['close'].ewm(span=50).mean().iloc[-1] else "BAJISTA"
             
             señal = None
             msg = ""
             
+            # --- DETECCIÓN DE CRUCES CON MARGEN DE ERROR (Últimas 3 velas) ---
+            # Buscamos si hubo un cruce en las últimas 3 velas (15 minutos en 5m)
+            cruce_alcista_reciente = False
+            cruce_bajista_reciente = False
+            
+            for j in range(1, 4):
+                # Verificar cruce alcista en la vela j
+                if (df_5m['ema_fast'].iloc[-j] > df_5m['ema_slow'].iloc[-j]) and (df_5m['ema_fast'].iloc[-j-1] <= df_5m['ema_slow'].iloc[-j-1]):
+                    cruce_alcista_reciente = True
+                    break
+                # Verificar cruce bajista en la vela j
+                if (df_5m['ema_fast'].iloc[-j] < df_5m['ema_slow'].iloc[-j]) and (df_5m['ema_fast'].iloc[-j-1] >= df_5m['ema_slow'].iloc[-j-1]):
+                    cruce_bajista_reciente = True
+                    break
+
             # WYCKOFF
             if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']) and macro == "ALCISTA":
                 señal = "SPRING"
@@ -158,20 +169,17 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                 señal = "UPTHRUST"
                 msg = f"🔻 *AUTOPILOTO WYCKOFF: VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴"
             
-            # CRUCES DE MEDIAS
-            cruce_alcista = (ultima['ema_fast'] > ultima['ema_slow']) and (anterior['ema_fast'] <= anterior['ema_slow'])
-            cruce_bajista = (ultima['ema_fast'] < ultima['ema_slow']) and (anterior['ema_fast'] >= anterior['ema_slow'])
-            
-            if cruce_alcista and ultima['adx'] > 25:
+            # CRUCES DE MEDIAS (Usando el margen de 3 velas)
+            elif cruce_alcista_reciente and ultima['adx'] > 25:
                 señal = "GOLDEN_CROSS"
                 sl = df_5m['low'].tail(5).min() * 0.998
                 tp = precio + ((precio - sl) * 2)
-                msg = f"🌟 *CRUCE DORADO ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢\n📈 *ADX:* {ultima['adx']:.1f} (>25)\n🛑 *SL:* ${sl:,.2f}\n💰 *TP:* ${tp:,.2f}"
-            elif cruce_bajista and ultima['adx'] > 25:
+                msg = f"🌟 *CRUCE DORADO RECIENTE ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢\n📈 *ADX:* {ultima['adx']:.1f} (>25)\n🛑 *SL:* ${sl:,.2f}\n💰 *TP:* ${tp:,.2f}"
+            elif cruce_bajista_reciente and ultima['adx'] > 25:
                 señal = "DEATH_CROSS"
                 sl = df_5m['high'].tail(5).max() * 1.002
                 tp = precio - ((sl - precio) * 2)
-                msg = f"💀 *CRUCE DE LA MUERTE ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴\n📉 *ADX:* {ultima['adx']:.1f} (>25)\n🛑 *SL:* ${sl:,.2f}\n💰 *TP:* ${tp:,.2f}"
+                msg = f"💀 *CRUCE DE LA MUERTE RECIENTE ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴\n📉 *ADX:* {ultima['adx']:.1f} (>25)\n🛑 *SL:* ${sl:,.2f}\n💰 *TP:* ${tp:,.2f}"
             
             # VOLUMEN CLÍMAX
             elif tipo != "FOREX" and ultima['volume'] > (ultima['vol_ma'] * 2.5):
@@ -183,10 +191,11 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                 clave_alerta = f"{symbol}_{señal}"
                 ahora = time.time()
                 ultimo_envio = ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0)
-                if ahora - ultimo_envio > 1800: # 30 min
+                if ahora - ultimo_envio > 1800: # 30 min anti-spam
                     enviar_telegram(msg)
                     ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                     alertas_nuevas += 1
+                    time.sleep(1) # Pausa para no saturar Telegram
 
             time.sleep(0.3)
         except: pass
@@ -209,7 +218,7 @@ def iniciar_hilo_autopiloto():
 iniciar_hilo_autopiloto()
 
 # ==========================================
-# 🦅 ESCÁNER TOP 50 (Manual)
+# 🦅 ESCÁNER TOP 50 (Manual - Corregido)
 # ==========================================
 def ejecutar_escaner_top50(tf):
     exchange = ccxt.okx()
@@ -249,19 +258,24 @@ def ejecutar_escaner_top50(tf):
             if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
                 señal = "🟢 SPRING"
                 enviar_telegram(f"🦅 *SPRING (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢")
+                time.sleep(1)
             elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
                 señal = "🔴 UPTHRUST"
                 enviar_telegram(f"🦅 *UPTHRUST (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴")
+                time.sleep(1)
             elif (ultima['ema_fast'] > ultima['ema_slow']) and (anterior['ema_fast'] <= anterior['ema_slow']) and ultima['adx'] > 25:
                 señal = "🌟 GOLDEN CROSS"
                 enviar_telegram(f"🦅 *CRUCE DORADO (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢\nADX: {ultima['adx']:.1f}")
+                time.sleep(1)
             elif (ultima['ema_fast'] < ultima['ema_slow']) and (anterior['ema_fast'] >= anterior['ema_slow']) and ultima['adx'] > 25:
                 señal = "💀 DEATH CROSS"
                 enviar_telegram(f"🦅 *CRUCE DE LA MUERTE (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴\nADX: {ultima['adx']:.1f}")
+                time.sleep(1)
             elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
                 señal = "⚠️ VOL CLÍMAX"
                 direccion = "COMPRA (Largo) 🟢" if ultima['close'] > ultima['open'] else "VENTA (Corto) 🔴"
                 enviar_telegram(f"🦅 *CLÍMAX (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* {direccion}")
+                time.sleep(1)
                 
             resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio})
             time.sleep(0.05)
