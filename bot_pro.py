@@ -24,7 +24,7 @@ NASDAQ_MARKETS = ["NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META"]
 DOLLAR_MARKETS = ["DX-Y.NYB", "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDMXN=X", "USDBRL=X"]
 ALL_SYMBOLS = NASDAQ_MARKETS + DOLLAR_MARKETS
 
-# 🔥 VARIABLES GLOBALES (Para el hilo de fondo)
+# 🔥 VARIABLES GLOBALES
 ALERTAS_ENVIADAS_GLOBAL = {}
 AUTOPILOTO_STATUS = "Iniciando motor de escaneo..."
 
@@ -42,17 +42,11 @@ def calcular_vwap(df):
     return (df['volume'] * (df['high'] + df['low'] + df['close']) / 3).cumsum() / df['volume'].cumsum()
 
 def calcular_adx(df, period=14):
-    """Calcula el ADX para filtrar mercados laterales (Filtro Weinstein/Chu)"""
     df['up_move'] = df['high'] - df['high'].shift()
     df['down_move'] = df['low'].shift() - df['low']
-    
     df['plus_dm'] = np.where((df['up_move'] > df['down_move']) & (df['up_move'] > 0), df['up_move'], 0.0)
     df['minus_dm'] = np.where((df['down_move'] > df['up_move']) & (df['down_move'] > 0), df['down_move'], 0.0)
-    
-    df['tr'] = np.maximum(df['high'] - df['low'], 
-                 np.maximum(abs(df['high'] - df['close'].shift()), 
-                            abs(df['low'] - df['close'].shift())))
-    
+    df['tr'] = np.maximum(df['high'] - df['low'], np.maximum(abs(df['high'] - df['close'].shift()), abs(df['low'] - df['close'].shift())))
     df['atr'] = df['tr'].ewm(span=period, adjust=False).mean()
     df['plus_di'] = 100 * (df['plus_dm'].ewm(span=period, adjust=False).mean() / df['atr'])
     df['minus_di'] = 100 * (df['minus_dm'].ewm(span=period, adjust=False).mean() / df['atr'])
@@ -101,20 +95,17 @@ def obtener_datos(symbol, timeframe, limit=100):
         except: return pd.DataFrame()
 
     if not df.empty:
-        # Indicadores existentes
         df['vwap'] = calcular_vwap(df)
         df['soporte'] = df['low'].rolling(window=20).min()
         df['resistencia'] = df['high'].rolling(window=20).max()
         df['vol_ma'] = df['volume'].rolling(window=20).mean()
-        
-        # NUEVOS INDICADORES (Estrategia Hyenuk Chu)
-        df['ema_fast'] = df['close'].ewm(span=9, adjust=False).mean()  # Media Rápida
-        df['ema_slow'] = df['close'].ewm(span=21, adjust=False).mean() # Media Lenta
-        df['adx'] = calcular_adx(df) # Filtro de tendencia
+        df['ema_fast'] = df['close'].ewm(span=9, adjust=False).mean()
+        df['ema_slow'] = df['close'].ewm(span=21, adjust=False).mean()
+        df['adx'] = calcular_adx(df)
     return df
 
 # ==========================================
-# 🤖 LÓGICA DEL AUTOPILOTO (Multi-Estrategia)
+# 🤖 LÓGICA DEL AUTOPILOTO
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
@@ -124,7 +115,15 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     exchange = ccxt.okx()
     try:
         tickers = exchange.fetch_tickers()
-        mercados_usdt = [(sym, data['quoteVolume']) for sym, data in tickers.items() if sym.endswith('/USDT') and data.get('quoteVolume')]
+        # Filtrar stablecoins y buscar top 50
+        mercados_usdt = []
+        for sym, data in tickers.items():
+            if sym.endswith('/USDT') and data.get('quoteVolume'):
+                precio = data.get('last', 1)
+                # Ignorar stablecoins (precio entre 0.99 y 1.01)
+                if not (0.99 <= precio <= 1.01):
+                    mercados_usdt.append((sym, data['quoteVolume']))
+                    
         top50_cripto = [sym for sym, vol in sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]]
     except:
         top50_cripto = ["BTC/USDT", "ETH/USDT", "SOL/USDT"]
@@ -151,44 +150,40 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             señal = None
             msg = ""
             
-            # --- ESTRATEGIA 1: WYCKOFF (Spring / Upthrust) ---
+            # WYCKOFF
             if (ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']) and macro == "ALCISTA":
                 señal = "SPRING"
-                msg = f"🚀 *AUTOPILOTO WYCKOFF: COMPRA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
+                msg = f"🚀 *AUTOPILOTO WYCKOFF: COMPRA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢"
             elif (ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']) and macro == "BAJISTA":
                 señal = "UPTHRUST"
-                msg = f"🔻 *AUTOPILOTO WYCKOFF: VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}"
+                msg = f"🔻 *AUTOPILOTO WYCKOFF: VENTA ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴"
             
-            # --- ESTRATEGIA 2: CRUCE DE MEDIAS + ADX > 25 (Hyenuk Chu / Weinstein) ---
+            # CRUCES DE MEDIAS
             cruce_alcista = (ultima['ema_fast'] > ultima['ema_slow']) and (anterior['ema_fast'] <= anterior['ema_slow'])
             cruce_bajista = (ultima['ema_fast'] < ultima['ema_slow']) and (anterior['ema_fast'] >= anterior['ema_slow'])
             
             if cruce_alcista and ultima['adx'] > 25:
                 señal = "GOLDEN_CROSS"
-                # Stop Loss por debajo del mínimo de las últimas 5 velas
                 sl = df_5m['low'].tail(5).min() * 0.998
-                tp = precio + ((precio - sl) * 2) # Ratio 1:2
-                msg = f"🌟 *CRUCE DORADO (Tendencia) ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *ADX:* {ultima['adx']:.1f} (>25)\n🛑 *SL Sugerido:* ${sl:,.2f}\n💰 *TP Sugerido:* ${tp:,.2f}"
-            
+                tp = precio + ((precio - sl) * 2)
+                msg = f"🌟 *CRUCE DORADO ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢\n📈 *ADX:* {ultima['adx']:.1f} (>25)\n🛑 *SL:* ${sl:,.2f}\n💰 *TP:* ${tp:,.2f}"
             elif cruce_bajista and ultima['adx'] > 25:
                 señal = "DEATH_CROSS"
                 sl = df_5m['high'].tail(5).max() * 1.002
                 tp = precio - ((sl - precio) * 2)
-                msg = f"💀 *CRUCE DE LA MUERTE (Tendencia) ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *ADX:* {ultima['adx']:.1f} (>25)\n🛑 *SL Sugerido:* ${sl:,.2f}\n💰 *TP Sugerido:* ${tp:,.2f}"
-
-            # --- ESTRATEGIA 3: VOLUMEN CLÍMAX ---
+                msg = f"💀 *CRUCE DE LA MUERTE ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴\n📉 *ADX:* {ultima['adx']:.1f} (>25)\n🛑 *SL:* ${sl:,.2f}\n💰 *TP:* ${tp:,.2f}"
+            
+            # VOLUMEN CLÍMAX
             elif tipo != "FOREX" and ultima['volume'] > (ultima['vol_ma'] * 2.5):
                 señal = "CLIMAX"
-                direccion = "COMPRA (Alcista) 🟢" if ultima['close'] > ultima['open'] else "VENTA (Bajista) 🔴"
+                direccion = "COMPRA (Largo) 🟢" if ultima['close'] > ultima['open'] else "VENTA (Corto) 🔴"
                 msg = f"⚠️ *AUTOPILOTO CLÍMAX ({tipo})*\n🪙 {symbol} | ${precio:,.2f}\n📊 *Dirección:* {direccion}"
 
-            # Filtro anti-spam (30 min)
             if señal and msg:
                 clave_alerta = f"{symbol}_{señal}"
                 ahora = time.time()
                 ultimo_envio = ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0)
-                
-                if ahora - ultimo_envio > 1800:
+                if ahora - ultimo_envio > 1800: # 30 min
                     enviar_telegram(msg)
                     ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                     alertas_nuevas += 1
@@ -214,7 +209,7 @@ def iniciar_hilo_autopiloto():
 iniciar_hilo_autopiloto()
 
 # ==========================================
-# 🦅 ESCÁNER TOP 50 (Manual - Integrando Medias)
+# 🦅 ESCÁNER TOP 50 (Manual)
 # ==========================================
 def ejecutar_escaner_top50(tf):
     exchange = ccxt.okx()
@@ -224,7 +219,9 @@ def ejecutar_escaner_top50(tf):
     mercados_usdt = []
     for sym, data in tickers.items():
         if sym.endswith('/USDT') and data.get('quoteVolume') is not None:
-            mercados_usdt.append((sym, data['quoteVolume'], data.get('percentage', 0)))
+            precio = data.get('last', 1)
+            if not (0.99 <= precio <= 1.01): # Ignorar stablecoins
+                mercados_usdt.append((sym, data['quoteVolume'], data.get('percentage', 0)))
             
     top50 = sorted(mercados_usdt, key=lambda x: x[1], reverse=True)[:50]
     resultados = []
@@ -239,8 +236,6 @@ def ejecutar_escaner_top50(tf):
             df['soporte'] = df['low'].rolling(window=20).min()
             df['resistencia'] = df['high'].rolling(window=20).max()
             df['vol_ma'] = df['volume'].rolling(window=20).mean()
-            
-            # Nuevos indicadores
             df['ema_fast'] = df['close'].ewm(span=9, adjust=False).mean()
             df['ema_slow'] = df['close'].ewm(span=21, adjust=False).mean()
             df['adx'] = calcular_adx(df)
@@ -253,16 +248,19 @@ def ejecutar_escaner_top50(tf):
             
             if ultima['low'] < ultima['soporte'] and ultima['close'] > ultima['soporte']:
                 señal = "🟢 SPRING"
-                enviar_telegram(f"🦅 *SPRING (Manual)*\n🪙 {sym} | ${precio:,.2f}")
+                enviar_telegram(f"🦅 *SPRING (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢")
             elif ultima['high'] > ultima['resistencia'] and ultima['close'] < ultima['resistencia']:
                 señal = "🔴 UPTHRUST"
-                enviar_telegram(f"🦅 *UPTHRUST (Manual)*\n🪙 {sym} | ${precio:,.2f}")
+                enviar_telegram(f"🦅 *UPTHRUST (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴")
             elif (ultima['ema_fast'] > ultima['ema_slow']) and (anterior['ema_fast'] <= anterior['ema_slow']) and ultima['adx'] > 25:
                 señal = "🌟 GOLDEN CROSS"
-                enviar_telegram(f"🦅 *CRUCE DORADO (Manual)*\n🪙 {sym} | ${precio:,.2f}\nADX: {ultima['adx']:.1f}")
+                enviar_telegram(f"🦅 *CRUCE DORADO (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* COMPRA (Largo) 🟢\nADX: {ultima['adx']:.1f}")
+            elif (ultima['ema_fast'] < ultima['ema_slow']) and (anterior['ema_fast'] >= anterior['ema_slow']) and ultima['adx'] > 25:
+                señal = "💀 DEATH CROSS"
+                enviar_telegram(f"🦅 *CRUCE DE LA MUERTE (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* VENTA (Corto) 🔴\nADX: {ultima['adx']:.1f}")
             elif ultima['volume'] > (ultima['vol_ma'] * 2.5):
                 señal = "⚠️ VOL CLÍMAX"
-                direccion = "COMPRA 🟢" if ultima['close'] > ultima['open'] else "VENTA 🔴"
+                direccion = "COMPRA (Largo) 🟢" if ultima['close'] > ultima['open'] else "VENTA (Corto) 🔴"
                 enviar_telegram(f"🦅 *CLÍMAX (Manual)*\n🪙 {sym} | ${precio:,.2f}\n📊 *Dirección:* {direccion}")
                 
             resultados.append({"Par": sym, "Precio": precio, "Sesgo": sesgo, "Señal": señal, "Cambio 24h %": cambio})
@@ -281,7 +279,7 @@ def ejecutar_escaner_top50(tf):
 # 📊 INTERFAZ GRÁFICA
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Multi-Asset + Wyckoff + Medias Móviles (Hyenuk Chu)</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Multi-Asset + Wyckoff + Medias Móviles</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
@@ -294,12 +292,10 @@ st.sidebar.subheader("📡 Estado del Autopiloto")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
 if st.sidebar.button("⚡ Forzar Escaneo Autopiloto Ahora"):
-    with st.spinner("Ejecutando lógica del Autopiloto..."):
+    with st.spinner("Ejecutando lógica..."):
         alertas = ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        if alertas > 0:
-            st.sidebar.success(f"¡Se enviaron {alertas} alertas a Telegram!")
-        else:
-            st.sidebar.warning("Escaneo completado. No se encontraron nuevas señales.")
+        if alertas > 0: st.sidebar.success(f"¡Se enviaron {alertas} alertas!")
+        else: st.sidebar.warning("Escaneo completado. Sin señales nuevas.")
 
 st.sidebar.markdown("---")
 st.sidebar.header("🦅 Escáner Global (Top 50 Cripto)")
@@ -308,11 +304,10 @@ if st.sidebar.button("🔍 Escanear Top 50 Mercados (Manual)"):
         st.session_state['scan_results'] = ejecutar_escaner_top50(timeframe)
 
 if 'scan_results' in st.session_state and not st.session_state['scan_results'].empty:
-    st.success("✅ Resultados del Escáner Top 50 (Se enviaron alertas a Telegram):")
+    st.success("✅ Resultados del Escáner Top 50:")
     st.dataframe(st.session_state['scan_results'], use_container_width=True)
     st.markdown("---")
 
-# --- GRÁFICO EN VIVO ---
 @st.fragment(run_every="10s")
 def render_trading_panel(symbol, timeframe):
     df = obtener_datos(symbol, timeframe, limit=150)
@@ -325,14 +320,10 @@ def render_trading_panel(symbol, timeframe):
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2,0.8])
         fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], increasing_line_color='#00FFAA', decreasing_line_color='#FF3333'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['vwap'], line=dict(color='#FF00FF', width=2), name='VWAP'), row=1, col=1)
-        
-        # NUEVAS LÍNEAS: Medias Móviles
-        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_fast'], line=dict(color='#FFFF00', width=1.5), name='EMA 9 (Rápida)'), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_slow'], line=dict(color='#00BFFF', width=1.5), name='EMA 21 (Lenta)'), row=1, col=1)
-        
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_fast'], line=dict(color='#FFFF00', width=1.5), name='EMA 9'), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df['timestamp'], y=df['ema_slow'], line=dict(color='#00BFFF', width=1.5), name='EMA 21'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['soporte'], line=dict(color='#00FF00', width=1, dash='dot'), name='Soporte'), row=1, col=1)
         fig.add_trace(go.Scatter(x=df['timestamp'], y=df['resistencia'], line=dict(color='#FF0000', width=1, dash='dot'), name='Resistencia'), row=1, col=1)
-        
         colors = ['#00FFAA' if r['close']>=r['open'] else '#FF3333' for _,r in df.iterrows()]
         fig.add_trace(go.Bar(x=df['timestamp'], y=df['volume'], marker_color=colors, name='Volumen'), row=2, col=1)
         fig.update_layout(template='plotly_dark', xaxis_rangeslider_visible=False, height=600, margin=dict(l=10,r=10,t=10,b=10), showlegend=True)
@@ -349,11 +340,9 @@ def render_trading_panel(symbol, timeframe):
         else: st.success("🟢 SESGO: ALCISTA")
             
         st.markdown("---")
-        st.markdown("### 📊 Filtro ADX (Tendencia)")
-        if ultima['adx'] > 25:
-            st.success(f"ADX: {ultima['adx']:.1f} (Tendencia Fuerte)")
-        else:
-            st.warning(f"ADX: {ultima['adx']:.1f} (Mercado Lateral - No Operar Cruces)")
+        st.markdown("### 📊 Filtro ADX")
+        if ultima['adx'] > 25: st.success(f"ADX: {ultima['adx']:.1f} (Tendencia)")
+        else: st.warning(f"ADX: {ultima['adx']:.1f} (Lateral - No operar cruces)")
             
         st.markdown("---")
         st.markdown("### 🎯 Estrategias")
