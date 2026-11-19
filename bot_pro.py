@@ -18,7 +18,7 @@ TELEGRAM_CHAT_ID = "1496321437"
 
 st.set_page_config(page_title="Institutional Quant Terminal - Unified Engine", layout="wide", page_icon="🏦")
 
-# ÚNICOS ACTIVOS PERMITIDOS (incluye los 10 pares principales de Forex + Oro)
+# ÚNICOS ACTIVOS PERMITIDOS
 CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
 FOREX_MARKETS = [
     "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
@@ -33,6 +33,64 @@ NASDAQ_MARKETS = [
 ]
 
 ALL_TRACKED_SYMBOLS = list(dict.fromkeys(CRYPTO_MARKETS + FOREX_MARKETS + NASDAQ_MARKETS))
+
+# PARÁMETROS INDIVIDUALES POR CADA ACTIVO (adx_min, sl_atr_mult, rr_mult)
+PARAMETROS_ACTIVOS = {
+    # --- CRIPTO ---
+    "BTC/USDT": {"adx_min": 38.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "ETH/USDT": {"adx_min": 38.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "BNB/USDT": {"adx_min": 38.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+
+    # --- FOREX & ORO ---
+    "EURUSD=X": {"adx_min": 35.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "GBPUSD=X": {"adx_min": 36.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "USDJPY=X": {"adx_min": 36.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "USDCHF=X": {"adx_min": 34.0, "sl_atr_mult": 0.7, "rr_mult": 2.0},
+    "AUDUSD=X": {"adx_min": 35.0, "sl_atr_mult": 0.8, "rr_mult": 2.2},
+    "USDCAD=X": {"adx_min": 35.0, "sl_atr_mult": 0.8, "rr_mult": 2.2},
+    "NZDUSD=X": {"adx_min": 35.0, "sl_atr_mult": 0.8, "rr_mult": 2.2},
+    "EURJPY=X": {"adx_min": 38.0, "sl_atr_mult": 1.0, "rr_mult": 2.5},
+    "GBPJPY=X": {"adx_min": 40.0, "sl_atr_mult": 1.1, "rr_mult": 2.5},
+    "EURGBP=X": {"adx_min": 33.0, "sl_atr_mult": 0.7, "rr_mult": 2.0},
+    "XAUUSD=X": {"adx_min": 40.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "XAUUSD":   {"adx_min": 40.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+
+    # --- NASDAQ ---
+    "NVDA":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "AAPL":  {"adx_min": 48.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "MSFT":  {"adx_min": 48.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "TSLA":  {"adx_min": 52.0, "sl_atr_mult": 1.0, "rr_mult": 2.5},
+    "AMZN":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "GOOGL": {"adx_min": 48.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "META":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "NFLX":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "AMD":   {"adx_min": 52.0, "sl_atr_mult": 1.0, "rr_mult": 2.5},
+    "AVGO":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "COST":  {"adx_min": 48.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "PEP":   {"adx_min": 45.0, "sl_atr_mult": 0.7, "rr_mult": 2.5},
+    "ADBE":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "QCOM":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "INTC":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "CSCO":  {"adx_min": 46.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "TMUS":  {"adx_min": 46.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "CMCSA": {"adx_min": 46.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "TXN":   {"adx_min": 48.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "HON":   {"adx_min": 46.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "AMGN":  {"adx_min": 46.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "SBUX":  {"adx_min": 48.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+    "INTU":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "AMAT":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "BKNG":  {"adx_min": 48.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "ISRG":  {"adx_min": 48.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "MDLZ":  {"adx_min": 45.0, "sl_atr_mult": 0.7, "rr_mult": 2.5},
+    "PYPL":  {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5},
+    "ADI":   {"adx_min": 48.0, "sl_atr_mult": 0.8, "rr_mult": 2.5},
+}
+
+DEFAULT_PARAMS = {"adx_min": 50.0, "sl_atr_mult": 0.9, "rr_mult": 2.5}
+
+def obtener_parametros_activo(symbol):
+    return PARAMETROS_ACTIVOS.get(symbol, DEFAULT_PARAMS)
 
 def _crear_exchange(ex_id):
     try:
@@ -65,16 +123,6 @@ def _normalizar_timestamp(serie):
     if getattr(ts.dt, "tz", None) is not None:
         ts = ts.dt.tz_convert(None)
     return ts
-
-def obtener_umbral_adx(symbol):
-    """Mantiene Nasdaq en > 50 y adapta el umbral de fuerza a la dinámica de Oro, Cripto y Forex."""
-    if symbol in ("XAUUSD", "XAUUSD=X"):
-        return 40.0
-    if symbol in CRYPTO_MARKETS:
-        return 38.0
-    if symbol in FOREX_MARKETS:
-        return 35.0
-    return 50.0
 
 def calcular_vwap(df):
     if df.empty or "volume" not in df.columns or df["volume"].sum() == 0:
@@ -142,11 +190,16 @@ def detectar_fvg_3_velas(df):
 
 def evaluar_estrategia_unificada(df, symbol=""):
     """
-    Motor integrado donde ADX (adaptativo por mercado), VWAP/EMAs, CVD/Desbalance,
-    Order Block/FVG/Descuento y Filtro de Exhaustación (Larry Williams) actúan en conjunto.
+    Motor integrado usando parámetros individuales por activo (adx_min, sl_atr_mult, rr_mult),
+    VWAP/EMAs, CVD/Desbalance, Order Block/FVG/Descuento y Filtro de Exhaustación (Larry Williams).
     """
     if df.empty or len(df) < 25:
         return None
+
+    params = obtener_parametros_activo(symbol)
+    adx_min = float(params["adx_min"])
+    sl_atr_mult = float(params["sl_atr_mult"])
+    rr_mult = float(params["rr_mult"])
 
     ultima = df.iloc[-1]
     anterior = df.iloc[-2]
@@ -156,7 +209,6 @@ def evaluar_estrategia_unificada(df, symbol=""):
     ema_fast = float(ultima.get("ema_fast", precio))
     ema_slow = float(ultima.get("ema_slow", precio))
 
-    adx_min = obtener_umbral_adx(symbol)
     if adx_val <= adx_min:
         return None
 
@@ -178,7 +230,6 @@ def evaluar_estrategia_unificada(df, symbol=""):
 
     swing_low_ref = float(df["low"].iloc[-7:-1].min()) if len(df) >= 8 else float(ultima["low"])
     swing_high_ref = float(df["high"].iloc[-7:-1].max()) if len(df) >= 8 else float(ultima["high"])
-    rr_mult = 2.5
 
     rango_max = float(df["high"].iloc[-20:].max())
     rango_min = float(df["low"].iloc[-20:].min())
@@ -219,19 +270,19 @@ def evaluar_estrategia_unificada(df, symbol=""):
     if confluencias_long >= 2 and precio >= vwap_val:
         base_low = min(swing_low_ref, float(ultima["low"]))
         sl_sugerido = float(base_low - atr_ref * 0.6)
-        riesgo = max(abs(precio - sl_sugerido), atr_ref * 0.9)
+        riesgo = max(abs(precio - sl_sugerido), atr_ref * sl_atr_mult)
         sl_sugerido = float(precio - riesgo)
         tp_sugerido = float(precio + riesgo * rr_mult)
         return {
             "id_senal": "CONFLUENCIA_LONG",
-            "estrategia": f"Confluencia Conjunta ({confluencias_long}/3) • ADX>{adx_min:.0f} + Flujo + OB/FVG",
+            "estrategia": f"Confluencia Conjunta ({confluencias_long}/3) • ADX>{adx_min:.0f} | SL {sl_atr_mult:.1f}x ATR | R:R {rr_mult:.1f}",
             "direccion": "COMPRA (LONG) 🟢",
             "sl": sl_sugerido,
             "tp": tp_sugerido,
             "plan": (
                 f"1) Confluencias activas: {', '.join(motivos_long)} (ADX {adx_val:.1f} > {adx_min:.0f}).\n"
                 f"2) Valida retroceso hacia VWAP (${vwap_val:,.4f}), OB o FVG cercano sin perseguir picos.\n"
-                f"3) Stop Loss con colchón ATR/estructura en ${sl_sugerido:,.4f} (riesgo 0.5% - 1% max).\n"
+                f"3) Stop Loss ({sl_atr_mult:.1f}x ATR / estructura) en ${sl_sugerido:,.4f} (riesgo 0.5% - 1% max).\n"
                 f"4) Take Profit objetivo (1:{rr_mult:.1f}) en ${tp_sugerido:,.4f}; no promedies en contra."
             )
         }
@@ -251,19 +302,19 @@ def evaluar_estrategia_unificada(df, symbol=""):
     if confluencias_short >= 2 and precio <= vwap_val:
         base_high = max(swing_high_ref, float(ultima["high"]))
         sl_sugerido = float(base_high + atr_ref * 0.6)
-        riesgo = max(abs(sl_sugerido - precio), atr_ref * 0.9)
+        riesgo = max(abs(sl_sugerido - precio), atr_ref * sl_atr_mult)
         sl_sugerido = float(precio + riesgo)
         tp_sugerido = float(precio - riesgo * rr_mult)
         return {
             "id_senal": "CONFLUENCIA_SHORT",
-            "estrategia": f"Confluencia Conjunta ({confluencias_short}/3) • ADX>{adx_min:.0f} + Flujo + OB/FVG",
+            "estrategia": f"Confluencia Conjunta ({confluencias_short}/3) • ADX>{adx_min:.0f} | SL {sl_atr_mult:.1f}x ATR | R:R {rr_mult:.1f}",
             "direccion": "VENTA (SHORT) 🔴",
             "sl": sl_sugerido,
             "tp": tp_sugerido,
             "plan": (
                 f"1) Confluencias activas: {', '.join(motivos_short)} (ADX {adx_val:.1f} > {adx_min:.0f}).\n"
                 f"2) Valida retroceso hacia VWAP (${vwap_val:,.4f}), OB o FVG cercano sin perseguir picos.\n"
-                f"3) Stop Loss con colchón ATR/estructura en ${sl_sugerido:,.4f} (riesgo 0.5% - 1% max).\n"
+                f"3) Stop Loss ({sl_atr_mult:.1f}x ATR / estructura) en ${sl_sugerido:,.4f} (riesgo 0.5% - 1% max).\n"
                 f"4) Take Profit objetivo (1:{rr_mult:.1f}) en ${tp_sugerido:,.4f}; no promedies en contra."
             )
         }
@@ -451,12 +502,15 @@ iniciar_hilo_autopiloto()
 # 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — UNIFIED ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Escaneo Estable • ADX Adaptativo + VWAP/EMAs + CVD/Desbalance + OB/FVG/Descuento + Freno Exhaustación</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Parámetros Individuales por Activo • ADX + VWAP/EMAs + CVD/Desbalance + OB/FVG/Descuento + Freno Exhaustación</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
 symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_TRACKED_SYMBOLS)
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m", "15m", "1h"])
+
+p_sel = obtener_parametros_activo(symbol)
+st.sidebar.caption(f"Parámetros {symbol}: ADX >{p_sel['adx_min']:.0f} | SL {p_sel['sl_atr_mult']:.1f}x ATR | R:R {p_sel['rr_mult']:.1f}")
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📡 Estado del Motor")
@@ -472,7 +526,7 @@ with st.sidebar.expander("🔍 Diagnóstico Cripto / Oro"):
         df_d = obtener_datos(sym_diag, timeframe, limit=85, ttl_segundos=60)
         real_txt = "REAL ✅" if df_d.attrs.get("es_real", False) else "SIN DATO REAL ❌"
         adx_d = float(df_d["adx"].iloc[-1]) if not df_d.empty and "adx" in df_d.columns else 0.0
-        umbral_d = obtener_umbral_adx(sym_diag)
+        umbral_d = obtener_parametros_activo(sym_diag)["adx_min"]
         st.caption(f"{sym_diag}: {real_txt} | ADX: {adx_d:.1f} (min >{umbral_d:.0f})")
 
 @st.fragment(run_every="10s")
@@ -515,7 +569,7 @@ def render_trading_panel(symbol, timeframe):
             st.success("🟢 SESGO VS VWAP: ALCISTA")
 
         adx_val = float(ultima.get("adx", 25.0))
-        adx_min = obtener_umbral_adx(symbol)
+        adx_min = obtener_parametros_activo(symbol)["adx_min"]
         if adx_val > adx_min:
             st.success(f"🔥 ADX: {adx_val:.1f} (>{adx_min:.0f} Fuerza Extrema)")
         elif adx_val > 25:
