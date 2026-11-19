@@ -46,7 +46,7 @@ CACHE_LOCK = threading.Lock()
 AUTOPILOTO_STATUS = "Motor unificado activo: Escaneando cada 5s..."
 
 # ==========================================
-# 🧠 FUNCIONES MATEMÁTICAS Y DE ESTRUCTURA
+# 🧠 FUNCIONES MATEMÁTICAS, FLUJO Y ESTRUCTURA
 # ==========================================
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
@@ -107,7 +107,31 @@ def detectar_exhaustacion(df):
     atr_aprox = rangos_previos.mean()
     return (rango_actual > max_previo * 1.15) and (mov_previo > atr_aprox * 3.0)
 
+def detectar_fvg_3_velas(df):
+    """Detecta Fair Value Gap / Imbalance de 3 velas en las últimas barras."""
+    if len(df) < 4:
+        return None
+    # Revisar ventana de últimas 2 formaciones de 3 velas
+    for idx in (-1, -2):
+        pos = len(df) + idx
+        if pos < 2:
+            continue
+        v1_high = float(df["high"].iloc[pos - 2])
+        v1_low = float(df["low"].iloc[pos - 2])
+        v3_low = float(df["low"].iloc[pos])
+        v3_high = float(df["high"].iloc[pos])
+
+        if v3_low > v1_high:
+            return {"tipo": "FVG_ALCISTA", "zona_low": v1_high, "zona_high": v3_low}
+        if v3_high < v1_low:
+            return {"tipo": "FVG_BAJISTA", "zona_low": v3_high, "zona_high": v1_low}
+    return None
+
 def evaluar_estrategia_unificada(df):
+    """
+    Motor integrado donde ADX > 50, VWAP/EMAs, CVD/Desbalance, Order Block/FVG/Descuento
+    y Filtro de Exhaustación (Larry Williams) trabajan en conjunto para emitir una sola señal.
+    """
     if df.empty or len(df) < 25:
         return None
 
@@ -118,12 +142,13 @@ def evaluar_estrategia_unificada(df):
     vwap_val = float(ultima.get("vwap", precio))
     ema_fast = float(ultima.get("ema_fast", precio))
     ema_slow = float(ultima.get("ema_slow", precio))
-    prev_ema_fast = float(anterior.get("ema_fast", precio))
-    prev_ema_slow = float(anterior.get("ema_slow", precio))
+
+    if adx_val <= 50.0:
+        return None
 
     vol_actual = float(ultima.get("volume", 0.0))
     vol_ma = float(ultima.get("vol_ma", 0.0))
-    desbalance_vol = (vol_ma > 0) and (vol_actual > vol_ma * 1.4)
+    desbalance_vol = (vol_ma > 0) and (vol_actual > vol_ma * 1.35)
 
     cvd_actual = float(ultima.get("cvd", 0.0))
     cvd_prev = float(anterior.get("cvd", 0.0))
@@ -131,6 +156,7 @@ def evaluar_estrategia_unificada(df):
     cvd_bajista = cvd_actual < cvd_prev
 
     es_exhaustacion = detectar_exhaustacion(df)
+    fvg = detectar_fvg_3_velas(df)
 
     rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
     atr_prom = float(rangos_previos.mean()) if len(rangos_previos) > 0 else 0.0
@@ -149,90 +175,88 @@ def evaluar_estrategia_unificada(df):
     ob_alcista = (anterior["close"] < anterior["open"]) and (ultima["close"] > ultima["open"]) and (precio > anterior["high"])
     ob_bajista = (anterior["close"] > anterior["open"]) and (ultima["close"] < ultima["open"]) and (precio < anterior["low"])
 
-    cruce_alcista = (ema_fast > ema_slow) and (prev_ema_fast <= prev_ema_slow)
-    cruce_bajista = (ema_fast < ema_slow) and (prev_ema_fast >= prev_ema_slow)
-
-    if adx_val <= 50.0:
-        return None
-
     if es_exhaustacion:
         sl_exh = float(swing_low_ref - atr_ref * 0.5) if precio >= ultima["open"] else float(swing_high_ref + atr_ref * 0.5)
         return {
-            "id_senal": "EXHAUSTION_CAUTION",
-            "estrategia": "Filtro de Exhaustación (Larry Williams)",
-            "direccion": "ESPERAR / NO PERSEGUIR ⏸️",
+            "id_senal": "EXHAUSTION_GUARD",
+            "estrategia": "Freno Exhaustación (L. Williams) + Contexto ADX > 50",
+            "direccion": "NO ENTRAR EN EXTREMO / ESPERAR RETROCESO ⏸️",
             "sl": sl_exh,
             "tp": vwap_val,
-            "plan": "Vela de gran amplitud tras movimiento extendido. No compres en techo ni vendas en suelo; espera retroceso o estabilización."
+            "plan": (
+                f"1) ADX en {adx_val:.1f} (>50) con vela de exhaustación detectada: evita comprar techo o vender suelo.\n"
+                f"2) Espera retroceso hacia VWAP (${vwap_val:,.4f}), Order Block o zona de descuento antes de actuar.\n"
+                f"3) Mantén disciplina y protege tu capital sin perseguir el movimiento."
+            )
         }
 
-    if (cruce_alcista or (precio > vwap_val and cvd_alcista)) and (desbalance_vol or ob_alcista or descuento_compra >= 40.0):
+    # Confluencia conjunta ALCISTA (LONG)
+    confluencias_long = 0
+    motivos_long = []
+    if precio >= vwap_val and ema_fast >= ema_slow:
+        confluencias_long += 1
+        motivos_long.append("Estructura/VWAP/EMA alcista")
+    if cvd_alcista or desbalance_vol:
+        confluencias_long += 1
+        motivos_long.append("CVD/Volumen respalda compras")
+    if ob_alcista or (fvg and fvg["tipo"] == "FVG_ALCISTA") or descuento_compra >= 35.0:
+        confluencias_long += 1
+        motivos_long.append("OB/FVG/Descuento favorable")
+
+    if confluencias_long >= 2 and precio >= vwap_val:
         base_low = min(swing_low_ref, float(ultima["low"]))
         sl_sugerido = float(base_low - atr_ref * 0.6)
-        riesgo = max(abs(precio - sl_sugerido), atr_ref * 0.8)
+        riesgo = max(abs(precio - sl_sugerido), atr_ref * 0.9)
         sl_sugerido = float(precio - riesgo)
         tp_sugerido = float(precio + riesgo * rr_mult)
         return {
-            "id_senal": "LONG_OUT_OF_BALANCE",
-            "estrategia": "Fuera de Balance + ADX Extremo + Order Flow (LONG)",
+            "id_senal": "CONFLUENCIA_LONG",
+            "estrategia": f"Confluencia Conjunta ({confluencias_long}/3) • ADX + Flujo + OB/FVG",
             "direccion": "COMPRA (LONG) 🟢",
             "sl": sl_sugerido,
             "tp": tp_sugerido,
             "plan": (
-                f"1) Confirma cierre de vela por encima de VWAP (${vwap_val:,.4f}) con CVD positivo.\n"
-                f"2) Entra en LONG con riesgo controlado (0.5% - 1% max de cuenta).\n"
-                f"3) Stop Loss con colchón ATR/estructura en ${sl_sugerido:,.4f}.\n"
-                f"4) Take Profit objetivo (1:{rr_mult:.1f}) en ${tp_sugerido:,.4f} o gestiona parciales."
+                f"1) Confluencias activas: {', '.join(motivos_long)} (ADX {adx_val:.1f}).\n"
+                f"2) Valida retroceso hacia VWAP (${vwap_val:,.4f}), OB o FVG cercano sin perseguir picos.\n"
+                f"3) Stop Loss con colchón ATR/estructura en ${sl_sugerido:,.4f} (riesgo 0.5% - 1% max).\n"
+                f"4) Take Profit objetivo (1:{rr_mult:.1f}) en ${tp_sugerido:,.4f}; no promedies en contra."
             )
         }
 
-    if (cruce_bajista or (precio < vwap_val and cvd_bajista)) and (desbalance_vol or ob_bajista or descuento_venta >= 40.0):
+    # Confluencia conjunta BAJISTA (SHORT)
+    confluencias_short = 0
+    motivos_short = []
+    if precio <= vwap_val and ema_fast <= ema_slow:
+        confluencias_short += 1
+        motivos_short.append("Estructura/VWAP/EMA bajista")
+    if cvd_bajista or desbalance_vol:
+        confluencias_short += 1
+        motivos_short.append("CVD/Volumen respalda ventas")
+    if ob_bajista or (fvg and fvg["tipo"] == "FVG_BAJISTA") or descuento_venta >= 35.0:
+        confluencias_short += 1
+        motivos_short.append("OB/FVG/Descuento favorable")
+
+    if confluencias_short >= 2 and precio <= vwap_val:
         base_high = max(swing_high_ref, float(ultima["high"]))
         sl_sugerido = float(base_high + atr_ref * 0.6)
-        riesgo = max(abs(sl_sugerido - precio), atr_ref * 0.8)
+        riesgo = max(abs(sl_sugerido - precio), atr_ref * 0.9)
         sl_sugerido = float(precio + riesgo)
         tp_sugerido = float(precio - riesgo * rr_mult)
         return {
-            "id_senal": "SHORT_OUT_OF_BALANCE",
-            "estrategia": "Fuera de Balance + ADX Extremo + Order Flow (SHORT)",
+            "id_senal": "CONFLUENCIA_SHORT",
+            "estrategia": f"Confluencia Conjunta ({confluencias_short}/3) • ADX + Flujo + OB/FVG",
             "direccion": "VENTA (SHORT) 🔴",
             "sl": sl_sugerido,
             "tp": tp_sugerido,
             "plan": (
-                f"1) Confirma cierre de vela por debajo de VWAP (${vwap_val:,.4f}) con CVD negativo.\n"
-                f"2) Entra en SHORT con riesgo controlado (0.5% - 1% max de cuenta).\n"
-                f"3) Stop Loss con colchón ATR/estructura en ${sl_sugerido:,.4f}.\n"
-                f"4) Take Profit objetivo (1:{rr_mult:.1f}) en ${tp_sugerido:,.4f} (evita promediar en contra)."
+                f"1) Confluencias activas: {', '.join(motivos_short)} (ADX {adx_val:.1f}).\n"
+                f"2) Valida retroceso hacia VWAP (${vwap_val:,.4f}), OB o FVG cercano sin perseguir picos.\n"
+                f"3) Stop Loss con colchón ATR/estructura en ${sl_sugerido:,.4f} (riesgo 0.5% - 1% max).\n"
+                f"4) Take Profit objetivo (1:{rr_mult:.1f}) en ${tp_sugerido:,.4f}; no promedies en contra."
             )
         }
 
-    alcista = precio >= vwap_val
-    direccion_base = "COMPRA / CONTINUACIÓN ALCISTA 🟢" if alcista else "VENTA / CONTINUACIÓN BAJISTA 🔴"
-    if alcista:
-        base_low = min(swing_low_ref, float(ultima["low"]))
-        sl_base = float(min(base_low - atr_ref * 0.5, precio - atr_ref * 1.0))
-        riesgo_base = max(abs(precio - sl_base), atr_ref * 1.0)
-        sl_base = float(precio - riesgo_base)
-        tp_base = float(precio + riesgo_base * rr_mult)
-    else:
-        base_high = max(swing_high_ref, float(ultima["high"]))
-        sl_base = float(max(base_high + atr_ref * 0.5, precio + atr_ref * 1.0))
-        riesgo_base = max(abs(sl_base - precio), atr_ref * 1.0)
-        sl_base = float(precio + riesgo_base)
-        tp_base = float(precio - riesgo_base * rr_mult)
-
-    return {
-        "id_senal": f"ADX50_CORE_{'UP' if alcista else 'DN'}",
-        "estrategia": "Super Tendencia ADX > 50 + Estructura / VWAP",
-        "direccion": direccion_base,
-        "sl": sl_base,
-        "tp": tp_base,
-        "plan": (
-            f"1) Opera a favor de la fuerza dominante (ADX {adx_val:.1f} > 50).\n"
-            f"2) Valida retroceso hacia zona de valor/VWAP o bloque cercano sin perseguir picos.\n"
-            f"3) Stop Loss en ${sl_base:,.4f} | Take Profit (1:{rr_mult:.1f}) en ${tp_base:,.4f}."
-        )
-    }
+    return None
 
 # ==========================================
 # 🛠️ OBTENCIÓN DE DATOS CON CACHÉ Y VALIDACIÓN REAL
@@ -369,7 +393,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     adx_val = float(ultima.get("adx", 0.0))
 
                     msg = (
-                        f"🏦 *SEÑAL UNIFICADA (MOTOR 5s)*\n"
+                        f"🏦 *SEÑAL CONJUNTA UNIFICADA (MOTOR 5s)*\n"
                         f"🌐 *Mercado:* `{tipo}` | *Activo:* `{symbol}` | *TF:* `{tf}`\n"
                         f"💲 *Precio Real:* `${precio:,.4f}` | *ADX:* `{adx_val:.1f}`\n"
                         f"🎯 *Estrategia:* {resultado['estrategia']}\n"
@@ -393,7 +417,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = f"✅ Barrido listo. Alertas reales enviadas: {alertas_nuevas}"
     else:
-        AUTOPILOTO_STATUS = "⚡ Motor unificado activo (cada 5s) solo con datos reales..."
+        AUTOPILOTO_STATUS = "⚡ Motor conjunto activo (cada 5s) con datos reales..."
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
@@ -414,7 +438,7 @@ iniciar_hilo_autopiloto()
 # 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — UNIFIED ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Escaneo Cada 5s • ADX + Desbalance/CVD + Order Blocks/Descuento + Filtro Exhaustación</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Escaneo Cada 5s • ADX + VWAP/EMAs + CVD/Desbalance + OB/FVG/Descuento + Freno Exhaustación</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
@@ -488,12 +512,16 @@ def render_trading_panel(symbol, timeframe):
         cvd_prev = float(anterior.get("cvd", 0.0))
         st.caption(f"CVD Delta: {'🟢 Presión compradora' if cvd_actual >= cvd_prev else '🔴 Presión vendedora'}")
 
+        fvg_info = detectar_fvg_3_velas(df)
+        if fvg_info:
+            st.caption(f"FVG / Imbalance: `{fvg_info['tipo']}` ({fvg_info['zona_low']:,.4f} - {fvg_info['zona_high']:,.4f})")
+
         st.markdown("---")
         st.markdown("### 🎯 Plan Sugerido por Motor")
         senal = evaluar_estrategia_unificada(df)
         if senal:
             st.info(f"**{senal['estrategia']}**\n\n**Acción:** {senal['direccion']}\n\n{senal['plan']}")
         else:
-            st.caption("Sin señal activa bajo el filtro unificado en esta vela.")
+            st.caption("Sin señal conjunta activa bajo el filtro unificado en esta vela.")
 
 render_trading_panel(symbol, timeframe)
