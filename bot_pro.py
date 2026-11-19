@@ -43,7 +43,7 @@ EXCHANGE_BINANCE = _crear_exchange("binance")
 ALERTAS_ENVIADAS_GLOBAL = {}
 CACHE_DATOS_GLOBAL = {}
 CACHE_LOCK = threading.Lock()
-AUTOPILOTO_STATUS = "Motor unificado activo: Escaneando cada 5s..."
+AUTOPILOTO_STATUS = "Motor unificado activo: Escaneando cada 30s..."
 
 # ==========================================
 # 🧠 FUNCIONES MATEMÁTICAS, FLUJO Y ESTRUCTURA
@@ -111,7 +111,6 @@ def detectar_fvg_3_velas(df):
     """Detecta Fair Value Gap / Imbalance de 3 velas en las últimas barras."""
     if len(df) < 4:
         return None
-    # Revisar ventana de últimas 2 formaciones de 3 velas
     for idx in (-1, -2):
         pos = len(df) + idx
         if pos < 2:
@@ -190,7 +189,6 @@ def evaluar_estrategia_unificada(df):
             )
         }
 
-    # Confluencia conjunta ALCISTA (LONG)
     confluencias_long = 0
     motivos_long = []
     if precio >= vwap_val and ema_fast >= ema_slow:
@@ -223,7 +221,6 @@ def evaluar_estrategia_unificada(df):
             )
         }
 
-    # Confluencia conjunta BAJISTA (SHORT)
     confluencias_short = 0
     motivos_short = []
     if precio <= vwap_val and ema_fast <= ema_slow:
@@ -261,7 +258,7 @@ def evaluar_estrategia_unificada(df):
 # ==========================================
 # 🛠️ OBTENCIÓN DE DATOS CON CACHÉ Y VALIDACIÓN REAL
 # ==========================================
-def obtener_datos(symbol, timeframe, limit=120, ttl_segundos=25):
+def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
     cache_key = f"{symbol}_{timeframe}_{limit}"
     ahora = time.time()
 
@@ -363,7 +360,7 @@ def obtener_datos(symbol, timeframe, limit=120, ttl_segundos=25):
     return df
 
 # ==========================================
-# 🤖 MOTOR UNIFICADO EN FONDO (CADA 5 SEGUNDOS)
+# 🤖 MOTOR UNIFICADO EN FONDO (ESTABLE EN CLOUD)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
@@ -382,7 +379,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                 AUTOPILOTO_STATUS = f"Analizando {symbol} [{tf}]..."
 
             try:
-                df = obtener_datos(symbol, tf, limit=120, ttl_segundos=25)
+                df = obtener_datos(symbol, tf, limit=85, ttl_segundos=60)
                 if df.empty or not df.attrs.get("es_real", False):
                     continue
 
@@ -393,7 +390,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     adx_val = float(ultima.get("adx", 0.0))
 
                     msg = (
-                        f"🏦 *SEÑAL CONJUNTA UNIFICADA (MOTOR 5s)*\n"
+                        f"🏦 *SEÑAL CONJUNTA UNIFICADA*\n"
                         f"🌐 *Mercado:* `{tipo}` | *Activo:* `{symbol}` | *TF:* `{tf}`\n"
                         f"💲 *Precio Real:* `${precio:,.4f}` | *ADX:* `{adx_val:.1f}`\n"
                         f"🎯 *Estrategia:* {resultado['estrategia']}\n"
@@ -410,24 +407,25 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                         ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                         alertas_nuevas += 1
 
-                time.sleep(0.03)
+                time.sleep(0.12)
             except Exception:
-                pass
+                continue
 
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = f"✅ Barrido listo. Alertas reales enviadas: {alertas_nuevas}"
     else:
-        AUTOPILOTO_STATUS = "⚡ Motor conjunto activo (cada 5s) con datos reales..."
+        AUTOPILOTO_STATUS = "⚡ Motor conjunto activo (ciclo cada 30s) con datos reales..."
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
     def loop():
+        time.sleep(3)
         while True:
             try:
                 ejecutar_logica_autopiloto(es_hilo_fondo=True)
             except Exception:
                 pass
-            time.sleep(5)
+            time.sleep(30)
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     return thread
@@ -438,7 +436,7 @@ iniciar_hilo_autopiloto()
 # 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — UNIFIED ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Escaneo Cada 5s • ADX + VWAP/EMAs + CVD/Desbalance + OB/FVG/Descuento + Freno Exhaustación</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Escaneo Estable • ADX + VWAP/EMAs + CVD/Desbalance + OB/FVG/Descuento + Freno Exhaustación</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
@@ -446,7 +444,7 @@ symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_TRACKED_SYMBOLS)
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m", "15m", "1h"])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Estado del Motor (5s)")
+st.sidebar.subheader("📡 Estado del Motor")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
 if st.sidebar.button("⚡ Forzar Escaneo Unificado Ahora"):
@@ -456,14 +454,14 @@ if st.sidebar.button("⚡ Forzar Escaneo Unificado Ahora"):
 
 with st.sidebar.expander("🔍 Diagnóstico Cripto / Oro"):
     for sym_diag in ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XAUUSD=X"]:
-        df_d = obtener_datos(sym_diag, timeframe, limit=120, ttl_segundos=20)
+        df_d = obtener_datos(sym_diag, timeframe, limit=85, ttl_segundos=60)
         real_txt = "REAL ✅" if df_d.attrs.get("es_real", False) else "SIN DATO REAL ❌"
         adx_d = float(df_d["adx"].iloc[-1]) if not df_d.empty and "adx" in df_d.columns else 0.0
         st.caption(f"{sym_diag}: {real_txt} | ADX: {adx_d:.1f}")
 
-@st.fragment(run_every="5s")
+@st.fragment(run_every="10s")
 def render_trading_panel(symbol, timeframe):
-    df = obtener_datos(symbol, timeframe, limit=150, ttl_segundos=15)
+    df = obtener_datos(symbol, timeframe, limit=120, ttl_segundos=30)
     if df.empty:
         st.error(f"No se pudieron cargar los datos para {symbol}.")
         return
