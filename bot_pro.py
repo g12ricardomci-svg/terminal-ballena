@@ -18,9 +18,13 @@ TELEGRAM_CHAT_ID = "1496321437"
 
 st.set_page_config(page_title="Institutional Quant Terminal - Unified Engine", layout="wide", page_icon="🏦")
 
-# ÚNICOS ACTIVOS PERMITIDOS
+# ÚNICOS ACTIVOS PERMITIDOS (incluye los 10 pares principales de Forex + Oro)
 CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
-FOREX_MARKETS = ["EURUSD=X", "GBPUSD=X", "AUDUSD=X", "XAUUSD=X", "XAUUSD"]
+FOREX_MARKETS = [
+    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
+    "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X",
+    "XAUUSD=X", "XAUUSD"
+]
 NASDAQ_MARKETS = [
     "NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META",
     "NFLX", "AMD", "AVGO", "COST", "PEP", "ADBE", "QCOM",
