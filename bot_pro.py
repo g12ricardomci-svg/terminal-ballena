@@ -116,7 +116,6 @@ def evaluar_estrategia_unificada(df):
 
     es_exhaustacion = detectar_exhaustacion(df)
 
-    # Cálculo de volatilidad (ATR) y estructura reciente de varias velas para SL/TP más respirables
     rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
     atr_prom = float(rangos_previos.mean()) if len(rangos_previos) > 0 else 0.0
     atr_ref = atr_prom if (pd.notna(atr_prom) and atr_prom > 0) else max(abs(float(ultima["high"]) - float(ultima["low"])), precio * 0.0025)
@@ -220,7 +219,7 @@ def evaluar_estrategia_unificada(df):
     }
 
 # ==========================================
-# 🛠️ OBTENCIÓN DE DATOS CON CACHÉ Y PROTECCIÓN REAL
+# 🛠️ OBTENCIÓN DE DATOS CON CACHÉ Y VALIDACIÓN REAL
 # ==========================================
 def obtener_datos(symbol, timeframe, limit=120, ttl_segundos=25):
     cache_key = f"{symbol}_{timeframe}_{limit}"
@@ -228,8 +227,10 @@ def obtener_datos(symbol, timeframe, limit=120, ttl_segundos=25):
 
     with CACHE_LOCK:
         cached = CACHE_DATOS_GLOBAL.get(cache_key)
-        if cached and (ahora - cached["ts"] < ttl_segundos):
-            return cached["df"].copy()
+        if cached and (ahora - cached["ts"] < ttl_segundos) and cached.get("es_real", False):
+            df_cached = cached["df"].copy()
+            df_cached.attrs["es_real"] = True
+            return df_cached
 
     df = pd.DataFrame()
     es_real = False
@@ -241,9 +242,10 @@ def obtener_datos(symbol, timeframe, limit=120, ttl_segundos=25):
             if ohlcv:
                 df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
                 df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms")
-                es_real = not df.empty
+                df = df.tail(limit).copy()
+                es_real = not df.empty and float(df["close"].iloc[-1]) > 0
         except Exception:
-            pass
+            es_real = False
     else:
         interval_map = {"5m": "5m", "15m": "15m", "1h": "60m"}
         yf_interval = interval_map.get(timeframe, "60m")
@@ -253,15 +255,24 @@ def obtener_datos(symbol, timeframe, limit=120, ttl_segundos=25):
             try:
                 ticker = yf.Ticker(symbol)
                 hist = ticker.history(period=periodo, interval=yf_interval)
-                if not hist.empty:
-                    df = hist.reset_index()
-                    time_col = "Datetime" if "Datetime" in df.columns else ("Date" if "Date" in df.columns else df.columns[0])
-                    df.rename(columns={time_col: "timestamp"}, inplace=True)
-                    df["timestamp"] = pd.to_datetime(df["timestamp"]).dt.tz_localize(None)
-                    df["volume"] = df["volume"].fillna(0)
-                    df = df.tail(limit)
-                    es_real = not df.empty
-                    break
+                if not hist.empty and "Close" in hist.columns:
+                    temp_df = hist.reset_index()
+                    time_col = "Datetime" if "Datetime" in temp_df.columns else ("Date" if "Date" in temp_df.columns else temp_df.columns[0])
+                    temp_df.rename(columns={
+                        time_col: "timestamp",
+                        "Open": "open",
+                        "High": "high",
+                        "Low": "low",
+                        "Close": "close",
+                        "Volume": "volume"
+                    }, inplace=True)
+                    temp_df["timestamp"] = pd.to_datetime(temp_df["timestamp"]).dt.tz_localize(None)
+                    temp_df["volume"] = temp_df["volume"].fillna(0)
+                    temp_df = temp_df.dropna(subset=["open", "high", "low", "close"]).tail(limit).copy()
+                    if not temp_df.empty and float(temp_df["close"].iloc[-1]) > 0:
+                        df = temp_df
+                        es_real = True
+                        break
             except Exception:
                 continue
 
@@ -294,10 +305,11 @@ def obtener_datos(symbol, timeframe, limit=120, ttl_segundos=25):
         df["adx"] = calcular_adx(df)
         df["cvd"] = calcular_cvd_proxy(df)
 
-    df.attrs["es_simulado"] = not es_real
+    df.attrs["es_real"] = es_real
 
-    with CACHE_LOCK:
-        CACHE_DATOS_GLOBAL[cache_key] = {"ts": ahora, "df": df.copy()}
+    if es_real:
+        with CACHE_LOCK:
+            CACHE_DATOS_GLOBAL[cache_key] = {"ts": ahora, "df": df.copy(), "es_real": True}
 
     return df
 
@@ -323,7 +335,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             try:
                 df = obtener_datos(symbol, tf, limit=60, ttl_segundos=25)
                 # Nunca enviar alertas basadas en datos simulados de respaldo
-                if df.empty or df.attrs.get("es_simulado", True):
+                if df.empty or not df.attrs.get("es_real", False):
                     continue
 
                 resultado = evaluar_estrategia_unificada(df)
@@ -357,7 +369,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = f"✅ Barrido listo. Alertas reales enviadas: {alertas_nuevas}"
     else:
-        AUTOPILOTO_STATUS = "⚡ Motor unificado activo (cada 5s) con filtro de datos reales..."
+        AUTOPILOTO_STATUS = "⚡ Motor unificado activo (cada 5s) solo con datos reales..."
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
@@ -401,8 +413,8 @@ def render_trading_panel(symbol, timeframe):
         st.error(f"No se pudieron cargar los datos para {symbol}.")
         return
 
-    if df.attrs.get("es_simulado", False):
-        st.warning("⚠️ Datos de respaldo activos por límite temporal de proveedor externo. Verifica el precio en tu bróker antes de operar.")
+    if not df.attrs.get("es_real", False):
+        st.warning("⚠️ Datos de respaldo activos por límite temporal de proveedor externo. No se enviarán alertas de Telegram con estos datos.")
 
     col_grafico, col_paneles = st.columns([2.5, 1])
     with col_grafico:
