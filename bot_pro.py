@@ -91,28 +91,35 @@ def obtener_umbral_adx(symbol: str) -> float:
 def _crear_exchange(ex_id: str):
     try:
         cls = getattr(ccxt, ex_id)
-        return cls({"enableRateLimit": True})
+        return cls({"enableRateLimit": True, "timeout": 8000})
     except Exception as exc:
         logger.warning("No se pudo inicializar exchange %s: %s", ex_id, exc)
         return None
 
 
-EXCHANGE_OKX = _crear_exchange("okx")
-EXCHANGE_BINANCE = _crear_exchange("binance")
+EXCHANGES_CRYPTO = [
+    ex for ex in (
+        _crear_exchange("okx"),
+        _crear_exchange("binance"),
+        _crear_exchange("kucoin"),
+        _crear_exchange("bybit"),
+    ) if ex is not None
+]
 
 # Estado compartido protegido por lock
 STATE_LOCK = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL: dict[str, float] = {}
 CACHE_DATOS_GLOBAL: dict[str, dict] = {}
 TELEMETRIA_MOTOR = {
-    "estado": "Inicializando motor profesional...",
-    "ultimo_ciclo": "Nunca",
+    "estado": "Listo para escanear...",
+    "ultimo_ciclo": "En curso...",
     "activos_reales": 0,
     "candidatas": 0,
     "bloqueadas_riesgo": 0,
     "alertas_enviadas_total": 0,
     "ultimo_error_tg": "",
     "latido_hilo": 0.0,
+    "ciclo_en_marcha": False,
 }
 
 
@@ -156,7 +163,6 @@ def enviar_telegram(mensaje: str) -> bool:
 # 📐 CÁLCULO DE RIESGO EN 0.01 LOTES
 # ==========================================
 def _obtener_fx_a_usd(quote_ccy: str) -> float:
-    """Obtiene tasa aproximada para convertir divisa cotizada a USD."""
     if quote_ccy == "USD":
         return 1.0
     try:
@@ -207,7 +213,6 @@ def calcular_riesgo_001_lotes(symbol: str, precio: float, sl: float, saldo_usd: 
         riesgo_usd = dist * 1.0
     elif len(canon) == 6:
         quote_ccy = canon[3:]
-        # 0.01 lotes estándar = 1,000 unidades de la divisa base
         valor_en_quote = dist * 1000.0
         riesgo_usd = valor_en_quote * _obtener_fx_a_usd(quote_ccy)
     else:
@@ -468,7 +473,6 @@ def evaluar_motor_unificado(
     sl_min_dist = obtener_sl_minimo(symbol, timeframe, precio)
     pip = tamano_pip(symbol)
 
-    # Modelo 1: Fuera de Balance + Contexto 1h + Flujo + OB/FVG + Descuento >= 50%
     if estado_amt == "OUT_OF_BALANCE_UP" and ctx_1h["sesgo"] == "COMPRA" and adx_val >= min(adx_min, 28.0):
         if descuento_long_pct < DESCUENTO_MIN_FIBO:
             return None
@@ -547,7 +551,6 @@ def evaluar_motor_unificado(
                 ),
             }
 
-    # Modelo 2: Balance -> Fakeout en VAH/VAL -> Retorno al POC
     min_rango_amt = sl_min_dist * (2.2 if timeframe == "5m" else 1.6)
     if estado_amt == "BALANCE" and (vah - val) >= min_rango_amt:
         fakeout_arriba = (
@@ -638,7 +641,7 @@ def obtener_datos(symbol: str, timeframe: str, limit: int = 100, ttl_segundos: i
     es_real = False
 
     if symbol in CRYPTO_MARKETS:
-        for ex in [e for e in (EXCHANGE_OKX, EXCHANGE_BINANCE) if e is not None]:
+        for ex in EXCHANGES_CRYPTO:
             try:
                 ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
                 if ohlcv:
@@ -730,13 +733,15 @@ def obtener_datos(symbol: str, timeframe: str, limit: int = 100, ttl_segundos: i
 
 
 # ==========================================
-# 🤖 MOTOR CON OBSERVABILIDAD DE CICLO
+# 🤖 MOTOR CON ARRANQUE INMEDIATO Y OBSERVABILIDAD
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo: bool = False) -> int:
-    _actualizar_telemetria(
-        estado="Ejecutando barrido institucional..." if not es_hilo_fondo else TELEMETRIA_MOTOR["estado"],
-        latido_hilo=time.time(),
-    )
+    with STATE_LOCK:
+        if TELEMETRIA_MOTOR["ciclo_en_marcha"]:
+            return 0
+        TELEMETRIA_MOTOR["ciclo_en_marcha"] = True
+        TELEMETRIA_MOTOR["estado"] = "Escaneando mercados..."
+        TELEMETRIA_MOTOR["latido_hilo"] = time.time()
 
     alertas_nuevas = 0
     activos_reales = 0
@@ -744,93 +749,96 @@ def ejecutar_logica_autopiloto(es_hilo_fondo: bool = False) -> int:
     bloqueadas_riesgo = 0
     vistos_en_ciclo = set()
 
-    for symbol in ALL_TRACKED_SYMBOLS:
-        canon = canonizar_simbolo(symbol)
-        if canon in vistos_en_ciclo:
-            continue
-        vistos_en_ciclo.add(canon)
-
-        tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else ("METAL (ORO)" if canon == "XAUUSD" else "FOREX")
-
-        try:
-            df_1h = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
-            if df_1h.empty or not df_1h.attrs.get("es_real", False):
+    try:
+        for symbol in ALL_TRACKED_SYMBOLS:
+            canon = canonizar_simbolo(symbol)
+            if canon in vistos_en_ciclo:
                 continue
-            activos_reales += 1
-            ctx_1h = analizar_contexto_macro_1h(df_1h)
+            vistos_en_ciclo.add(canon)
 
-            for tf in ("15m", "5m"):
-                df_tf = obtener_datos(symbol, tf, limit=90, ttl_segundos=60)
-                if df_tf.empty or not df_tf.attrs.get("es_real", False):
+            tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else ("METAL (ORO)" if canon == "XAUUSD" else "FOREX")
+
+            try:
+                df_1h = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
+                if df_1h.empty or not df_1h.attrs.get("es_real", False):
                     continue
+                activos_reales += 1
+                ctx_1h = analizar_contexto_macro_1h(df_1h)
 
-                resultado = evaluar_motor_unificado(df_tf, symbol=symbol, timeframe=tf, ctx_1h=ctx_1h)
-                if resultado:
-                    candidatas += 1
-                    if FILTRAR_SOLO_RIESGO_APTO_TG and not resultado.get("apto_cuenta", True):
-                        bloqueadas_riesgo += 1
-                        logger.info(
-                            "Señal bloqueada por riesgo en %s [%s]: %.1f%% > %.1f%%",
-                            canon, tf, resultado["riesgo_pct"], RIESGO_MAX_PCT_CUENTA,
-                        )
+                for tf in ("15m", "5m"):
+                    df_tf = obtener_datos(symbol, tf, limit=90, ttl_segundos=60)
+                    if df_tf.empty or not df_tf.attrs.get("es_real", False):
                         continue
 
-                    ultima = df_tf.iloc[-1]
-                    precio = float(ultima["close"])
-                    adx_val = float(ultima.get("adx", 0.0))
-                    r_usd = resultado["riesgo_usd"]
-                    r_pct = resultado["riesgo_pct"]
+                    resultado = evaluar_motor_unificado(df_tf, symbol=symbol, timeframe=tf, ctx_1h=ctx_1h)
+                    if resultado:
+                        candidatas += 1
+                        if FILTRAR_SOLO_RIESGO_APTO_TG and not resultado.get("apto_cuenta", True):
+                            bloqueadas_riesgo += 1
+                            logger.info(
+                                "Señal bloqueada por riesgo en %s [%s]: %.1f%% > %.1f%%",
+                                canon, tf, resultado["riesgo_pct"], RIESGO_MAX_PCT_CUENTA,
+                            )
+                            continue
 
-                    msg = (
-                        f"🏦 *SEÑAL UNIFICADA PRO (AMT + FLUJO + OB/FVG)*\n"
-                        f"🌐 *Mercado:* `{tipo}` | *Activo:* `{canon}` | *TF:* `{tf}` (1h: `{ctx_1h['sesgo']}`)\n"
-                        f"💲 *Precio:* `${precio:,.4f}` | *ADX:* `{adx_val:.1f}`\n"
-                        f"🧠 *Modelo:* {resultado['modelo']}\n"
-                        f"🧭 *Acción:* *{resultado['direccion']}*\n"
-                        f"📊 *POC:* `${resultado['poc']:,.4f}` (VAL `${resultado['val']:,.4f}` / VAH `${resultado['vah']:,.4f}`)\n"
-                        f"🛡️ *SL:* `${resultado['sl']:,.4f}` | *TP:* `${resultado['tp']:,.4f}`\n"
-                        f"💵 *Riesgo 0.01 lot:* `~${r_usd:.2f} USD` (`{r_pct:.1f}%` de ${SALDO_CUENTA_USD:.0f}) ✅\n"
-                        f"📋 *Ejecución:*\n{resultado['plan']}"
-                    )
+                        ultima = df_tf.iloc[-1]
+                        precio = float(ultima["close"])
+                        adx_val = float(ultima.get("adx", 0.0))
+                        r_usd = resultado["riesgo_usd"]
+                        r_pct = resultado["riesgo_pct"]
 
-                    clave_alerta = f"{canon}_{resultado['id_senal']}"
-                    ahora = time.time()
+                        msg = (
+                            f"🏦 *SEÑAL UNIFICADA PRO (AMT + FLUJO + OB/FVG)*\n"
+                            f"🌐 *Mercado:* `{tipo}` | *Activo:* `{canon}` | *TF:* `{tf}` (1h: `{ctx_1h['sesgo']}`)\n"
+                            f"💲 *Precio:* `${precio:,.4f}` | *ADX:* `{adx_val:.1f}`\n"
+                            f"🧠 *Modelo:* {resultado['modelo']}\n"
+                            f"🧭 *Acción:* *{resultado['direccion']}*\n"
+                            f"📊 *POC:* `${resultado['poc']:,.4f}` (VAL `${resultado['val']:,.4f}` / VAH `${resultado['vah']:,.4f}`)\n"
+                            f"🛡️ *SL:* `${resultado['sl']:,.4f}` | *TP:* `${resultado['tp']:,.4f}`\n"
+                            f"💵 *Riesgo 0.01 lot:* `~${r_usd:.2f} USD` (`{r_pct:.1f}%` de ${SALDO_CUENTA_USD:.0f}) ✅\n"
+                            f"📋 *Ejecución:*\n{resultado['plan']}"
+                        )
 
-                    with STATE_LOCK:
-                        ultimo_envio = ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0.0)
+                        clave_alerta = f"{canon}_{resultado['id_senal']}"
+                        ahora = time.time()
 
-                    if ahora - ultimo_envio > COOLDOWN_ALERTA_SEG:
-                        if enviar_telegram(msg):
-                            with STATE_LOCK:
-                                ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
-                                TELEMETRIA_MOTOR["alertas_enviadas_total"] += 1
-                            alertas_nuevas += 1
-                    break
+                        with STATE_LOCK:
+                            ultimo_envio = ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0.0)
 
-            time.sleep(0.10)
-        except Exception as exc:
-            logger.exception("Error procesando %s: %s", canon, exc)
-            continue
+                        if ahora - ultimo_envio > COOLDOWN_ALERTA_SEG:
+                            if enviar_telegram(msg):
+                                with STATE_LOCK:
+                                    ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
+                                    TELEMETRIA_MOTOR["alertas_enviadas_total"] += 1
+                                alertas_nuevas += 1
+                        break
 
-    _actualizar_telemetria(
-        estado="⚡ Motor activo y auditado" if es_hilo_fondo else f"✅ Barrido listo ({alertas_nuevas} alertas nuevas)",
-        ultimo_ciclo=datetime.now().strftime("%H:%M:%S"),
-        activos_reales=activos_reales,
-        candidatas=candidatas,
-        bloqueadas_riesgo=bloqueadas_riesgo,
-    )
+                time.sleep(0.08)
+            except Exception as exc:
+                logger.exception("Error procesando %s: %s", canon, exc)
+                continue
+    finally:
+        _actualizar_telemetria(
+            ciclo_en_marcha=False,
+            estado="⚡ Motor activo y auditado" if es_hilo_fondo else f"✅ Barrido listo ({alertas_nuevas} alertas nuevas)",
+            ultimo_ciclo=datetime.now().strftime("%H:%M:%S"),
+            activos_reales=activos_reales,
+            candidatas=candidatas,
+            bloqueadas_riesgo=bloqueadas_riesgo,
+        )
+
     return alertas_nuevas
 
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
     def loop():
-        time.sleep(3)
         while True:
             try:
                 ejecutar_logica_autopiloto(es_hilo_fondo=True)
             except Exception as exc:
                 logger.exception("Error en hilo autopiloto: %s", exc)
+                _actualizar_telemetria(ciclo_en_marcha=False)
             time.sleep(INTERVALO_CICLO_SEG)
 
     thread = threading.Thread(target=loop, daemon=True, name="QuantAutopilotThread")
@@ -851,8 +859,9 @@ st.markdown(
 st.markdown("---")
 
 tel = _leer_telemetria()
+total_unicos = len(set(canonizar_simbolo(s) for s in ALL_TRACKED_SYMBOLS))
 c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Activos Reales (1h)", f"{tel['activos_reales']}/{len(set(canonizar_simbolo(s) for s in ALL_TRACKED_SYMBOLS))}")
+c1.metric("Activos Reales (1h)", f"{tel['activos_reales']}/{total_unicos}")
 c2.metric("Candidatas Detectadas", tel["candidatas"])
 c3.metric("Bloqueadas por Riesgo", tel["bloqueadas_riesgo"])
 c4.metric("Alertas Enviadas", tel["alertas_enviadas_total"])
