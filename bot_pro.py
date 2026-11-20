@@ -17,11 +17,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# 2. ESTADO GLOBAL PERSISTENTE EN SESIÓN
+# 2. ESTADO PERSISTENTE EN SESIÓN
 if "alertas_enviadas" not in st.session_state:
     st.session_state["alertas_enviadas"] = set()
 if "historial_senales" not in st.session_state:
     st.session_state["historial_senales"] = []
+if "ultimo_estado_tg" not in st.session_state:
+    st.session_state["ultimo_estado_tg"] = ""
 
 # 3. UNIVERSO DE ACTIVOS (EXCLUSIVO FOREX, ORO Y CRIPTO)
 ACTIVOS_ESCANEO = {
@@ -100,16 +102,23 @@ PARAMETROS_MERCADO = {
 }
 
 
+def _leer_secreto_o_env(claves: list[str]) -> str:
+    for clave in claves:
+        try:
+            if clave in st.secrets and st.secrets[clave]:
+                return str(st.secrets[clave]).strip()
+        except Exception:
+            pass
+        val_env = os.getenv(clave, "")
+        if val_env:
+            return str(val_env).strip()
+    return ""
+
+
 def obtener_credenciales_telegram() -> tuple[str, str]:
-    token = ""
-    chat_id = ""
-    try:
-        token = st.secrets.get("TELEGRAM_TOKEN", "") or os.getenv("TELEGRAM_TOKEN", "")
-        chat_id = st.secrets.get("TELEGRAM_CHAT_ID", "") or os.getenv("TELEGRAM_CHAT_ID", "")
-    except Exception:
-        token = os.getenv("TELEGRAM_TOKEN", "")
-        chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
-    return str(token).strip(), str(chat_id).strip()
+    token = _leer_secreto_o_env(["TELEGRAM_TOKEN", "BOT_TOKEN", "TOKEN_TELEGRAM", "TG_TOKEN"])
+    chat_id = _leer_secreto_o_env(["TELEGRAM_CHAT_ID", "CHAT_ID", "TG_CHAT_ID"])
+    return token, chat_id
 
 
 def canonizar_simbolo(symbol: str) -> str:
@@ -136,23 +145,17 @@ def tamano_pip(symbol: str) -> float:
 
 
 def estimar_riesgo_usd_001(symbol: str, precio: float, dist_sl: float) -> float:
-    """Estimación orientativa de riesgo en USD para 0.01 lotes."""
     s = canonizar_simbolo(symbol)
     if s == "XAUUSD":
-        # En 0.01 lotes (1 oz), $1 de movimiento ~= $0.10 en contratos estándar de 100 oz * 0.01 = 1 oz -> $1.00 por $1.00
-        # Nota: verificar especificación exacta del contrato en Vantage antes de ejecutar
         return round(dist_sl * 1.0, 2)
     if s.endswith("USD"):
-        # Pares XXXUSD (EURUSD, GBPUSD, AUDUSD, NZDUSD): 1 pip (0.0001) en 0.01 lotes ~= $0.10 USD
         pips = dist_sl / 0.0001
         return round(pips * 0.10, 2)
     if "JPY" in s and precio > 0:
-        # Pares XXXJPY: 1 pip (0.01) en 0.01 lotes ~= (10 / precio) USD
         pips = dist_sl / 0.01
         valor_pip = 10.0 / precio
         return round(pips * valor_pip, 2)
     if precio > 0:
-        # Pares USDXXX (USDCHF, USDCAD): 1 pip (0.0001) en 0.01 lotes ~= (0.10 / precio) USD
         pips = dist_sl / 0.0001
         valor_pip = 0.10 / precio
         return round(pips * valor_pip, 2)
@@ -379,9 +382,24 @@ def evaluar_estrategia_unificada(
     }
 
 
-def enviar_alerta_telegram(senal: dict, token: str, chat_id: str) -> bool:
+def enviar_mensaje_telegram(texto: str, token: str, chat_id: str) -> tuple[bool, str]:
     if not token or not chat_id:
-        return False
+        return False, "Falta TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en Secrets."
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    try:
+        resp = requests.post(
+            url,
+            json={"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"},
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            return True, "Enviado correctamente."
+        return False, f"Telegram respondió {resp.status_code}: {resp.text[:160]}"
+    except Exception as e:
+        return False, f"Error de red al enviar a Telegram: {e}"
+
+
+def enviar_alerta_telegram(senal: dict, token: str, chat_id: str) -> tuple[bool, str]:
     icono = "🟢" if senal["Dirección"] == "COMPRA" else "🔴"
     unidad = "pips" if senal["Mercado"] == "FOREX" else "pts"
     texto = (
@@ -392,24 +410,15 @@ def enviar_alerta_telegram(senal: dict, token: str, chat_id: str) -> bool:
         f"🧭 Acción: *{senal['Dirección']}* {icono}\n"
         f"🛡️ SL Ref: `{senal['SL']}` ({senal['Dist_SL_Pips_Pts']} {unidad})\n"
         f"🎯 TP Ref (1:2.5): `{senal['TP']}`\n"
-        f"💵 Riesgo est. 0.01 lotes: `~${senal['Riesgo_Est_001_USD']} USD`\n"
+        f"💵 Riesgo est. 0.01 lotes: `~${senal['Riesgo_Est_001_USD']} USD` ({senal.get('Riesgo_%_Cuenta', 0)}% saldo)\n"
         f"⚠️ Valida spread, margen libre y tamaño de cuenta antes de ejecutar."
     )
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    try:
-        resp = requests.post(
-            url,
-            json={"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"},
-            timeout=8,
-        )
-        return resp.status_code == 200
-    except Exception:
-        return False
+    return enviar_mensaje_telegram(texto, token, chat_id)
 
 
-# 4. INTERFAZ VISUAL (SE RENDERIZA INMEDIATAMENTE)
+# 4. INTERFAZ VISUAL
 st.title("📊 Terminal Cuantitativa — Forex, Oro y Cripto")
-st.caption("Escaneo separado por mercado, deduplicación canónica y control de distancia mínima de SL.")
+st.caption("Escaneo separado por mercado, deduplicación canónica, control de SL y alertas a Telegram.")
 
 with st.sidebar:
     st.header("⚙️ Configuración de Escaneo")
@@ -425,19 +434,47 @@ with st.sidebar:
     )
     min_conf = st.radio("Confluencia mínima", options=[2, 3], index=0, format_func=lambda x: f"{x}/3")
     saldo_cuenta = st.number_input("Saldo de referencia (USD)", min_value=5.0, max_value=100000.0, value=10.0, step=1.0)
-    riesgo_max_pct = st.slider("Alerta visual si riesgo 0.01 lotes supera (% saldo)", min_value=2, max_value=50, value=10)
+    riesgo_max_pct = st.slider("Límite de riesgo 0.01 lotes (% saldo)", min_value=2, max_value=50, value=10)
 
     st.divider()
+    st.subheader("📲 Alertas Telegram")
     token_tg, chat_tg = obtener_credenciales_telegram()
     tg_configurado = bool(token_tg and chat_tg)
-    enviar_tg = st.checkbox("Enviar alertas a Telegram", value=tg_configurado, disabled=not tg_configurado)
+
+    enviar_tg = st.checkbox(
+        "Enviar alertas a Telegram",
+        value=tg_configurado,
+        disabled=not tg_configurado,
+    )
+    solo_aptas_tg = st.checkbox(
+        "Solo enviar señales dentro del límite de saldo",
+        value=False,
+        disabled=not tg_configurado,
+    )
+
     if not tg_configurado:
-        st.info("Telegram opcional: configura `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` en Secrets para activar envíos.")
+        st.warning("Configura `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` en Streamlit Cloud > Settings > Secrets.")
+    else:
+        if st.button("✉️ Probar mensaje de prueba", use_container_width=True):
+            ok_test, msg_test = enviar_mensaje_telegram(
+                "✅ *Prueba de conexión Telegram:* Terminal Cuantitativa activa y conectada.",
+                token_tg,
+                chat_tg,
+            )
+            st.session_state["ultimo_estado_tg"] = msg_test
+            if ok_test:
+                st.success("Mensaje de prueba enviado a Telegram.")
+            else:
+                st.error(msg_test)
 
+    if st.session_state["ultimo_estado_tg"]:
+        st.caption(f"Estado TG: {st.session_state['ultimo_estado_tg']}")
+
+    st.divider()
     auto_refresh = st.checkbox("Auto-actualizar cada 60s", value=False)
-    ejecutar_ahora = st.button("🔄 Escanear ahora", type="primary", use_container_width=True)
+    st.button("🔄 Escanear ahora", type="primary", use_container_width=True)
 
-# 5. EJECUCIÓN CONTROLADA DEL ESCANEO
+# 5. EJECUCIÓN DEL ESCANEO
 senales_actuales = []
 errores_carga = 0
 
@@ -448,15 +485,12 @@ if mercados_activos and tfs_activos:
 
     barra = st.progress(0, text="Analizando mercados seleccionados...")
     total_pasos = max(1, len(simbolos_a_revisar))
-
-    # Ordenamos temporalidades asegurando evaluar 1h primero si está seleccionada
     orden_tf = [tf for tf in ["1h", "15m", "5m"] if tf in tfs_activos]
 
     for idx, sym in enumerate(simbolos_a_revisar):
         canon = canonizar_simbolo(sym)
         sesgo_1h = None
 
-        # Si 1h no está en tfs_activos pero el activo requiere filtro 1h, la consultamos en silencio
         if detectar_tipo_activo(canon) in {"FOREX", "METAL"} and "1h" not in orden_tf:
             df_1h_ref = obtener_datos_mercado(sym, "1h")
             res_1h_ref = evaluar_estrategia_unificada(df_1h_ref, sym, "1h", sesgo_1h=None)
@@ -476,12 +510,15 @@ if mercados_activos and tfs_activos:
 
                 if res["confluencias_num"] >= min_conf:
                     riesgo_pct_cuenta = (res["Riesgo_Est_001_USD"] / saldo_cuenta) * 100.0 if saldo_cuenta > 0 else 0.0
+                    apto = riesgo_pct_cuenta <= riesgo_max_pct
                     res["Riesgo_%_Cuenta"] = round(riesgo_pct_cuenta, 1)
-                    res["Apto_Saldo"] = "✅ Dentro de límite" if riesgo_pct_cuenta <= riesgo_max_pct else "⚠️ SL alto para saldo"
+                    res["Apto_Saldo"] = "✅ Dentro de límite" if apto else "⚠️ SL alto para saldo"
                     senales_actuales.append(res)
 
-                    if enviar_tg and res["clave_unica"] not in st.session_state["alertas_enviadas"]:
-                        ok = enviar_alerta_telegram(res, token_tg, chat_tg)
+                    cumple_filtro_tg = (not solo_aptas_tg) or apto
+                    if enviar_tg and cumple_filtro_tg and res["clave_unica"] not in st.session_state["alertas_enviadas"]:
+                        ok, msg_env = enviar_alerta_telegram(res, token_tg, chat_tg)
+                        st.session_state["ultimo_estado_tg"] = msg_env
                         if ok:
                             st.session_state["alertas_enviadas"].add(res["clave_unica"])
                             st.session_state["historial_senales"].insert(0, res)
@@ -520,7 +557,7 @@ if senales_actuales:
     st.subheader("📡 Señales Detectadas")
     st.dataframe(df_res, use_container_width=True, hide_index=True)
 else:
-    st.info("No hay señales que cumplan los filtros actuales en este ciclo. Prueba en el siguiente cierre de vela o ajusta la confluencia mínima.")
+    st.info("No hay señales que cumplan los filtros actuales en este ciclo.")
 
 if errores_carga > 0:
     st.caption(f"Nota: {errores_carga} consultas de velas no devolvieron datos en este ciclo y fueron omitidas sin detener la app.")
