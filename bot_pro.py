@@ -33,6 +33,7 @@ DESCUENTO_MIN_FIBO = 50.0           # Descuento Fibonacci mínimo exigido en ten
 FILTRAR_SOLO_RIESGO_APTO_TG = True  # Evita enviar señales con SL excesivo para la cuenta
 COOLDOWN_ALERTA_SEG = 1200          # 20 min entre alertas repetidas del mismo activo/señal
 INTERVALO_CICLO_SEG = 30            # Frecuencia del barrido en segundo plano
+TTL_FALLO_SEG = 25                  # Evita reintentar sin pausa un proveedor que acaba de fallar
 
 st.set_page_config(
     page_title="Institutional Quant Terminal — Pro Architecture",
@@ -91,7 +92,7 @@ def obtener_umbral_adx(symbol: str) -> float:
 def _crear_exchange(ex_id: str):
     try:
         cls = getattr(ccxt, ex_id)
-        return cls({"enableRateLimit": True, "timeout": 8000})
+        return cls({"enableRateLimit": True, "timeout": 6000})
     except Exception as exc:
         logger.warning("No se pudo inicializar exchange %s: %s", ex_id, exc)
         return None
@@ -106,13 +107,12 @@ EXCHANGES_CRYPTO = [
     ) if ex is not None
 ]
 
-# Estado compartido protegido por lock
 STATE_LOCK = threading.Lock()
 ALERTAS_ENVIADAS_GLOBAL: dict[str, float] = {}
 CACHE_DATOS_GLOBAL: dict[str, dict] = {}
 TELEMETRIA_MOTOR = {
     "estado": "Listo para escanear...",
-    "ultimo_ciclo": "En curso...",
+    "ultimo_ciclo": "Pendiente",
     "activos_reales": 0,
     "candidatas": 0,
     "bloqueadas_riesgo": 0,
@@ -168,28 +168,28 @@ def _obtener_fx_a_usd(quote_ccy: str) -> float:
     try:
         if quote_ccy == "JPY":
             df_jpy = obtener_datos("USDJPY=X", "1h", limit=5, ttl_segundos=120)
-            if not df_jpy.empty:
+            if not df_jpy.empty and df_jpy.attrs.get("es_real", False):
                 px = float(df_jpy["close"].iloc[-1])
                 if px > 0:
                     return 1.0 / px
             return 1.0 / 155.0
         if quote_ccy == "CHF":
             df_chf = obtener_datos("USDCHF=X", "1h", limit=5, ttl_segundos=120)
-            if not df_chf.empty:
+            if not df_chf.empty and df_chf.attrs.get("es_real", False):
                 px = float(df_chf["close"].iloc[-1])
                 if px > 0:
                     return 1.0 / px
             return 1.12
         if quote_ccy == "CAD":
             df_cad = obtener_datos("USDCAD=X", "1h", limit=5, ttl_segundos=120)
-            if not df_cad.empty:
+            if not df_cad.empty and df_cad.attrs.get("es_real", False):
                 px = float(df_cad["close"].iloc[-1])
                 if px > 0:
                     return 1.0 / px
             return 0.72
         if quote_ccy == "GBP":
             df_gbp = obtener_datos("GBPUSD=X", "1h", limit=5, ttl_segundos=120)
-            if not df_gbp.empty:
+            if not df_gbp.empty and df_gbp.attrs.get("es_real", False):
                 return float(df_gbp["close"].iloc[-1])
             return 1.30
     except Exception:
@@ -623,7 +623,7 @@ def evaluar_motor_unificado(
 
 
 # ==========================================
-# 🛠️ OBTENCIÓN DE DATOS CON CACHÉ CANÓNICA
+# 🛠️ OBTENCIÓN DE DATOS CON CACHÉ RÁPIDA
 # ==========================================
 def obtener_datos(symbol: str, timeframe: str, limit: int = 100, ttl_segundos: int = 60) -> pd.DataFrame:
     canon = canonizar_simbolo(symbol)
@@ -632,10 +632,15 @@ def obtener_datos(symbol: str, timeframe: str, limit: int = 100, ttl_segundos: i
 
     with STATE_LOCK:
         cached = CACHE_DATOS_GLOBAL.get(cache_key)
-        if cached and (ahora - cached["ts"] < ttl_segundos) and cached.get("es_real", False):
-            df_cached = cached["df"].copy()
-            df_cached.attrs["es_real"] = True
-            return df_cached
+        if cached:
+            if cached.get("es_real", False) and (ahora - cached["ts"] < ttl_segundos):
+                df_cached = cached["df"].copy()
+                df_cached.attrs["es_real"] = True
+                return df_cached
+            if (not cached.get("es_real", False)) and (ahora - cached["ts"] < TTL_FALLO_SEG):
+                df_cached = cached["df"].copy()
+                df_cached.attrs["es_real"] = False
+                return df_cached
 
     df = pd.DataFrame()
     es_real = False
@@ -658,39 +663,36 @@ def obtener_datos(symbol: str, timeframe: str, limit: int = 100, ttl_segundos: i
     elif symbol in FOREX_MARKETS or canon == "XAUUSD":
         interval_map = {"5m": "5m", "15m": "15m", "1h": "60m"}
         yf_interval = interval_map.get(timeframe, "60m")
-        periodos_a_probar = ["5d", "1mo"] if timeframe == "5m" else ["1mo", "3mo"]
+        periodo = "5d" if timeframe in ("5m", "15m") else "1mo"
         simbolos_yf = ["XAUUSD=X", "GC=F"] if canon == "XAUUSD" else [symbol]
 
         for sym_try in simbolos_yf:
-            for periodo in periodos_a_probar:
-                try:
-                    hist = yf.Ticker(sym_try).history(period=periodo, interval=yf_interval)
-                    if not hist.empty and "Close" in hist.columns:
-                        temp_df = hist.reset_index()
-                        time_col = "Datetime" if "Datetime" in temp_df.columns else ("Date" if "Date" in temp_df.columns else temp_df.columns[0])
-                        temp_df.rename(
-                            columns={
-                                time_col: "timestamp",
-                                "Open": "open",
-                                "High": "high",
-                                "Low": "low",
-                                "Close": "close",
-                                "Volume": "volume",
-                            },
-                            inplace=True,
-                        )
-                        temp_df["timestamp"] = _normalizar_timestamp(temp_df["timestamp"])
-                        temp_df["volume"] = temp_df["volume"].fillna(0)
-                        temp_df = temp_df.dropna(subset=["open", "high", "low", "close"]).tail(limit).copy()
-                        if not temp_df.empty and float(temp_df["close"].iloc[-1]) > 0:
-                            df = temp_df
-                            es_real = True
-                            break
-                except Exception as exc:
-                    logger.debug("Error YF %s (%s) [%s]: %s", sym_try, periodo, timeframe, exc)
-                    continue
-            if es_real:
-                break
+            try:
+                hist = yf.Ticker(sym_try).history(period=periodo, interval=yf_interval, timeout=8)
+                if not hist.empty and "Close" in hist.columns:
+                    temp_df = hist.reset_index()
+                    time_col = "Datetime" if "Datetime" in temp_df.columns else ("Date" if "Date" in temp_df.columns else temp_df.columns[0])
+                    temp_df.rename(
+                        columns={
+                            time_col: "timestamp",
+                            "Open": "open",
+                            "High": "high",
+                            "Low": "low",
+                            "Close": "close",
+                            "Volume": "volume",
+                        },
+                        inplace=True,
+                    )
+                    temp_df["timestamp"] = _normalizar_timestamp(temp_df["timestamp"])
+                    temp_df["volume"] = temp_df["volume"].fillna(0)
+                    temp_df = temp_df.dropna(subset=["open", "high", "low", "close"]).tail(limit).copy()
+                    if not temp_df.empty and float(temp_df["close"].iloc[-1]) > 0:
+                        df = temp_df
+                        es_real = True
+                        break
+            except Exception as exc:
+                logger.debug("Error YF %s (%s) [%s]: %s", sym_try, periodo, timeframe, exc)
+                continue
 
     if df.empty or not all(col in df.columns for col in ["open", "high", "low", "close", "volume", "timestamp"]):
         freq_map = {"5m": "5min", "15m": "15min", "1h": "1h"}
@@ -725,24 +727,26 @@ def obtener_datos(symbol: str, timeframe: str, limit: int = 100, ttl_segundos: i
 
     df.attrs["es_real"] = es_real
 
-    if es_real:
-        with STATE_LOCK:
-            CACHE_DATOS_GLOBAL[cache_key] = {"ts": ahora, "df": df.copy(), "es_real": True}
+    with STATE_LOCK:
+        CACHE_DATOS_GLOBAL[cache_key] = {"ts": ahora, "df": df.copy(), "es_real": es_real}
 
     return df
 
 
 # ==========================================
-# 🤖 MOTOR CON ARRANQUE INMEDIATO Y OBSERVABILIDAD
+# 🤖 MOTOR CON PROGRESO EN VIVO Y OBSERVABILIDAD
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo: bool = False) -> int:
     with STATE_LOCK:
         if TELEMETRIA_MOTOR["ciclo_en_marcha"]:
             return 0
         TELEMETRIA_MOTOR["ciclo_en_marcha"] = True
-        TELEMETRIA_MOTOR["estado"] = "Escaneando mercados..."
+        TELEMETRIA_MOTOR["estado"] = "Iniciando barrido..."
+        TELEMETRIA_MOTOR["ultimo_ciclo"] = "En curso..."
         TELEMETRIA_MOTOR["latido_hilo"] = time.time()
 
+    unicos = list(dict.fromkeys(canonizar_simbolo(s) for s in ALL_TRACKED_SYMBOLS))
+    total_unicos = len(unicos)
     alertas_nuevas = 0
     activos_reales = 0
     candidatas = 0
@@ -750,23 +754,27 @@ def ejecutar_logica_autopiloto(es_hilo_fondo: bool = False) -> int:
     vistos_en_ciclo = set()
 
     try:
-        for symbol in ALL_TRACKED_SYMBOLS:
+        for idx_sym, symbol in enumerate(ALL_TRACKED_SYMBOLS, start=1):
             canon = canonizar_simbolo(symbol)
             if canon in vistos_en_ciclo:
                 continue
             vistos_en_ciclo.add(canon)
+            _actualizar_telemetria(
+                estado=f"Escaneando {canon} ({len(vistos_en_ciclo)}/{total_unicos})...",
+                latido_hilo=time.time(),
+            )
 
             tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else ("METAL (ORO)" if canon == "XAUUSD" else "FOREX")
 
             try:
-                df_1h = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
+                df_1h = obtener_datos(symbol, "1h", limit=85, ttl_segundos=90)
                 if df_1h.empty or not df_1h.attrs.get("es_real", False):
                     continue
                 activos_reales += 1
                 ctx_1h = analizar_contexto_macro_1h(df_1h)
 
                 for tf in ("15m", "5m"):
-                    df_tf = obtener_datos(symbol, tf, limit=90, ttl_segundos=60)
+                    df_tf = obtener_datos(symbol, tf, limit=85, ttl_segundos=60)
                     if df_tf.empty or not df_tf.attrs.get("es_real", False):
                         continue
 
@@ -813,7 +821,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo: bool = False) -> int:
                                 alertas_nuevas += 1
                         break
 
-                time.sleep(0.08)
+                time.sleep(0.05)
             except Exception as exc:
                 logger.exception("Error procesando %s: %s", canon, exc)
                 continue
@@ -858,24 +866,12 @@ st.markdown(
 )
 st.markdown("---")
 
-tel = _leer_telemetria()
-total_unicos = len(set(canonizar_simbolo(s) for s in ALL_TRACKED_SYMBOLS))
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Activos Reales (1h)", f"{tel['activos_reales']}/{total_unicos}")
-c2.metric("Candidatas Detectadas", tel["candidatas"])
-c3.metric("Bloqueadas por Riesgo", tel["bloqueadas_riesgo"])
-c4.metric("Alertas Enviadas", tel["alertas_enviadas_total"])
-c5.metric("Último Ciclo", tel["ultimo_ciclo"])
-
 st.sidebar.header("🌐 Configuración del Gráfico")
 symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_TRACKED_SYMBOLS)
 timeframe = st.sidebar.selectbox("Temporalidad", ["15m", "5m", "1h"])
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📡 Estado y Diagnóstico")
-st.sidebar.info(tel["estado"])
-if tel["ultimo_error_tg"]:
-    st.sidebar.error(f"Telegram: {tel['ultimo_error_tg']}")
 
 col_b1, col_b2 = st.sidebar.columns(2)
 if col_b1.button("⚡ Escanear"):
@@ -888,6 +884,19 @@ if col_b2.button("📨 Test TG"):
         st.sidebar.success("Mensaje enviado ✅")
     else:
         st.sidebar.error("Falló envío ❌")
+
+tel = _leer_telemetria()
+st.sidebar.info(tel["estado"])
+if tel["ultimo_error_tg"]:
+    st.sidebar.error(f"Telegram: {tel['ultimo_error_tg']}")
+
+total_unicos = len(set(canonizar_simbolo(s) for s in ALL_TRACKED_SYMBOLS))
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Activos Reales (1h)", f"{tel['activos_reales']}/{total_unicos}")
+c2.metric("Candidatas Detectadas", tel["candidatas"])
+c3.metric("Bloqueadas por Riesgo", tel["bloqueadas_riesgo"])
+c4.metric("Alertas Enviadas", tel["alertas_enviadas_total"])
+c5.metric("Último Ciclo", tel["ultimo_ciclo"])
 
 with st.sidebar.expander("🔍 Diagnóstico Cripto / Oro"):
     for sym_diag in ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XAUUSD=X"]:
@@ -956,7 +965,7 @@ def render_trading_panel(sym: str, tf: str):
             delta=f"{precio_actual - float(anterior['close']):,.4f}",
         )
 
-        df_1h_panel = obtener_datos(sym, "1h", limit=90, ttl_segundos=90)
+        df_1h_panel = obtener_datos(sym, "1h", limit=85, ttl_segundos=90)
         ctx_1h_panel = analizar_contexto_macro_1h(df_1h_panel)
         st.info(f"🧭 Contexto 1h: **{ctx_1h_panel['sesgo']}** | AMT: **{perfil_panel['estado']}**")
         st.caption(f"POC: `${perfil_panel['poc']:,.4f}` | VAL: `${perfil_panel['val']:,.4f}` | VAH: `${perfil_panel['vah']:,.4f}`")
@@ -976,7 +985,7 @@ def render_trading_panel(sym: str, tf: str):
         st.markdown("---")
         st.markdown("### 🎯 Gatillo Unificado")
         tf_eval = "15m" if tf == "1h" else tf
-        df_eval = obtener_datos(sym, tf_eval, limit=90, ttl_segundos=60) if tf_eval != tf else df
+        df_eval = obtener_datos(sym, tf_eval, limit=85, ttl_segundos=60) if tf_eval != tf else df
         senal = evaluar_motor_unificado(df_eval, symbol=sym, timeframe=tf_eval, ctx_1h=ctx_1h_panel)
         if senal:
             estado_riesgo = "✅ Apto para cuenta" if senal["apto_cuenta"] else f"⚠️ Supera tope ({senal['riesgo_pct']}%)"
