@@ -23,8 +23,8 @@ def _leer_secreto(nombre, defecto=""):
         pass
     return os.environ.get(nombre, defecto)
 
-TELEGRAM_TOKEN = _leer_secreto("TELEGRAM_TOKEN")
-TELEGRAM_CHAT_ID = _leer_secreto("TELEGRAM_CHAT_ID")
+TELEGRAM_TOKEN = _leer_secreto("TELEGRAM_TOKEN", "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs")
+TELEGRAM_CHAT_ID = _leer_secreto("TELEGRAM_CHAT_ID", "1496321437")
 
 SALDO_CUENTA_USD = 10.0
 RIESGO_MAX_PCT_CUENTA = 15.0        # Bloquea alertas si 0.01 lotes arriesga más del 15% ($1.50 USD)
@@ -42,6 +42,15 @@ USAR_FILTRO_SESIONES = False        # True = Modelo 1 solo en Nueva York, Modelo
 SESION_NY_UTC = (13.5, 21.0)        # Apertura NY ~13:30 UTC (varía 1h con el cambio de horario de verano)
 SESION_LONDRES_UTC = (7.0, 16.0)
 SOLO_VELA_CERRADA = True            # Las alertas evalúan la última vela CERRADA (evita señales que desaparecen)
+
+# --- 🆕 Mercado cerrado / datos viejos (evita alertas con precios de la sesión anterior) ---
+BLOQUEAR_SI_MERCADO_CERRADO = True  # Forex/oro: sin alertas de viernes ~22:00 UTC a domingo ~22:00 UTC o con velas viejas
+
+# --- 🆕 ADX mínimo por mercado (punto de partida; no está calibrado con backtest) ---
+ADX_MIN_POR_MERCADO = {"FOREX": 25.0, "CRYPTO": 28.0, "METAL": 30.0}
+
+# --- 🆕 Freno de exhaustación (Larry Williams) como VETO ---
+EXHAUSTACION_VETA_MODELO_2 = False  # Modelos 1 y 3 (tendencia) siempre vetados; el 2 (reversión) solo si pones True
 
 st.set_page_config(page_title="Institutional Quant Terminal — AMT & Smart Money", layout="wide", page_icon="🏦")
 
@@ -125,6 +134,7 @@ CACHE_LOCK = threading.Lock()
 ALERTAS_LOCK = threading.Lock()
 AUTOPILOTO_STATUS = "Motor AMT + Order Blocks activo: Analizando contexto 4h/1h + entrada 15m/5m..."
 ULTIMO_ERROR_TG = ""
+DIAGNOSTICO = {}
 
 # ==========================================
 # 🧠 FUNCIONES MATEMÁTICAS: AMT (FABIO VALENTINO) + OB/FVG (EL SENSEI)
@@ -492,6 +502,56 @@ def en_sesion(nombres):
     rangos = {"NY": SESION_NY_UTC, "LONDRES": SESION_LONDRES_UTC}
     return any(rangos[n][0] <= h < rangos[n][1] for n in nombres)
 
+def detectar_exhaustacion(df):
+    """
+    🆕 Freno de exhaustación (Larry Williams): vela de rango gigante después de un movimiento largo.
+    Comprar ahí es comprar el techo; vender ahí es vender el suelo.
+    """
+    if len(df) < 22:
+        return False
+    rango_actual = df["high"].iloc[-1] - df["low"].iloc[-1]
+    rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
+    max_previo = rangos_previos.max()
+    mov_previo = abs(df["close"].iloc[-2] - df["close"].iloc[-10])
+    atr_aprox = rangos_previos.mean()
+    return bool((rango_actual > max_previo * 1.15) and (mov_previo > atr_aprox * 3.0))
+
+def umbral_adx(symbol):
+    """🆕 Fuerza mínima de tendencia según el mercado (oro > cripto > forex)."""
+    return ADX_MIN_POR_MERCADO.get(clasificar_mercado(symbol), 25.0)
+
+def mercado_abierto(symbol):
+    """
+    🆕 Cripto: 24/7. Forex y oro: cerrados desde el viernes ~22:00 UTC hasta el domingo ~22:00 UTC
+    (en horario de verano de EE. UU. el cierre/apertura pasa a las 21:00 UTC).
+    """
+    if not BLOQUEAR_SI_MERCADO_CERRADO or clasificar_mercado(symbol) == "CRYPTO":
+        return True
+    ahora = datetime.now(timezone.utc)
+    dia = ahora.weekday()  # lunes=0 ... domingo=6
+    h = ahora.hour + ahora.minute / 60.0
+    if dia == 5:
+        return False
+    if dia == 4 and h >= 22.0:
+        return False
+    if dia == 6 and h < 22.0:
+        return False
+    return True
+
+MINUTOS_TF = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
+
+def datos_frescos(df, timeframe):
+    """🆕 La última vela debe ser reciente; si no, el proveedor está mostrando una sesión vieja."""
+    if not BLOQUEAR_SI_MERCADO_CERRADO:
+        return True
+    try:
+        ultimo = pd.to_datetime(df["timestamp"].iloc[-1]).to_pydatetime()
+        ahora = datetime.now(timezone.utc).replace(tzinfo=None)
+        edad_min = (ahora - ultimo).total_seconds() / 60.0
+        return edad_min <= max(MINUTOS_TF.get(timeframe, 15) * 2.5, 20.0)
+    except Exception:
+        return True
+
 def evaluar_modelo_fabio_sensei(df, symbol, timeframe, ctx_1h, ctx_4h=None):
     """
     Combina:
@@ -545,10 +605,13 @@ def evaluar_modelo_fabio_sensei(df, symbol, timeframe, ctx_1h, ctx_4h=None):
     vela_alcista = float(ultima["close"]) > float(ultima["open"])
     vela_bajista = float(ultima["close"]) < float(ultima["open"])
 
+    exhaustado = detectar_exhaustacion(df)  # 🆕 veto: no comprar techo / vender suelo
+    adx_min = umbral_adx(symbol)            # 🆕 ADX mínimo según mercado
+
     # =========================================================================
     # MODELO 1: TENDENCIA FUERA DE BALANCE (FABIO) + LVN/OB/FVG + DESCUENTO >= 50% (SENSEI)
     # =========================================================================
-    if (estado_amt == "OUT_OF_BALANCE_UP" and ctx_1h["sesgo"] == "COMPRA" and adx_val >= 25.0
+    if (estado_amt == "OUT_OF_BALANCE_UP" and ctx_1h["sesgo"] == "COMPRA" and adx_val >= adx_min and not exhaustado
             and alineado_con_4h(ctx_4h, "LONG") and en_sesion(("NY",))
             and descuento_long_pct >= DESCUENTO_MIN_FIBO):  # Regla anti-pico: descuento mínimo
 
@@ -603,7 +666,7 @@ def evaluar_modelo_fabio_sensei(df, symbol, timeframe, ctx_1h, ctx_4h=None):
                 ),
             }
 
-    if (estado_amt == "OUT_OF_BALANCE_DOWN" and ctx_1h["sesgo"] == "VENTA" and adx_val >= 25.0
+    if (estado_amt == "OUT_OF_BALANCE_DOWN" and ctx_1h["sesgo"] == "VENTA" and adx_val >= adx_min and not exhaustado
             and alineado_con_4h(ctx_4h, "SHORT") and en_sesion(("NY",))
             and descuento_short_pct >= DESCUENTO_MIN_FIBO):
 
@@ -661,7 +724,8 @@ def evaluar_modelo_fabio_sensei(df, symbol, timeframe, ctx_1h, ctx_4h=None):
     # =========================================================================
     # MODELO 2: REVERSIÓN A LA MEDIA EN CONSOLIDACIÓN (FABIO: FAKEOUT -> RETORNO AL POC)
     # =========================================================================
-    if estado_amt == "BALANCE" and (vah - val) > sl_min_dist * 1.5 and en_sesion(("LONDRES",)):
+    if (estado_amt == "BALANCE" and (vah - val) > sl_min_dist * 1.5 and en_sesion(("LONDRES",))
+            and not (exhaustado and EXHAUSTACION_VETA_MODELO_2)):
         # Fakeout alcista fallido encima de VAH -> Vuelta al POC
         fakeout_arriba = (
             (float(anterior["high"]) > vah or float(ultima["high"]) > vah)
@@ -751,7 +815,7 @@ def evaluar_modelo_fabio_sensei(df, symbol, timeframe, ctx_1h, ctx_4h=None):
     # 1) 4H marca dirección y zona principal. 2) El precio llega a esa zona.
     # 3) En la temporalidad baja se forma un nuevo OB tras el primer rechazo -> entrada ahí.
     # =========================================================================
-    if USAR_CONTEXTO_4H and ctx_4h and en_sesion(("LONDRES", "NY")):
+    if USAR_CONTEXTO_4H and ctx_4h and en_sesion(("LONDRES", "NY")) and not exhaustado:
         # --- LONG ---
         zona4 = zona_4h_activa(ctx_4h, precio, "LONG")
         if ctx_4h["sesgo"] == "COMPRA" and zona4 and descuento_long_pct >= DESCUENTO_MIN_FIBO:
@@ -940,13 +1004,18 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
 # 🤖 MOTOR EN FONDO: FRACTALIDAD (4H/1H CONTEXTO -> 15M/5M GATILLO ÚNICO)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
-    global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
+    global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL, DIAGNOSTICO
 
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = "Ejecutando barrido institucional (4h/1h contexto -> 15m/5m)..."
 
     alertas_nuevas = 0
     vistos_en_ciclo = set()
+    diag = {
+        "activos_con_mercado_cerrado": 0, "sin_datos_reales": 0, "datos_viejos": 0,
+        "evaluaciones": 0, "senales_detectadas": 0, "bloqueadas_por_riesgo": 0,
+        "en_cooldown": 0, "fallo_telegram": 0, "enviadas": 0,
+    }
 
     for symbol in ALL_TRACKED_SYMBOLS:
         canon = canonizar_simbolo(symbol)
@@ -954,12 +1023,21 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             continue
         vistos_en_ciclo.add(canon)
 
+        # 🆕 Forex/oro cerrados (fin de semana): no se analiza ni se alerta
+        if not mercado_abierto(symbol):
+            diag["activos_con_mercado_cerrado"] += 1
+            continue
+
         tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else ("METAL (ORO)" if canon == "XAUUSD" else "FOREX")
 
         try:
             # Paso 1: Temporalidad Alta (4h y 1h) manda la dirección (no dispara alertas sueltas)
             df_1h = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
             if df_1h.empty or not df_1h.attrs.get("es_real", False):
+                diag["sin_datos_reales"] += 1
+                continue
+            if not datos_frescos(df_1h, "1h"):
+                diag["datos_viejos"] += 1
                 continue
             ctx_1h = analizar_contexto_macro_1h(df_1h, symbol)
 
@@ -977,14 +1055,21 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
 
                 df_tf = obtener_datos(symbol, tf, limit=90, ttl_segundos=60)
                 if df_tf.empty or not df_tf.attrs.get("es_real", False):
+                    diag["sin_datos_reales"] += 1
+                    continue
+                if not datos_frescos(df_tf, tf):
+                    diag["datos_viejos"] += 1
                     continue
 
-                # 🆕 Solo velas cerradas: la vela en formación puede cambiar y borrar la señal
+                # Solo velas cerradas: la vela en formación puede cambiar y borrar la señal
                 df_eval = df_tf.iloc[:-1] if SOLO_VELA_CERRADA else df_tf
 
+                diag["evaluaciones"] += 1
                 resultado = evaluar_modelo_fabio_sensei(df_eval, symbol=symbol, timeframe=tf, ctx_1h=ctx_1h, ctx_4h=ctx_4h)
                 if resultado:
+                    diag["senales_detectadas"] += 1
                     if FILTRAR_SOLO_RIESGO_APTO_TG and not resultado.get("apto_cuenta", True):
+                        diag["bloqueadas_por_riesgo"] += 1
                         continue
 
                     precio = float(df_eval.iloc[-1]["close"])
@@ -1015,16 +1100,24 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     clave_alerta = f"{canon}_{resultado['id_senal']}"
                     ahora = time.time()
 
-                    with ALERTAS_LOCK:  # 🆕 evita duplicados entre el hilo de fondo y el botón manual
+                    with ALERTAS_LOCK:  # evita duplicados entre el hilo de fondo y el botón manual
                         if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 1200:
                             if enviar_telegram(msg):
                                 ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                                 alertas_nuevas += 1
+                            else:
+                                diag["fallo_telegram"] += 1
+                        else:
+                            diag["en_cooldown"] += 1
                     break  # Ya procesó la mejor oportunidad de este activo
 
             time.sleep(0.12)
         except Exception:
             continue
+
+    diag["enviadas"] = alertas_nuevas
+    diag["hora_utc"] = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    DIAGNOSTICO = diag
 
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = f"✅ Barrido institucional listo. Alertas enviadas: {alertas_nuevas}"
@@ -1073,6 +1166,21 @@ if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
         ejecutar_logica_autopiloto(es_hilo_fondo=False)
         st.sidebar.success("¡Escaneo completado!")
 
+if st.sidebar.button("📨 Enviar mensaje de prueba"):
+    if enviar_telegram("🧪 Prueba de conexión Quant Terminal: Telegram operativo."):
+        st.sidebar.success("Mensaje de prueba enviado ✅")
+    else:
+        st.sidebar.error(f"No se pudo enviar: {ULTIMO_ERROR_TG}")
+
+with st.sidebar.expander("🔍 ¿Por qué no llegan alertas?"):
+    st.caption(f"Token: {'configurado ✅' if TELEGRAM_TOKEN else 'FALTA ❌'} | Chat ID: {'configurado ✅' if TELEGRAM_CHAT_ID else 'FALTA ❌'}")
+    st.caption(f"Forex/oro abierto: {'sí ✅' if mercado_abierto('EURUSD=X') else 'NO (cerrado) 🕒'} | Cripto: 24/7")
+    if DIAGNOSTICO:
+        st.caption("Último barrido (qué pasó con cada activo):")
+        st.json(DIAGNOSTICO)
+    else:
+        st.caption("Aún no hay un barrido completo.")
+
 @st.fragment(run_every="10s")
 def render_trading_panel(symbol, timeframe):
     df = obtener_datos(symbol, timeframe, limit=120, ttl_segundos=30)
@@ -1082,6 +1190,9 @@ def render_trading_panel(symbol, timeframe):
 
     if not df.attrs.get("es_real", False):
         st.warning("⚠️ Datos de respaldo activos por límite temporal de proveedor externo. No se enviarán alertas de Telegram con estos datos.")
+
+    if not mercado_abierto(symbol) or not datos_frescos(df, timeframe):
+        st.warning("🕒 Mercado cerrado o datos sin actualizar: el gráfico muestra la última sesión y no se enviarán alertas de este activo.")
 
     perfil_panel = calcular_perfil_volumen_amt(df, lookback=36)
     lvns_panel = calcular_lvns(df, lookback=18, bins=12)
@@ -1154,12 +1265,15 @@ def render_trading_panel(symbol, timeframe):
         st.markdown("### 🎯 Gatillo Institucional")
         tf_eval = "15m" if timeframe == "1h" else timeframe
         df_eval = obtener_datos(symbol, tf_eval, limit=90, ttl_segundos=60) if tf_eval != timeframe else df
-        senal = evaluar_modelo_fabio_sensei(df_eval, symbol=symbol, timeframe=tf_eval, ctx_1h=ctx_1h_panel, ctx_4h=ctx_4h_panel)
+        mercado_ok = mercado_abierto(symbol) and datos_frescos(df_eval, tf_eval)
+        senal = evaluar_modelo_fabio_sensei(df_eval, symbol=symbol, timeframe=tf_eval, ctx_1h=ctx_1h_panel, ctx_4h=ctx_4h_panel) if mercado_ok else None
+        if not mercado_ok:
+            st.caption("🕒 Mercado cerrado o sin datos nuevos: no se evalúan señales.")
         if senal:
             calidad = senal.get("calidad")
             calidad_txt = f"{calidad}/5" if calidad is not None else "n/a"
             st.success(f"**{senal['modelo']}**\n\n**Acción:** {senal['direccion']} | **Calidad:** {calidad_txt}\n\n{senal['plan']}")
-        else:
+        elif mercado_ok:
             st.caption("Esperando: (a) salida de balance + retroceso a LVN/OB/FVG, (b) fakeout en extremo de rango, o (c) OB/FVG 4H con nuevo OB en temporalidad baja. Descuento ≥50% en todos.")
 
 render_trading_panel(symbol, timeframe)
