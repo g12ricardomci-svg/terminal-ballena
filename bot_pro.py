@@ -11,28 +11,23 @@ import threading
 from datetime import datetime
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL & LISTA CERRADA ESTRICTA
+# ⚙️ CONFIGURACIÓN GLOBAL & LISTA CERRADA ESTRICTA ($10 USD: FOREX + CRIPTO)
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
-st.set_page_config(page_title="Institutional Quant Terminal - Unified Engine", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Institutional Quant Terminal - Forex & Crypto", layout="wide", page_icon="🏦")
 
-# ÚNICOS ACTIVOS PERMITIDOS (incluye los 10 pares principales de Forex + Oro)
+# ÚNICOS MERCADOS HABILITADOS PARA ALERTAS Y ESCANEO ($10 USD)
 CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
 FOREX_MARKETS = [
     "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
     "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X",
     "XAUUSD=X", "XAUUSD"
 ]
-NASDAQ_MARKETS = [
-    "NVDA", "AAPL", "MSFT", "TSLA", "AMZN", "GOOGL", "META",
-    "NFLX", "AMD", "AVGO", "COST", "PEP", "ADBE", "QCOM",
-    "INTC", "CSCO", "TMUS", "CMCSA", "TXN", "HON", "AMGN",
-    "SBUX", "INTU", "AMAT", "BKNG", "ISRG", "MDLZ", "PYPL", "ADI"
-]
+NASDAQ_MARKETS = []
 
-ALL_TRACKED_SYMBOLS = list(dict.fromkeys(CRYPTO_MARKETS + FOREX_MARKETS + NASDAQ_MARKETS))
+ALL_TRACKED_SYMBOLS = list(dict.fromkeys(CRYPTO_MARKETS + FOREX_MARKETS))
 
 def _crear_exchange(ex_id):
     try:
@@ -47,7 +42,7 @@ EXCHANGE_BINANCE = _crear_exchange("binance")
 ALERTAS_ENVIADAS_GLOBAL = {}
 CACHE_DATOS_GLOBAL = {}
 CACHE_LOCK = threading.Lock()
-AUTOPILOTO_STATUS = "Motor unificado activo: Escaneando cada 30s..."
+AUTOPILOTO_STATUS = "Motor Forex & Cripto activo: Escaneando cada 30s..."
 
 # ==========================================
 # 🧠 FUNCIONES MATEMÁTICAS, FLUJO Y ESTRUCTURA
@@ -67,14 +62,14 @@ def _normalizar_timestamp(serie):
     return ts
 
 def obtener_umbral_adx(symbol):
-    """Mantiene Nasdaq en > 50 y adapta el umbral de fuerza a la dinámica de Oro, Cripto y Forex."""
+    """Adapta el umbral de fuerza a la dinámica de Oro, Cripto y Forex."""
     if symbol in ("XAUUSD", "XAUUSD=X"):
         return 40.0
     if symbol in CRYPTO_MARKETS:
         return 38.0
     if symbol in FOREX_MARKETS:
         return 35.0
-    return 50.0
+    return 35.0
 
 def calcular_vwap(df):
     if df.empty or "volume" not in df.columns or df["volume"].sum() == 0:
@@ -301,7 +296,7 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
                         break
             except Exception:
                 continue
-    else:
+    elif symbol in FOREX_MARKETS:
         interval_map = {"5m": "5m", "15m": "15m", "1h": "60m"}
         yf_interval = interval_map.get(timeframe, "60m")
         periodos_a_probar = ["5d", "1mo"] if timeframe == "5m" else ["1mo", "3mo"]
@@ -375,19 +370,22 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
     return df
 
 # ==========================================
-# 🤖 MOTOR UNIFICADO EN FONDO (ESTABLE EN CLOUD)
+# 🤖 MOTOR EN FONDO (SOLO FOREX/METAL Y CRIPTO)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
 
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Ejecutando barrido unificado..."
+        AUTOPILOTO_STATUS = "Ejecutando barrido Forex & Cripto..."
 
     temporalidades = ["5m", "15m", "1h"]
     alertas_nuevas = 0
 
     for symbol in ALL_TRACKED_SYMBOLS:
-        tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else ("FOREX/METAL" if symbol in FOREX_MARKETS else "NASDAQ")
+        if symbol not in CRYPTO_MARKETS and symbol not in FOREX_MARKETS:
+            continue
+
+        tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else "FOREX/METAL"
 
         for tf in temporalidades:
             if not es_hilo_fondo:
@@ -429,7 +427,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = f"✅ Barrido listo. Alertas reales enviadas: {alertas_nuevas}"
     else:
-        AUTOPILOTO_STATUS = "⚡ Motor conjunto activo (ciclo cada 30s) con datos reales..."
+        AUTOPILOTO_STATUS = "⚡ Motor Forex & Cripto activo (ciclo cada 30s) con datos reales..."
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
@@ -450,8 +448,8 @@ iniciar_hilo_autopiloto()
 # ==========================================
 # 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — UNIFIED ENGINE</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Escaneo Estable • ADX Adaptativo + VWAP/EMAs + CVD/Desbalance + OB/FVG/Descuento + Freno Exhaustación</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — FOREX & CRYPTO</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Alertas Filtradas para Forex/Oro y Cripto • ADX Adaptativo + VWAP/EMAs + CVD/Desbalance + OB/FVG/Descuento + Freno Exhaustación</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
@@ -462,10 +460,10 @@ st.sidebar.markdown("---")
 st.sidebar.subheader("📡 Estado del Motor")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
-if st.sidebar.button("⚡ Forzar Escaneo Unificado Ahora"):
-    with st.spinner("Ejecutando motor unificado en todos los activos..."):
+if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
+    with st.spinner("Ejecutando motor en Forex/Oro y Cripto..."):
         ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        st.sidebar.success("¡Escaneo unificado completado!")
+        st.sidebar.success("¡Escaneo completado!")
 
 with st.sidebar.expander("🔍 Diagnóstico Cripto / Oro"):
     for sym_diag in ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XAUUSD=X"]:
