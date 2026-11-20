@@ -11,14 +11,18 @@ import threading
 from datetime import datetime
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL & LISTA CERRADA ESTRICTA ($10 USD: FOREX + CRIPTO)
+# ⚙️ CONFIGURACIÓN GLOBAL & GESTIÓN PARA CUENTA DE $10 USD
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
-st.set_page_config(page_title="Institutional Quant Terminal - Forex & Crypto", layout="wide", page_icon="🏦")
+SALDO_CUENTA_USD = 10.0
+RIESGO_MAX_PCT_CUENTA = 15.0        # Bloquea alertas si 0.01 lotes arriesga más del 15% ($1.50 USD)
+DESCUENTO_MIN_FIBO = 50.0           # Regla El Sensei: exigir >= 50% de descuento antes de alertar
+FILTRAR_SOLO_RIESGO_APTO_TG = True  # Evita alertas con SL demasiado ancho para $10 USD
 
-# ÚNICOS MERCADOS HABILITADOS PARA ALERTAS Y ESCANEO ($10 USD) — SIN DUPLICADOS
+st.set_page_config(page_title="Institutional Quant Terminal — AMT & Smart Money", layout="wide", page_icon="🏦")
+
 CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
 FOREX_MARKETS = [
     "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
@@ -53,6 +57,34 @@ def tamano_pip(symbol):
         return 0.01
     return 0.0001
 
+def calcular_riesgo_001_lotes(symbol, precio, sl):
+    canon = canonizar_simbolo(symbol)
+    mercado = clasificar_mercado(symbol)
+    dist = abs(float(precio) - float(sl))
+    if dist <= 0 or float(precio) <= 0:
+        return 0.0, 0.0, 0.0
+
+    pip = tamano_pip(symbol)
+    pips_o_pts = dist / pip
+
+    if mercado == "CRYPTO":
+        riesgo_usd = dist * 0.01
+    elif canon == "XAUUSD":
+        riesgo_usd = dist * 1.0
+    elif canon.endswith("USD"):
+        pips = dist / 0.0001
+        riesgo_usd = pips * 0.10
+    elif "JPY" in canon:
+        pips = dist / 0.01
+        riesgo_usd = pips * (10.0 / float(precio))
+    else:
+        pips = dist / 0.0001
+        riesgo_usd = pips * (0.10 / float(precio))
+
+    riesgo_usd = round(float(riesgo_usd), 2)
+    riesgo_pct = round((riesgo_usd / max(SALDO_CUENTA_USD, 0.01)) * 100.0, 1)
+    return round(float(pips_o_pts), 1), riesgo_usd, riesgo_pct
+
 ALL_TRACKED_SYMBOLS = list(dict.fromkeys(CRYPTO_MARKETS + FOREX_MARKETS))
 
 def _crear_exchange(ex_id):
@@ -68,11 +100,11 @@ EXCHANGE_BINANCE = _crear_exchange("binance")
 ALERTAS_ENVIADAS_GLOBAL = {}
 CACHE_DATOS_GLOBAL = {}
 CACHE_LOCK = threading.Lock()
-AUTOPILOTO_STATUS = "Motor Forex & Cripto activo: Escaneando cada 30s..."
+AUTOPILOTO_STATUS = "Motor AMT + Order Blocks activo: Analizando contexto 1h + entrada 15m/5m..."
 ULTIMO_ERROR_TG = ""
 
 # ==========================================
-# 🧠 FUNCIONES MATEMÁTICAS, FLUJO Y ESTRUCTURA
+# 🧠 FUNCIONES MATEMÁTICAS: AMT (FABIO VALENTINO) + OB/FVG (EL SENSEI)
 # ==========================================
 def enviar_telegram(mensaje):
     global ULTIMO_ERROR_TG
@@ -95,28 +127,16 @@ def _normalizar_timestamp(serie):
         ts = ts.dt.tz_convert(None)
     return ts
 
-def obtener_umbral_adx(symbol, timeframe="15m"):
-    """Adapta el umbral de fuerza por mercado y temporalidad."""
-    mercado = clasificar_mercado(symbol)
-    if mercado == "METAL":
-        return {"5m": 38.0, "15m": 34.0, "1h": 30.0}.get(timeframe, 36.0)
-    if mercado == "CRYPTO":
-        return {"5m": 35.0, "15m": 32.0, "1h": 28.0}.get(timeframe, 34.0)
-    # FOREX
-    return {"5m": 32.0, "15m": 28.0, "1h": 25.0}.get(timeframe, 30.0)
-
 def obtener_sl_minimo(symbol, timeframe, precio):
-    """Piso mínimo de distancia de SL para evitar stops de 1 pip atrapados por el spread."""
     mercado = clasificar_mercado(symbol)
     pip = tamano_pip(symbol)
     if mercado == "FOREX":
-        pips_min = {"5m": 8.0, "15m": 12.0, "1h": 18.0}.get(timeframe, 10.0)
+        pips_min = {"5m": 8.0, "15m": 11.0, "1h": 16.0}.get(timeframe, 10.0)
         return pips_min * pip
     if mercado == "METAL":
-        pts_min = {"5m": 4.5, "15m": 8.0, "1h": 14.0}.get(timeframe, 8.0)
+        pts_min = {"5m": 4.0, "15m": 7.0, "1h": 12.0}.get(timeframe, 7.0)
         return pts_min
-    # CRYPTO
-    pct_min = {"5m": 0.0045, "15m": 0.0080, "1h": 0.0150}.get(timeframe, 0.0080)
+    pct_min = {"5m": 0.0040, "15m": 0.0070, "1h": 0.0120}.get(timeframe, 0.0070)
     return float(precio) * pct_min
 
 def calcular_vwap(df):
@@ -158,197 +178,373 @@ def calcular_cvd_proxy(df):
     delta_vol = df["volume"] * delta_ratio
     return delta_vol.cumsum()
 
-def detectar_exhaustacion(df):
-    if len(df) < 22:
-        return False
-    rango_actual = df["high"].iloc[-1] - df["low"].iloc[-1]
-    rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
-    max_previo = rangos_previos.max()
-    mov_previo = abs(df["close"].iloc[-2] - df["close"].iloc[-10])
-    atr_aprox = rangos_previos.mean()
-    return (rango_actual > max_previo * 1.15) and (mov_previo > atr_aprox * 3.0)
+def calcular_perfil_volumen_amt(df, lookback=36, bins=18):
+    """
+    Calcula POC (Point of Control), VAH (Value Area High), VAL (Value Area Low)
+    y estado AMT (BALANCE vs FUERA DE BALANCE) según Fabio Valentino.
+    """
+    sub = df.iloc[-lookback:].copy() if len(df) >= lookback else df.copy()
+    p_min = float(sub["low"].min())
+    p_max = float(sub["high"].max())
+    precio_actual = float(sub["close"].iloc[-1])
+
+    if p_max <= p_min:
+        return {
+            "poc": precio_actual,
+            "vah": precio_actual,
+            "val": precio_actual,
+            "estado": "BALANCE",
+        }
+
+    # Perfil previo (excluyendo las últimas 3 velas para detectar ruptura real fuera de balance)
+    sub_prev = sub.iloc[:-3] if len(sub) > 12 else sub
+    prev_min = float(sub_prev["low"].min())
+    prev_max = float(sub_prev["high"].max())
+    if prev_max <= prev_min:
+        prev_min, prev_max = p_min, p_max
+
+    edges = np.linspace(prev_min, prev_max, bins + 1)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    vol_bins = np.zeros(bins, dtype=float)
+
+    tiene_vol = ("volume" in sub_prev.columns) and (float(sub_prev["volume"].sum()) > 0)
+    for _, row in sub_prev.iterrows():
+        tp = (float(row["high"]) + float(row["low"]) + float(row["close"])) / 3.0
+        peso = float(row["volume"]) if tiene_vol else (float(row["high"]) - float(row["low"]) + 1e-9)
+        idx = int(np.clip(np.digitize(tp, edges) - 1, 0, bins - 1))
+        vol_bins[idx] += max(peso, 1e-9)
+
+    poc_idx = int(np.argmax(vol_bins))
+    poc = float(centers[poc_idx])
+
+    # Construir Value Area (~70% del volumen alrededor del POC)
+    total_vol = float(vol_bins.sum())
+    acum = float(vol_bins[poc_idx])
+    low_i = poc_idx
+    high_i = poc_idx
+    while acum < total_vol * 0.70 and (low_i > 0 or high_i < bins - 1):
+        v_low = vol_bins[low_i - 1] if low_i > 0 else -1.0
+        v_high = vol_bins[high_i + 1] if high_i < bins - 1 else -1.0
+        if v_high >= v_low and high_i < bins - 1:
+            high_i += 1
+            acum += v_high
+        elif low_i > 0:
+            low_i -= 1
+            acum += v_low
+        else:
+            break
+
+    val = float(edges[low_i])
+    vah = float(edges[high_i + 1])
+
+    if precio_actual > vah:
+        estado = "OUT_OF_BALANCE_UP"
+    elif precio_actual < val:
+        estado = "OUT_OF_BALANCE_DOWN"
+    else:
+        estado = "BALANCE"
+
+    return {
+        "poc": poc,
+        "vah": vah,
+        "val": val,
+        "estado": estado,
+    }
 
 def detectar_fvg_3_velas(df):
-    """Detecta Fair Value Gap / Imbalance de 3 velas en las últimas barras."""
-    if len(df) < 4:
+    """Detecta Imbalance / Fair Value Gap de 3 velas."""
+    if len(df) < 5:
         return None
-    for idx in (-1, -2, -3):
-        pos = len(df) + idx
-        if pos < 2:
-            continue
-        v1_high = float(df["high"].iloc[pos - 2])
-        v1_low = float(df["low"].iloc[pos - 2])
-        v3_low = float(df["low"].iloc[pos])
-        v3_high = float(df["high"].iloc[pos])
+    for idx in range(len(df) - 1, max(2, len(df) - 8), -1):
+        v1_high = float(df["high"].iloc[idx - 2])
+        v1_low = float(df["low"].iloc[idx - 2])
+        v3_low = float(df["low"].iloc[idx])
+        v3_high = float(df["high"].iloc[idx])
 
         if v3_low > v1_high:
-            return {"tipo": "FVG_ALCISTA", "zona_low": v1_high, "zona_high": v3_low}
+            return {"tipo": "FVG_ALCISTA", "zona_low": v1_high, "zona_high": v3_low, "pos": idx}
         if v3_high < v1_low:
-            return {"tipo": "FVG_BAJISTA", "zona_low": v3_high, "zona_high": v1_low}
+            return {"tipo": "FVG_BAJISTA", "zona_low": v3_high, "zona_high": v1_low, "pos": idx}
     return None
 
-def evaluar_estrategia_unificada(df, symbol="", timeframe="15m", sesgo_1h=None):
+def detectar_order_block_institucional(df):
     """
-    Motor separado por mercado (FOREX / METAL / CRYPTO) con confluencias reales
-    y piso mínimo de SL por temporalidad.
+    Regla El Sensei:
+    - OB Alcista: última vela bajista antes de un impulso alcista con imbalance.
+    - OB Bajista: última vela alcista antes de un impulso bajista con imbalance.
     """
-    if df.empty or len(df) < 25:
+    if len(df) < 12:
+        return None
+    for idx in range(len(df) - 2, max(2, len(df) - 10), -1):
+        vela = df.iloc[idx]
+        sig1 = df.iloc[idx + 1]
+        cuerpo_impulso = abs(float(sig1["close"]) - float(sig1["open"]))
+        rango_prev = (df["high"].iloc[max(0, idx - 10):idx] - df["low"].iloc[max(0, idx - 10):idx]).mean()
+        atr_local = float(rango_prev) if pd.notna(rango_prev) and rango_prev > 0 else cuerpo_impulso
+
+        # OB Alcista: vela roja seguida de vela verde impulsiva
+        if float(vela["close"]) < float(vela["open"]) and float(sig1["close"]) > float(sig1["open"]):
+            if float(sig1["close"]) > float(vela["high"]) and cuerpo_impulso >= atr_local * 0.8:
+                return {
+                    "tipo": "OB_ALCISTA",
+                    "low": float(vela["low"]),
+                    "high": float(vela["high"]),
+                    "pos": idx,
+                }
+
+        # OB Bajista: vela verde seguida de vela roja impulsiva
+        if float(vela["close"]) > float(vela["open"]) and float(sig1["close"]) < float(sig1["open"]):
+            if float(sig1["close"]) < float(vela["low"]) and cuerpo_impulso >= atr_local * 0.8:
+                return {
+                    "tipo": "OB_BAJISTA",
+                    "low": float(vela["low"]),
+                    "high": float(vela["high"]),
+                    "pos": idx,
+                }
+    return None
+
+def analizar_contexto_macro_1h(df_1h, symbol):
+    """
+    Temporalidad Alta (1h): define el sesgo direccional y estado AMT macro.
+    No envía alertas sueltas de 1h; filtra las entradas de 15m/5m.
+    """
+    if df_1h is None or df_1h.empty or len(df_1h) < 30:
+        return {"sesgo": "NEUTRAL", "amt": "BALANCE", "poc": 0.0, "vah": 0.0, "val": 0.0}
+
+    ultima = df_1h.iloc[-1]
+    precio = float(ultima["close"])
+    vwap = float(ultima.get("vwap", precio))
+    ema9 = float(ultima.get("ema_fast", precio))
+    ema21 = float(ultima.get("ema_slow", precio))
+    adx = float(ultima.get("adx", 20.0))
+    perfil = calcular_perfil_volumen_amt(df_1h, lookback=36)
+
+    if precio > vwap and ema9 > ema21 and adx >= 22.0:
+        sesgo = "COMPRA"
+    elif precio < vwap and ema9 < ema21 and adx >= 22.0:
+        sesgo = "VENTA"
+    else:
+        sesgo = "NEUTRAL"
+
+    return {
+        "sesgo": sesgo,
+        "amt": perfil["estado"],
+        "poc": perfil["poc"],
+        "vah": perfil["vah"],
+        "val": perfil["val"],
+        "adx": adx,
+    }
+
+def evaluar_modelo_fabio_sensei(df, symbol, timeframe, ctx_1h):
+    """
+    Combina:
+    1. Modelo 1 Fabio Valentino (Fuera de Balance + Flujo CVD/Volumen -> objetivo POC/extremo).
+    2. Modelo 2 Fabio Valentino (Consolidación / Balance -> Fakeout en VAH/VAL -> retorno al POC).
+    3. Filtro El Sensei (Fractalidad 1h + Order Block + FVG + Descuento Fibonacci >= 50%).
+    """
+    if df is None or df.empty or len(df) < 30:
         return None
 
     mercado = clasificar_mercado(symbol)
     ultima = df.iloc[-1]
     anterior = df.iloc[-2]
     precio = float(ultima["close"])
-    adx_val = float(ultima.get("adx", 0.0))
     vwap_val = float(ultima.get("vwap", precio))
     ema_fast = float(ultima.get("ema_fast", precio))
     ema_slow = float(ultima.get("ema_slow", precio))
+    adx_val = float(ultima.get("adx", 20.0))
 
-    adx_min = obtener_umbral_adx(symbol, timeframe=timeframe)
-    if adx_val <= adx_min:
-        return None
+    rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
+    atr_ref = float(rangos_previos.mean()) if len(rangos_previos) > 0 and pd.notna(rangos_previos.mean()) else max(precio * 0.002, tamano_pip(symbol) * 8)
+
+    perfil = calcular_perfil_volumen_amt(df, lookback=36)
+    poc, vah, val, estado_amt = perfil["poc"], perfil["vah"], perfil["val"], perfil["estado"]
+    ob = detectar_order_block_institucional(df)
+    fvg = detectar_fvg_3_velas(df)
 
     vol_actual = float(ultima.get("volume", 0.0))
     vol_ma = float(ultima.get("vol_ma", 0.0))
-    desbalance_vol = (vol_ma > 0) and (vol_actual > vol_ma * 1.25)
-
     cvd_actual = float(ultima.get("cvd", 0.0))
     cvd_prev = float(anterior.get("cvd", 0.0))
-    cvd_alcista = cvd_actual > cvd_prev
-    cvd_bajista = cvd_actual < cvd_prev
 
-    es_exhaustacion = detectar_exhaustacion(df)
-    fvg = detectar_fvg_3_velas(df)
+    # Impulso reciente (últimas 18 velas) para medir el Descuento Fibonacci (regla El Sensei >= 50%)
+    impulso_high = float(df["high"].iloc[-18:].max())
+    impulso_low = float(df["low"].iloc[-18:].min())
+    rango_impulso = max(impulso_high - impulso_low, 1e-9)
+    descuento_long_pct = ((impulso_high - precio) / rango_impulso) * 100.0
+    descuento_short_pct = ((precio - impulso_low) / rango_impulso) * 100.0
 
-    rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
-    atr_prom = float(rangos_previos.mean()) if len(rangos_previos) > 0 else 0.0
-    atr_ref = atr_prom if (pd.notna(atr_prom) and atr_prom > 0) else max(abs(float(ultima["high"]) - float(ultima["low"])), precio * 0.0025)
-
-    swing_low_ref = float(df["low"].iloc[-7:-1].min()) if len(df) >= 8 else float(ultima["low"])
-    swing_high_ref = float(df["high"].iloc[-7:-1].max()) if len(df) >= 8 else float(ultima["high"])
-    swing_max_prev = float(df["high"].iloc[-10:-1].max()) if len(df) >= 11 else swing_high_ref
-    swing_min_prev = float(df["low"].iloc[-10:-1].min()) if len(df) >= 11 else swing_low_ref
-    rr_mult = 2.5
     sl_min_dist = obtener_sl_minimo(symbol, timeframe, precio)
+    pip = tamano_pip(symbol)
 
-    ob_alcista = (anterior["close"] < anterior["open"]) and (ultima["close"] > ultima["open"]) and (precio > anterior["high"])
-    ob_bajista = (anterior["close"] > anterior["open"]) and (ultima["close"] < ultima["open"]) and (precio < anterior["low"])
-    cerca_ema_slow = abs(precio - ema_slow) <= atr_ref * 1.25
-    impulso_limpio_long = (precio > swing_max_prev) or (abs(float(ultima["close"]) - float(ultima["open"])) >= atr_ref * 0.45)
-    impulso_limpio_short = (precio < swing_min_prev) or (abs(float(ultima["close"]) - float(ultima["open"])) >= atr_ref * 0.45)
+    # =========================================================================
+    # MODELO A: TENDENCIA FUERA DE BALANCE (FABIO) + OB/FVG + DESCUENTO >= 50% (SENSEI)
+    # =========================================================================
+    if estado_amt == "OUT_OF_BALANCE_UP" and ctx_1h["sesgo"] == "COMPRA" and adx_val >= 25.0:
+        # Regla anti-pico: NO entrar si el descuento Fibonacci es menor al 50%
+        if descuento_long_pct < DESCUENTO_MIN_FIBO:
+            return None
 
-    if es_exhaustacion:
-        sl_exh = float(swing_low_ref - sl_min_dist) if precio >= ultima["open"] else float(swing_high_ref + sl_min_dist)
-        return {
-            "id_senal": "EXHAUSTION_GUARD",
-            "estrategia": f"Freno Exhaustación ({mercado}) • ADX > {adx_min:.0f}",
-            "direccion": "NO ENTRAR EN EXTREMO / ESPERAR RETROCESO ⏸️",
-            "sl": sl_exh,
-            "tp": vwap_val,
-            "plan": (
-                f"1) ADX en {adx_val:.1f} (>{adx_min:.0f}) con vela de exhaustación detectada: evita comprar techo o vender suelo.\n"
-                f"2) Espera retroceso hacia VWAP (${vwap_val:,.4f}), Order Block o zona de descuento antes de actuar.\n"
-                f"3) Mantén disciplina y protege tu capital sin perseguir el movimiento."
-            )
-        }
+        en_ob = ob and ob["tipo"] == "OB_ALCISTA" and (ob["low"] - atr_ref * 0.35) <= precio <= (ob["high"] + atr_ref * 0.35)
+        en_fvg = fvg and fvg["tipo"] == "FVG_ALCISTA" and (fvg["zona_low"] - atr_ref * 0.35) <= precio <= (fvg["zona_high"] + atr_ref * 0.35)
+        reaccion_alcista = float(ultima["close"]) > float(ultima["open"]) and (precio >= ema_slow or precio >= vwap_val)
+        flujo_ok = (cvd_actual > cvd_prev) or (vol_ma > 0 and vol_actual > vol_ma * 1.15) or (mercado in ("FOREX", "METAL") and ema_fast >= ema_slow)
 
-    # --- BLOQUE ALCISTA (LONG) POR MERCADO ---
-    confluencias_long = 0
-    motivos_long = []
-    if precio >= vwap_val and ema_fast >= ema_slow:
-        confluencias_long += 1
-        motivos_long.append("Estructura/VWAP/EMA alcista")
+        if (en_ob or en_fvg) and reaccion_alcista and flujo_ok:
+            base_ob = ob["low"] if en_ob else fvg["zona_low"]
+            sl_tecnico = float(base_ob - max(atr_ref * 0.35, pip * 2))
+            riesgo_dist = max(abs(precio - sl_tecnico), sl_min_dist)
+            sl_final = float(precio - riesgo_dist)
+            tp_final = float(max(impulso_high, precio + riesgo_dist * 2.5))
 
-    if mercado == "CRYPTO":
-        if cvd_alcista or desbalance_vol:
-            confluencias_long += 1
-            motivos_long.append("CVD/Volumen respalda compras")
-        if ob_alcista or (fvg and fvg["tipo"] == "FVG_ALCISTA") or cerca_ema_slow:
-            confluencias_long += 1
-            motivos_long.append("OB/FVG/Zona favorable")
-    else:
-        # FOREX / METAL: no depende de volumen cero de yfinance
-        if impulso_limpio_long or cvd_alcista:
-            confluencias_long += 1
-            motivos_long.append("Impulso/Estructura alcista")
-        if ob_alcista or (fvg and fvg["tipo"] == "FVG_ALCISTA") or cerca_ema_slow:
-            confluencias_long += 1
-            motivos_long.append("OB/FVG/Retroceso EMA")
+            pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
+            apto = r_pct <= RIESGO_MAX_PCT_CUENTA
+            zona_txt = "Order Block Alcista" if en_ob else "FVG / Imbalance Alcista"
 
-    filtro_1h_ok_long = True
-    if mercado in ("FOREX", "METAL") and timeframe in ("5m", "15m") and sesgo_1h in ("COMPRA", "VENTA"):
-        filtro_1h_ok_long = (sesgo_1h == "COMPRA")
+            return {
+                "id_senal": "AMT_TREND_OB_LONG",
+                "modelo": "Modelo 1: Fuera de Balance + OB/FVG (Descuento ≥50%)",
+                "direccion": "COMPRA (LONG) 🟢",
+                "sl": sl_final,
+                "tp": tp_final,
+                "riesgo_usd": r_usd,
+                "riesgo_pct": r_pct,
+                "apto_cuenta": apto,
+                "descuento_pct": round(descuento_long_pct, 1),
+                "poc": poc,
+                "vah": vah,
+                "val": val,
+                "plan": (
+                    f"1) Contexto 1h ALCISTA + Mercado Fuera de Balance arriba de VAH (${vah:,.4f}).\n"
+                    f"2) Retroceso validado en {zona_txt} con descuento Fibonacci del {descuento_long_pct:.1f}% (≥50%).\n"
+                    f"3) SL técnico detrás del bloque en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
+                    f"4) TP objetivo en liquidez/máximo (${tp_final:,.4f}); mueve a Break-Even si el flujo acelera."
+                ),
+            }
 
-    if confluencias_long >= 2 and precio >= vwap_val and filtro_1h_ok_long:
-        base_low = min(swing_low_ref, float(ultima["low"]))
-        sl_tecnico = float(base_low - atr_ref * 0.5)
-        riesgo = max(abs(precio - sl_tecnico), atr_ref * 0.9, sl_min_dist)
-        sl_sugerido = float(precio - riesgo)
-        tp_sugerido = float(precio + riesgo * rr_mult)
-        return {
-            "id_senal": "CONFLUENCIA_LONG",
-            "estrategia": f"Confluencia Conjunta ({confluencias_long}/3) • {mercado} ADX>{adx_min:.0f}",
-            "direccion": "COMPRA (LONG) 🟢",
-            "sl": sl_sugerido,
-            "tp": tp_sugerido,
-            "plan": (
-                f"1) Confluencias activas: {', '.join(motivos_long)} (ADX {adx_val:.1f} > {adx_min:.0f}).\n"
-                f"2) Valida retroceso hacia VWAP (${vwap_val:,.4f}), OB o FVG cercano sin perseguir picos.\n"
-                f"3) Stop Loss con colchón mínimo/estructura en ${sl_sugerido:,.4f} (valida riesgo vs $10 USD).\n"
-                f"4) Take Profit objetivo (1:{rr_mult:.1f}) en ${tp_sugerido:,.4f}; no promedies en contra."
-            )
-        }
+    if estado_amt == "OUT_OF_BALANCE_DOWN" and ctx_1h["sesgo"] == "VENTA" and adx_val >= 25.0:
+        if descuento_short_pct < DESCUENTO_MIN_FIBO:
+            return None
 
-    # --- BLOQUE BAJISTA (SHORT) POR MERCADO ---
-    confluencias_short = 0
-    motivos_short = []
-    if precio <= vwap_val and ema_fast <= ema_slow:
-        confluencias_short += 1
-        motivos_short.append("Estructura/VWAP/EMA bajista")
+        en_ob = ob and ob["tipo"] == "OB_BAJISTA" and (ob["low"] - atr_ref * 0.35) <= precio <= (ob["high"] + atr_ref * 0.35)
+        en_fvg = fvg and fvg["tipo"] == "FVG_BAJISTA" and (fvg["zona_low"] - atr_ref * 0.35) <= precio <= (fvg["zona_high"] + atr_ref * 0.35)
+        reaccion_bajista = float(ultima["close"]) < float(ultima["open"]) and (precio <= ema_slow or precio <= vwap_val)
+        flujo_ok = (cvd_actual < cvd_prev) or (vol_ma > 0 and vol_actual > vol_ma * 1.15) or (mercado in ("FOREX", "METAL") and ema_fast <= ema_slow)
 
-    if mercado == "CRYPTO":
-        if cvd_bajista or desbalance_vol:
-            confluencias_short += 1
-            motivos_short.append("CVD/Volumen respalda ventas")
-        if ob_bajista or (fvg and fvg["tipo"] == "FVG_BAJISTA") or cerca_ema_slow:
-            confluencias_short += 1
-            motivos_short.append("OB/FVG/Zona favorable")
-    else:
-        if impulso_limpio_short or cvd_bajista:
-            confluencias_short += 1
-            motivos_short.append("Impulso/Estructura bajista")
-        if ob_bajista or (fvg and fvg["tipo"] == "FVG_BAJISTA") or cerca_ema_slow:
-            confluencias_short += 1
-            motivos_short.append("OB/FVG/Retroceso EMA")
+        if (en_ob or en_fvg) and reaccion_bajista and flujo_ok:
+            base_ob = ob["high"] if en_ob else fvg["zona_high"]
+            sl_tecnico = float(base_ob + max(atr_ref * 0.35, pip * 2))
+            riesgo_dist = max(abs(sl_tecnico - precio), sl_min_dist)
+            sl_final = float(precio + riesgo_dist)
+            tp_final = float(min(impulso_low, precio - riesgo_dist * 2.5))
 
-    filtro_1h_ok_short = True
-    if mercado in ("FOREX", "METAL") and timeframe in ("5m", "15m") and sesgo_1h in ("COMPRA", "VENTA"):
-        filtro_1h_ok_short = (sesgo_1h == "VENTA")
+            pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
+            apto = r_pct <= RIESGO_MAX_PCT_CUENTA
+            zona_txt = "Order Block Bajista" if en_ob else "FVG / Imbalance Bajista"
 
-    if confluencias_short >= 2 and precio <= vwap_val and filtro_1h_ok_short:
-        base_high = max(swing_high_ref, float(ultima["high"]))
-        sl_tecnico = float(base_high + atr_ref * 0.5)
-        riesgo = max(abs(sl_tecnico - precio), atr_ref * 0.9, sl_min_dist)
-        sl_sugerido = float(precio + riesgo)
-        tp_sugerido = float(precio - riesgo * rr_mult)
-        return {
-            "id_senal": "CONFLUENCIA_SHORT",
-            "estrategia": f"Confluencia Conjunta ({confluencias_short}/3) • {mercado} ADX>{adx_min:.0f}",
-            "direccion": "VENTA (SHORT) 🔴",
-            "sl": sl_sugerido,
-            "tp": tp_sugerido,
-            "plan": (
-                f"1) Confluencias activas: {', '.join(motivos_short)} (ADX {adx_val:.1f} > {adx_min:.0f}).\n"
-                f"2) Valida retroceso hacia VWAP (${vwap_val:,.4f}), OB o FVG cercano sin perseguir picos.\n"
-                f"3) Stop Loss con colchón mínimo/estructura en ${sl_sugerido:,.4f} (valida riesgo vs $10 USD).\n"
-                f"4) Take Profit objetivo (1:{rr_mult:.1f}) en ${tp_sugerido:,.4f}; no promedies en contra."
-            )
-        }
+            return {
+                "id_senal": "AMT_TREND_OB_SHORT",
+                "modelo": "Modelo 1: Fuera de Balance + OB/FVG (Descuento ≥50%)",
+                "direccion": "VENTA (SHORT) 🔴",
+                "sl": sl_final,
+                "tp": tp_final,
+                "riesgo_usd": r_usd,
+                "riesgo_pct": r_pct,
+                "apto_cuenta": apto,
+                "descuento_pct": round(descuento_short_pct, 1),
+                "poc": poc,
+                "vah": vah,
+                "val": val,
+                "plan": (
+                    f"1) Contexto 1h BAJISTA + Mercado Fuera de Balance debajo de VAL (${val:,.4f}).\n"
+                    f"2) Retroceso validado en {zona_txt} con descuento Fibonacci del {descuento_short_pct:.1f}% (≥50%).\n"
+                    f"3) SL técnico detrás del bloque en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
+                    f"4) TP objetivo en liquidez/mínimo (${tp_final:,.4f}); mueve a Break-Even si el flujo acelera."
+                ),
+            }
+
+    # =========================================================================
+    # MODELO B: REVERSIÓN A LA MEDIA EN CONSOLIDACIÓN (FABIO: FAKEOUT -> RETORNO AL POC)
+    # =========================================================================
+    if estado_amt == "BALANCE" and (vah - val) > sl_min_dist * 1.5:
+        # Fakeout alcista fallido encima de VAH -> Vuelta al POC
+        fakeout_arriba = (
+            (float(anterior["high"]) > vah or float(ultima["high"]) > vah)
+            and float(ultima["close"]) < vah
+            and float(ultima["close"]) < float(ultima["open"])
+            and (poc < precio)
+        )
+        if fakeout_arriba and ctx_1h["sesgo"] != "COMPRA":
+            max_fake = max(float(anterior["high"]), float(ultima["high"]))
+            sl_tecnico = float(max_fake + max(pip * 2, atr_ref * 0.25))
+            riesgo_dist = max(abs(sl_tecnico - precio), sl_min_dist)
+            sl_final = float(precio + riesgo_dist)
+            tp_final = float(poc)
+            if (precio - tp_final) >= riesgo_dist * 1.3:
+                pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
+                apto = r_pct <= RIESGO_MAX_PCT_CUENTA
+                return {
+                    "id_senal": "AMT_MEAN_REV_SHORT",
+                    "modelo": "Modelo 2: Reversión al POC tras Fakeout en VAH (AMT)",
+                    "direccion": "VENTA (SHORT) 🔴",
+                    "sl": sl_final,
+                    "tp": tp_final,
+                    "riesgo_usd": r_usd,
+                    "riesgo_pct": r_pct,
+                    "apto_cuenta": apto,
+                    "descuento_pct": 0.0,
+                    "poc": poc,
+                    "vah": vah,
+                    "val": val,
+                    "plan": (
+                        f"1) Mercado en Balance/Rango: ruptura fallida (fakeout) sobre VAH (${vah:,.4f}).\n"
+                        f"2) Segundo impulso de rechazo entrando de nuevo al Área de Valor.\n"
+                        f"3) SL ajustado 2 ticks/colchón sobre el fakeout en ${sl_final:,.4f} (~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
+                        f"4) TP objetivo directo en el Punto de Control (POC) en ${tp_final:,.4f}."
+                    ),
+                }
+
+        # Fakeout bajista fallido debajo de VAL -> Vuelta al POC
+        fakeout_abajo = (
+            (float(anterior["low"]) < val or float(ultima["low"]) < val)
+            and float(ultima["close"]) > val
+            and float(ultima["close"]) > float(ultima["open"])
+            and (poc > precio)
+        )
+        if fakeout_abajo and ctx_1h["sesgo"] != "VENTA":
+            min_fake = min(float(anterior["low"]), float(ultima["low"]))
+            sl_tecnico = float(min_fake - max(pip * 2, atr_ref * 0.25))
+            riesgo_dist = max(abs(precio - sl_tecnico), sl_min_dist)
+            sl_final = float(precio - riesgo_dist)
+            tp_final = float(poc)
+            if (tp_final - precio) >= riesgo_dist * 1.3:
+                pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
+                apto = r_pct <= RIESGO_MAX_PCT_CUENTA
+                return {
+                    "id_senal": "AMT_MEAN_REV_LONG",
+                    "modelo": "Modelo 2: Reversión al POC tras Fakeout en VAL (AMT)",
+                    "direccion": "COMPRA (LONG) 🟢",
+                    "sl": sl_final,
+                    "tp": tp_final,
+                    "riesgo_usd": r_usd,
+                    "riesgo_pct": r_pct,
+                    "apto_cuenta": apto,
+                    "descuento_pct": 0.0,
+                    "poc": poc,
+                    "vah": vah,
+                    "val": val,
+                    "plan": (
+                        f"1) Mercado en Balance/Rango: ruptura fallida (fakeout) bajo VAL (${val:,.4f}).\n"
+                        f"2) Segundo impulso de rechazo entrando de nuevo al Área de Valor.\n"
+                        f"3) SL ajustado 2 ticks/colchón bajo el fakeout en ${sl_final:,.4f} (~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
+                        f"4) TP objetivo directo en el Punto de Control (POC) en ${tp_final:,.4f}."
+                    ),
+                }
 
     return None
 
 # ==========================================
-# 🛠️ OBTENCIÓN DE DATOS CON CACHÉ CANÓNICA Y VALIDACIÓN REAL
+# 🛠️ OBTENCIÓN DE DATOS CON CACHÉ CANÓNICA
 # ==========================================
 def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
     canon = canonizar_simbolo(symbol)
@@ -383,7 +579,6 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
         interval_map = {"5m": "5m", "15m": "15m", "1h": "60m"}
         yf_interval = interval_map.get(timeframe, "60m")
         periodos_a_probar = ["5d", "1mo"] if timeframe == "5m" else ["1mo", "3mo"]
-
         simbolos_yf = ["XAUUSD=X", "GC=F"] if canon == "XAUUSD" else [symbol]
 
         for sym_try in simbolos_yf:
@@ -450,85 +645,81 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
 
     return df
 
-def _extraer_sesgo_1h(symbol):
-    df_1h = obtener_datos(symbol, "1h", limit=85, ttl_segundos=90)
-    if df_1h.empty or not df_1h.attrs.get("es_real", False):
-        return None
-    res_1h = evaluar_estrategia_unificada(df_1h, symbol=symbol, timeframe="1h", sesgo_1h=None)
-    if not res_1h:
-        return None
-    if "COMPRA" in res_1h["direccion"]:
-        return "COMPRA"
-    if "VENTA" in res_1h["direccion"]:
-        return "VENTA"
-    return None
-
 # ==========================================
-# 🤖 MOTOR EN FONDO (SOLO FOREX/METAL Y CRIPTO)
+# 🤖 MOTOR EN FONDO: FRACTALIDAD (1H CONTEXTO -> 15M/5M GATILLO ÚNICO)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
 
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Ejecutando barrido Forex & Cripto..."
+        AUTOPILOTO_STATUS = "Ejecutando barrido institucional (1h contexto -> 15m/5m)..."
 
-    temporalidades = ["1h", "15m", "5m"]
     alertas_nuevas = 0
     vistos_en_ciclo = set()
 
     for symbol in ALL_TRACKED_SYMBOLS:
-        if symbol not in CRYPTO_MARKETS and symbol not in FOREX_MARKETS:
-            continue
-
         canon = canonizar_simbolo(symbol)
         if canon in vistos_en_ciclo:
             continue
         vistos_en_ciclo.add(canon)
 
         tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else ("METAL (ORO)" if canon == "XAUUSD" else "FOREX")
-        sesgo_1h = _extraer_sesgo_1h(symbol) if tipo in ("FOREX", "METAL (ORO)") else None
 
-        for tf in temporalidades:
-            if not es_hilo_fondo:
-                AUTOPILOTO_STATUS = f"Analizando {canon} [{tf}]..."
+        try:
+            # Paso 1: Temporalidad Alta (1h) manda la dirección (no dispara alertas sueltas)
+            df_1h = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
+            if df_1h.empty or not df_1h.attrs.get("es_real", False):
+                continue
+            ctx_1h = analizar_contexto_macro_1h(df_1h, symbol)
 
-            try:
-                df = obtener_datos(symbol, tf, limit=85, ttl_segundos=60)
-                if df.empty or not df.attrs.get("es_real", False):
+            # Paso 2: Refinamiento en temporalidades bajas (prioriza 15m y luego 5m; máximo 1 alerta por activo)
+            for tf in ("15m", "5m"):
+                if not es_hilo_fondo:
+                    AUTOPILOTO_STATUS = f"Evaluando {canon} [1h:{ctx_1h['sesgo']} -> {tf}]..."
+
+                df_tf = obtener_datos(symbol, tf, limit=90, ttl_segundos=60)
+                if df_tf.empty or not df_tf.attrs.get("es_real", False):
                     continue
 
-                resultado = evaluar_estrategia_unificada(df, symbol=symbol, timeframe=tf, sesgo_1h=sesgo_1h)
+                resultado = evaluar_modelo_fabio_sensei(df_tf, symbol=symbol, timeframe=tf, ctx_1h=ctx_1h)
                 if resultado:
-                    ultima = df.iloc[-1]
+                    if FILTRAR_SOLO_RIESGO_APTO_TG and not resultado.get("apto_cuenta", True):
+                        continue
+
+                    ultima = df_tf.iloc[-1]
                     precio = float(ultima["close"])
-                    adx_val = float(ultima.get("adx", 0.0))
+                    r_usd = resultado["riesgo_usd"]
+                    r_pct = resultado["riesgo_pct"]
 
                     msg = (
-                        f"🏦 *SEÑAL CONJUNTA UNIFICADA*\n"
-                        f"🌐 *Mercado:* `{tipo}` | *Activo:* `{canon}` | *TF:* `{tf}`\n"
-                        f"💲 *Precio Real:* `${precio:,.4f}` | *ADX:* `{adx_val:.1f}`\n"
-                        f"🎯 *Estrategia:* {resultado['estrategia']}\n"
+                        f"🏛️ *SEÑAL INSTITUCIONAL (AMT + ORDER BLOCK)*\n"
+                        f"🌐 *Mercado:* `{tipo}` | *Activo:* `{canon}` | *Entrada:* `{tf}` (1h: `{ctx_1h['sesgo']}`)\n"
+                        f"🧠 *Modelo:* {resultado['modelo']}\n"
                         f"🧭 *Acción:* *{resultado['direccion']}*\n"
-                        f"🛡️ *SL Ref:* `${resultado['sl']:,.4f}` | *TP Ref:* `${resultado['tp']:,.4f}`\n"
-                        f"📋 *Qué hacer:*\n{resultado['plan']}"
+                        f"💲 *Precio:* `${precio:,.4f}` | *POC:* `${resultado['poc']:,.4f}` (VAL `${resultado['val']:,.4f}` / VAH `${resultado['vah']:,.4f}`)\n"
+                        f"🛡️ *SL:* `${resultado['sl']:,.4f}` | *TP:* `${resultado['tp']:,.4f}`\n"
+                        f"💵 *Riesgo 0.01 lot:* `~${r_usd:.2f} USD` (`{r_pct:.1f}%` de ${SALDO_CUENTA_USD:.0f}) ✅\n"
+                        f"📋 *Ejecución:*\n{resultado['plan']}"
                     )
 
-                    clave_alerta = f"{canon}_{tf}_{resultado['id_senal']}"
+                    # Cooldown de 20 minutos por activo y dirección (evita spam entre 15m y 5m)
+                    clave_alerta = f"{canon}_{resultado['id_senal']}"
                     ahora = time.time()
 
-                    if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 600:
+                    if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 1200:
                         if enviar_telegram(msg):
                             ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
                             alertas_nuevas += 1
+                    break  # Ya procesó la mejor oportunidad de este activo
 
-                time.sleep(0.12)
-            except Exception:
-                continue
+            time.sleep(0.12)
+        except Exception:
+            continue
 
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = f"✅ Barrido listo. Alertas reales enviadas: {alertas_nuevas}"
+        AUTOPILOTO_STATUS = f"✅ Barrido institucional listo. Alertas enviadas: {alertas_nuevas}"
     else:
-        AUTOPILOTO_STATUS = "⚡ Motor Forex & Cripto activo (ciclo cada 30s) con datos reales..."
+        AUTOPILOTO_STATUS = "⚡ Motor AMT + Order Block activo (1h contexto -> 15m/5m cada 30s)..."
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
@@ -549,13 +740,13 @@ iniciar_hilo_autopiloto()
 # ==========================================
 # 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — FOREX & CRYPTO</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Alertas Filtradas para Forex/Oro y Cripto • Parámetros por Mercado + Filtro 1h + Piso de SL + Freno Exhaustación</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — AMT & ORDER BLOCKS</h1>", unsafe_allow_html=True)
+st.markdown("<p style='text-align: center; color: gray;'>Teoría de Subasta (POC / VAH / VAL) + Fractalidad (1h -> 15m/5m) + Order Blocks + Descuento Fibonacci ≥ 50%</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración del Gráfico")
 symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_TRACKED_SYMBOLS)
-timeframe = st.sidebar.selectbox("Temporalidad", ["5m", "15m", "1h"])
+timeframe = st.sidebar.selectbox("Temporalidad", ["15m", "5m", "1h"])
 
 st.sidebar.markdown("---")
 st.sidebar.subheader("📡 Estado del Motor")
@@ -564,17 +755,9 @@ if ULTIMO_ERROR_TG:
     st.sidebar.caption(f"⚠️ Telegram: {ULTIMO_ERROR_TG}")
 
 if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
-    with st.spinner("Ejecutando motor en Forex/Oro y Cripto..."):
+    with st.spinner("Analizando contexto 1h, perfil de volumen y bloques..."):
         ejecutar_logica_autopiloto(es_hilo_fondo=False)
         st.sidebar.success("¡Escaneo completado!")
-
-with st.sidebar.expander("🔍 Diagnóstico Cripto / Oro"):
-    for sym_diag in ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XAUUSD=X"]:
-        df_d = obtener_datos(sym_diag, timeframe, limit=85, ttl_segundos=60)
-        real_txt = "REAL ✅" if df_d.attrs.get("es_real", False) else "SIN DATO REAL ❌"
-        adx_d = float(df_d["adx"].iloc[-1]) if not df_d.empty and "adx" in df_d.columns else 0.0
-        umbral_d = obtener_umbral_adx(sym_diag, timeframe=timeframe)
-        st.caption(f"{canonizar_simbolo(sym_diag)}: {real_txt} | ADX: {adx_d:.1f} (min >{umbral_d:.0f})")
 
 @st.fragment(run_every="10s")
 def render_trading_panel(symbol, timeframe):
@@ -586,6 +769,8 @@ def render_trading_panel(symbol, timeframe):
     if not df.attrs.get("es_real", False):
         st.warning("⚠️ Datos de respaldo activos por límite temporal de proveedor externo. No se enviarán alertas de Telegram con estos datos.")
 
+    perfil_panel = calcular_perfil_volumen_amt(df, lookback=36)
+
     col_grafico, col_paneles = st.columns([2.5, 1])
     with col_grafico:
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2, 0.8])
@@ -594,51 +779,47 @@ def render_trading_panel(symbol, timeframe):
             increasing_line_color="#00FFAA", decreasing_line_color="#FF3333", name="Precio"
         ), row=1, col=1)
         fig.add_trace(go.Scatter(x=df["timestamp"], y=df["vwap"], line=dict(color="#FF00FF", width=2), name="VWAP"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["ema_fast"], line=dict(color="#FFFF00", width=1.5), name="EMA 9"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["ema_slow"], line=dict(color="#00BFFF", width=1.5), name="EMA 21"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["soporte"], line=dict(color="#00FF00", width=1, dash="dot"), name="Soporte 20"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["resistencia"], line=dict(color="#FF0000", width=1, dash="dot"), name="Resistencia 20"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["ema_fast"], line=dict(color="#FFFF00", width=1.2), name="EMA 9"), row=1, col=1)
+        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["ema_slow"], line=dict(color="#00BFFF", width=1.2), name="EMA 21"), row=1, col=1)
+
+        # Niveles AMT (POC, VAH, VAL) dibujados directamente en el gráfico
+        fig.add_hline(y=perfil_panel["poc"], line_dash="solid", line_color="#FFA500", annotation_text="POC", row=1, col=1)
+        fig.add_hline(y=perfil_panel["vah"], line_dash="dash", line_color="#00FFAA", annotation_text="VAH", row=1, col=1)
+        fig.add_hline(y=perfil_panel["val"], line_dash="dash", line_color="#FF5555", annotation_text="VAL", row=1, col=1)
+
         colors = ["#00FFAA" if r["close"] >= r["open"] else "#FF3333" for _, r in df.iterrows()]
         fig.add_trace(go.Bar(x=df["timestamp"], y=df["volume"], marker_color=colors, name="Volumen"), row=2, col=1)
         fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=600, margin=dict(l=10, r=10, t=10, b=10), showlegend=True)
         st.plotly_chart(fig, use_container_width=True)
 
     with col_paneles:
-        st.markdown("### ⚙️ Lectura de Flujo y Estructura")
+        st.markdown("### 📊 Lectura AMT & Fractalidad")
         ultima = df.iloc[-1]
         anterior = df.iloc[-2]
         precio_actual = float(ultima["close"])
         st.metric(label=f"{canonizar_simbolo(symbol)} [{timeframe}]", value=f"${precio_actual:,.4f}", delta=f"{precio_actual - float(anterior['close']):,.4f}")
 
-        if precio_actual < float(ultima["vwap"]):
-            st.error("🔴 SESGO VS VWAP: BAJISTA")
-        else:
-            st.success("🟢 SESGO VS VWAP: ALCISTA")
+        df_1h_panel = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
+        ctx_1h_panel = analizar_contexto_macro_1h(df_1h_panel, symbol)
+        st.info(f"🧭 Contexto 1h: **{ctx_1h_panel['sesgo']}** | Estado AMT: **{perfil_panel['estado']}**")
+        st.caption(f"POC: `${perfil_panel['poc']:,.4f}` | VAL: `${perfil_panel['val']:,.4f}` | VAH: `${perfil_panel['vah']:,.4f}`")
 
-        adx_val = float(ultima.get("adx", 25.0))
-        adx_min = obtener_umbral_adx(symbol, timeframe=timeframe)
-        if adx_val > adx_min:
-            st.success(f"🔥 ADX: {adx_val:.1f} (>{adx_min:.0f} Fuerza Extrema)")
-        elif adx_val > 25:
-            st.warning(f"📈 ADX: {adx_val:.1f} (Tendencia activa / min >{adx_min:.0f})")
-        else:
-            st.info(f"⚖️ ADX: {adx_val:.1f} (Rango / Consolidación)")
+        ob_panel = detectar_order_block_institucional(df)
+        if ob_panel:
+            st.caption(f"Bloque detectado: `{ob_panel['tipo']}` (`${ob_panel['low']:,.4f}` - `${ob_panel['high']:,.4f}`)")
 
-        cvd_actual = float(ultima.get("cvd", 0.0))
-        cvd_prev = float(anterior.get("cvd", 0.0))
-        st.caption(f"CVD Delta: {'🟢 Presión compradora' if cvd_actual >= cvd_prev else '🔴 Presión vendedora'}")
-
-        fvg_info = detectar_fvg_3_velas(df)
-        if fvg_info:
-            st.caption(f"FVG / Imbalance: `{fvg_info['tipo']}` ({fvg_info['zona_low']:,.4f} - {fvg_info['zona_high']:,.4f})")
+        fvg_panel = detectar_fvg_3_velas(df)
+        if fvg_panel:
+            st.caption(f"Imbalance FVG: `{fvg_panel['tipo']}` (`${fvg_panel['zona_low']:,.4f}` - `${fvg_panel['zona_high']:,.4f}`)")
 
         st.markdown("---")
-        st.markdown("### 🎯 Plan Sugerido por Motor")
-        sesgo_1h_panel = _extraer_sesgo_1h(symbol) if clasificar_mercado(symbol) in ("FOREX", "METAL") else None
-        senal = evaluar_estrategia_unificada(df, symbol=symbol, timeframe=timeframe, sesgo_1h=sesgo_1h_panel)
+        st.markdown("### 🎯 Gatillo Institucional")
+        tf_eval = "15m" if timeframe == "1h" else timeframe
+        df_eval = obtener_datos(symbol, tf_eval, limit=90, ttl_segundos=60) if tf_eval != timeframe else df
+        senal = evaluar_modelo_fabio_sensei(df_eval, symbol=symbol, timeframe=tf_eval, ctx_1h=ctx_1h_panel)
         if senal:
-            st.info(f"**{senal['estrategia']}**\n\n**Acción:** {senal['direccion']}\n\n{senal['plan']}")
+            st.success(f"**{senal['modelo']}**\n\n**Acción:** {senal['direccion']}\n\n{senal['plan']}")
         else:
-            st.caption("Sin señal conjunta activa bajo el filtro unificado en esta vela.")
+            st.caption("Esperando salida de balance + retroceso a OB/FVG con descuento ≥50% (o fakeout en extremo de rango).")
 
 render_trading_panel(symbol, timeframe)
