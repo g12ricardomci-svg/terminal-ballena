@@ -1,37 +1,53 @@
-import streamlit as st
+import logging
+import threading
+import time
+from datetime import datetime
+
 import ccxt
-import yfinance as yf
-import pandas as pd
 import numpy as np
+import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
-import time
-import threading
-from datetime import datetime
+import streamlit as st
+import yfinance as yf
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL & CONTROL DE RIESGO ($10 USD)
+# 🧾 LOGGING PROFESIONAL
+# ==========================================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("QuantTerminal")
+
+# ==========================================
+# ⚙️ CONFIGURACIÓN GLOBAL & CONTROL DE RIESGO
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
 SALDO_CUENTA_USD = 10.0
-RIESGO_MAX_PCT_CUENTA = 10.0        # Bloquea alertas si 0.01 lotes arriesga más del 10% (~$1.00 USD)
-DESCUENTO_MIN_FIBO = 50.0           # Regla El Sensei: exigir >= 50% de descuento antes de alertar
-FILTRAR_SOLO_RIESGO_APTO_TG = True  # Evita alertas con SL demasiado ancho para $10 USD
-COOLDOWN_ALERTA_SEG = 1200          # 20 minutos entre alertas del mismo activo y señal
+RIESGO_MAX_PCT_CUENTA = 10.0        # Máx. % del saldo en 0.01 lotes (~$1.00 USD en cuenta de $10)
+DESCUENTO_MIN_FIBO = 50.0           # Descuento Fibonacci mínimo exigido en tendencia
+FILTRAR_SOLO_RIESGO_APTO_TG = True  # Evita enviar señales con SL excesivo para la cuenta
+COOLDOWN_ALERTA_SEG = 1200          # 20 min entre alertas repetidas del mismo activo/señal
+INTERVALO_CICLO_SEG = 30            # Frecuencia del barrido en segundo plano
 
-st.set_page_config(page_title="Institutional Quant Terminal — Unified AMT & Flow", layout="wide", page_icon="🏦")
+st.set_page_config(
+    page_title="Institutional Quant Terminal — Pro Architecture",
+    layout="wide",
+    page_icon="🏦",
+)
 
-# ÚNICOS MERCADOS HABILITADOS ($10 USD: FOREX + ORO + CRIPTO)
 CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
 FOREX_MARKETS = [
     "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
     "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X",
-    "XAUUSD=X"
+    "XAUUSD=X",
 ]
 NASDAQ_MARKETS = []
+ALL_TRACKED_SYMBOLS = list(dict.fromkeys(CRYPTO_MARKETS + FOREX_MARKETS))
 
 MAPA_CANONICO = {
     "XAUUSD": "XAUUSD",
@@ -39,11 +55,13 @@ MAPA_CANONICO = {
     "GC=F": "XAUUSD",
 }
 
-def canonizar_simbolo(symbol):
+
+def canonizar_simbolo(symbol: str) -> str:
     s = str(symbol or "").strip().upper()
     return MAPA_CANONICO.get(s, s)
 
-def clasificar_mercado(symbol):
+
+def clasificar_mercado(symbol: str) -> str:
     canon = canonizar_simbolo(symbol)
     if symbol in CRYPTO_MARKETS or "/" in canon:
         return "CRYPTO"
@@ -51,7 +69,8 @@ def clasificar_mercado(symbol):
         return "METAL"
     return "FOREX"
 
-def tamano_pip(symbol):
+
+def tamano_pip(symbol: str) -> float:
     canon = canonizar_simbolo(symbol)
     if canon == "XAUUSD":
         return 0.10
@@ -59,7 +78,8 @@ def tamano_pip(symbol):
         return 0.01
     return 0.0001
 
-def obtener_umbral_adx(symbol):
+
+def obtener_umbral_adx(symbol: str) -> float:
     canon = canonizar_simbolo(symbol)
     if canon == "XAUUSD":
         return 35.0
@@ -67,8 +87,112 @@ def obtener_umbral_adx(symbol):
         return 35.0
     return 30.0
 
-def calcular_riesgo_001_lotes(symbol, precio, sl):
-    canon = canonizar_simbolo(symbol)
+
+def _crear_exchange(ex_id: str):
+    try:
+        cls = getattr(ccxt, ex_id)
+        return cls({"enableRateLimit": True})
+    except Exception as exc:
+        logger.warning("No se pudo inicializar exchange %s: %s", ex_id, exc)
+        return None
+
+
+EXCHANGE_OKX = _crear_exchange("okx")
+EXCHANGE_BINANCE = _crear_exchange("binance")
+
+# Estado compartido protegido por lock
+STATE_LOCK = threading.Lock()
+ALERTAS_ENVIADAS_GLOBAL: dict[str, float] = {}
+CACHE_DATOS_GLOBAL: dict[str, dict] = {}
+TELEMETRIA_MOTOR = {
+    "estado": "Inicializando motor profesional...",
+    "ultimo_ciclo": "Nunca",
+    "activos_reales": 0,
+    "candidatas": 0,
+    "bloqueadas_riesgo": 0,
+    "alertas_enviadas_total": 0,
+    "ultimo_error_tg": "",
+    "latido_hilo": 0.0,
+}
+
+
+def _actualizar_telemetria(**kwargs):
+    with STATE_LOCK:
+        TELEMETRIA_MOTOR.update(kwargs)
+
+
+def _leer_telemetria() -> dict:
+    with STATE_LOCK:
+        return dict(TELEMETRIA_MOTOR)
+
+
+# ==========================================
+# 📩 NOTIFICACIONES TELEGRAM CON DIAGNÓSTICO
+# ==========================================
+def enviar_telegram(mensaje: str) -> bool:
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": mensaje,
+        "parse_mode": "Markdown",
+    }
+    try:
+        resp = requests.post(url, json=payload, timeout=8)
+        if resp.status_code == 200:
+            _actualizar_telemetria(ultimo_error_tg="")
+            return True
+        err = f"HTTP {resp.status_code}: {resp.text[:140]}"
+        _actualizar_telemetria(ultimo_error_tg=err)
+        logger.error("Fallo Telegram: %s", err)
+        return False
+    except Exception as exc:
+        err = str(exc)[:140]
+        _actualizar_telemetria(ultimo_error_tg=err)
+        logger.error("Excepción Telegram: %s", err)
+        return False
+
+
+# ==========================================
+# 📐 CÁLCULO DE RIESGO EN 0.01 LOTES
+# ==========================================
+def _obtener_fx_a_usd(quote_ccy: str) -> float:
+    """Obtiene tasa aproximada para convertir divisa cotizada a USD."""
+    if quote_ccy == "USD":
+        return 1.0
+    try:
+        if quote_ccy == "JPY":
+            df_jpy = obtener_datos("USDJPY=X", "1h", limit=5, ttl_segundos=120)
+            if not df_jpy.empty:
+                px = float(df_jpy["close"].iloc[-1])
+                if px > 0:
+                    return 1.0 / px
+            return 1.0 / 155.0
+        if quote_ccy == "CHF":
+            df_chf = obtener_datos("USDCHF=X", "1h", limit=5, ttl_segundos=120)
+            if not df_chf.empty:
+                px = float(df_chf["close"].iloc[-1])
+                if px > 0:
+                    return 1.0 / px
+            return 1.12
+        if quote_ccy == "CAD":
+            df_cad = obtener_datos("USDCAD=X", "1h", limit=5, ttl_segundos=120)
+            if not df_cad.empty:
+                px = float(df_cad["close"].iloc[-1])
+                if px > 0:
+                    return 1.0 / px
+            return 0.72
+        if quote_ccy == "GBP":
+            df_gbp = obtener_datos("GBPUSD=X", "1h", limit=5, ttl_segundos=120)
+            if not df_gbp.empty:
+                return float(df_gbp["close"].iloc[-1])
+            return 1.30
+    except Exception:
+        pass
+    return 1.0
+
+
+def calcular_riesgo_001_lotes(symbol: str, precio: float, sl: float, saldo_usd: float = SALDO_CUENTA_USD):
+    canon = canonizar_simbolo(symbol).replace("=X", "")
     mercado = clasificar_mercado(symbol)
     dist = abs(float(precio) - float(sl))
     if dist <= 0 or float(precio) <= 0:
@@ -81,63 +205,30 @@ def calcular_riesgo_001_lotes(symbol, precio, sl):
         riesgo_usd = dist * 0.01
     elif canon == "XAUUSD":
         riesgo_usd = dist * 1.0
-    elif canon.endswith("USD"):
-        pips = dist / 0.0001
-        riesgo_usd = pips * 0.10
-    elif "JPY" in canon:
-        pips = dist / 0.01
-        riesgo_usd = pips * (10.0 / float(precio))
+    elif len(canon) == 6:
+        quote_ccy = canon[3:]
+        # 0.01 lotes estándar = 1,000 unidades de la divisa base
+        valor_en_quote = dist * 1000.0
+        riesgo_usd = valor_en_quote * _obtener_fx_a_usd(quote_ccy)
     else:
-        pips = dist / 0.0001
-        riesgo_usd = pips * (0.10 / float(precio))
+        riesgo_usd = pips_o_pts * 0.10
 
     riesgo_usd = round(float(riesgo_usd), 2)
-    riesgo_pct = round((riesgo_usd / max(SALDO_CUENTA_USD, 0.01)) * 100.0, 1)
+    riesgo_pct = round((riesgo_usd / max(float(saldo_usd), 0.01)) * 100.0, 1)
     return round(float(pips_o_pts), 1), riesgo_usd, riesgo_pct
 
-ALL_TRACKED_SYMBOLS = list(dict.fromkeys(CRYPTO_MARKETS + FOREX_MARKETS))
-
-def _crear_exchange(ex_id):
-    try:
-        cls = getattr(ccxt, ex_id)
-        return cls({"enableRateLimit": True})
-    except Exception:
-        return None
-
-EXCHANGE_OKX = _crear_exchange("okx")
-EXCHANGE_BINANCE = _crear_exchange("binance")
-
-ALERTAS_ENVIADAS_GLOBAL = {}
-CACHE_DATOS_GLOBAL = {}
-CACHE_LOCK = threading.Lock()
-AUTOPILOTO_STATUS = "Motor Unificado AMT + Flujo + OB/FVG activo (1h contexto -> 15m/5m)..."
-ULTIMO_ERROR_TG = ""
 
 # ==========================================
-# 🧠 FUNCIONES MATEMÁTICAS UNIFICADAS
+# 🧠 INDICADORES, AMT Y MODELO UNIFICADO
 # ==========================================
-def enviar_telegram(mensaje):
-    global ULTIMO_ERROR_TG
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
-    try:
-        resp = requests.post(url, json=payload, timeout=8)
-        if resp.status_code == 200:
-            ULTIMO_ERROR_TG = ""
-            return True
-        ULTIMO_ERROR_TG = f"HTTP {resp.status_code}: {resp.text[:140]}"
-        return False
-    except Exception as e:
-        ULTIMO_ERROR_TG = str(e)[:140]
-        return False
-
 def _normalizar_timestamp(serie):
     ts = pd.to_datetime(serie)
     if getattr(ts.dt, "tz", None) is not None:
         ts = ts.dt.tz_convert(None)
     return ts
 
-def obtener_sl_minimo(symbol, timeframe, precio):
+
+def obtener_sl_minimo(symbol: str, timeframe: str, precio: float) -> float:
     mercado = clasificar_mercado(symbol)
     pip = tamano_pip(symbol)
     if mercado == "FOREX":
@@ -149,7 +240,8 @@ def obtener_sl_minimo(symbol, timeframe, precio):
     pct_min = {"5m": 0.0045, "15m": 0.0075, "1h": 0.0120}.get(timeframe, 0.0075)
     return float(precio) * pct_min
 
-def calcular_vwap(df):
+
+def calcular_vwap(df: pd.DataFrame) -> pd.Series:
     if df.empty:
         return pd.Series(dtype=float)
     if "volume" not in df.columns or float(df["volume"].sum()) <= 0:
@@ -159,7 +251,8 @@ def calcular_vwap(df):
     vwap = (tp * df["volume"]).rolling(24, min_periods=1).sum() / vol_roll
     return vwap.fillna(df["close"].rolling(20, min_periods=1).mean())
 
-def calcular_adx(df, period=14):
+
+def calcular_adx(df: pd.DataFrame, period: int = 14) -> float:
     if len(df) < period + 2:
         return 25.0
     try:
@@ -170,7 +263,7 @@ def calcular_adx(df, period=14):
         d["minus_dm"] = np.where((d["down_move"] > d["up_move"]) & (d["down_move"] > 0), d["down_move"], 0.0)
         d["tr"] = np.maximum(
             d["high"] - d["low"],
-            np.maximum(abs(d["high"] - d["close"].shift()), abs(d["low"] - d["close"].shift()))
+            np.maximum(abs(d["high"] - d["close"].shift()), abs(d["low"] - d["close"].shift())),
         )
         d["atr"] = d["tr"].ewm(span=period, adjust=False).mean()
         plus_di = 100.0 * (d["plus_dm"].ewm(span=period, adjust=False).mean() / d["atr"].replace(0, np.nan))
@@ -182,23 +275,26 @@ def calcular_adx(df, period=14):
     except Exception:
         return 25.0
 
-def calcular_cvd_proxy(df):
+
+def calcular_cvd_proxy(df: pd.DataFrame) -> pd.Series:
     rango = (df["high"] - df["low"]).replace(0, np.nan)
     delta_ratio = ((df["close"] - df["open"]) / rango).fillna(0.0)
     delta_vol = df["volume"] * delta_ratio
     return delta_vol.cumsum()
 
-def detectar_exhaustacion(df):
+
+def detectar_exhaustacion(df: pd.DataFrame) -> bool:
     if len(df) < 22:
         return False
     rango_actual = float(df["high"].iloc[-1] - df["low"].iloc[-1])
-    rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
+    rangos_previos = df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1]
     max_previo = float(rangos_previos.max())
     mov_previo = abs(float(df["close"].iloc[-2] - df["close"].iloc[-10]))
     atr_aprox = float(rangos_previos.mean())
     return (rango_actual > max_previo * 1.15) and (mov_previo > atr_aprox * 3.0)
 
-def calcular_perfil_volumen_amt(df, lookback=36, bins=18):
+
+def calcular_perfil_volumen_amt(df: pd.DataFrame, lookback: int = 36, bins: int = 18) -> dict:
     sub = df.iloc[-lookback:].copy() if len(df) >= lookback else df.copy()
     p_min = float(sub["low"].min())
     p_max = float(sub["high"].max())
@@ -255,7 +351,8 @@ def calcular_perfil_volumen_amt(df, lookback=36, bins=18):
 
     return {"poc": poc, "vah": vah, "val": val, "estado": estado}
 
-def detectar_fvg_3_velas(df):
+
+def detectar_fvg_3_velas(df: pd.DataFrame):
     if len(df) < 5:
         return None
     for idx in range(len(df) - 1, max(2, len(df) - 8), -1):
@@ -270,7 +367,8 @@ def detectar_fvg_3_velas(df):
             return {"tipo": "FVG_BAJISTA", "zona_low": v3_high, "zona_high": v1_low, "pos": idx}
     return None
 
-def detectar_order_block_institucional(df):
+
+def detectar_order_block_institucional(df: pd.DataFrame):
     if len(df) < 12:
         return None
     for idx in range(len(df) - 2, max(2, len(df) - 10), -1):
@@ -289,7 +387,8 @@ def detectar_order_block_institucional(df):
                 return {"tipo": "OB_BAJISTA", "low": float(vela["low"]), "high": float(vela["high"]), "pos": idx}
     return None
 
-def analizar_contexto_macro_1h(df_1h):
+
+def analizar_contexto_macro_1h(df_1h: pd.DataFrame) -> dict:
     if df_1h is None or df_1h.empty or len(df_1h) < 30:
         return {"sesgo": "NEUTRAL", "amt": "BALANCE", "poc": 0.0, "vah": 0.0, "val": 0.0, "adx": 20.0}
 
@@ -317,17 +416,18 @@ def analizar_contexto_macro_1h(df_1h):
         "adx": adx,
     }
 
-def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
-    """
-    Motor unificado:
-    - Freno de exhaustación (bloquea entradas extremas).
-    - Modelo 1 (Fuera de Balance + Contexto 1h + Confluencia Flujo/VWAP/EMAs + OB/FVG + Descuento >= 50%).
-    - Modelo 2 (Balance + Fakeout en VAH/VAL -> Reversión al POC con margen frente al spread).
-    """
+
+def evaluar_motor_unificado(
+    df: pd.DataFrame,
+    symbol: str,
+    timeframe: str,
+    ctx_1h: dict,
+    saldo_usd: float = SALDO_CUENTA_USD,
+    riesgo_max_pct: float = RIESGO_MAX_PCT_CUENTA,
+):
     if df is None or df.empty or len(df) < 30:
         return None
 
-    # Evitar entradas en 5m en Oro por alta sensibilidad a sacudidas y spread
     canon = canonizar_simbolo(symbol)
     if canon == "XAUUSD" and timeframe == "5m":
         return None
@@ -345,7 +445,7 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
     adx_val = float(ultima.get("adx", 20.0))
     adx_min = obtener_umbral_adx(symbol)
 
-    rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
+    rangos_previos = df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1]
     atr_ref = float(rangos_previos.mean()) if len(rangos_previos) > 0 and pd.notna(rangos_previos.mean()) else max(precio * 0.002, tamano_pip(symbol) * 8)
 
     perfil = calcular_perfil_volumen_amt(df, lookback=36)
@@ -368,9 +468,7 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
     sl_min_dist = obtener_sl_minimo(symbol, timeframe, precio)
     pip = tamano_pip(symbol)
 
-    # =========================================================================
-    # MODELO 1: FUERA DE BALANCE + CONTEXTO 1H + FLUJO + OB/FVG + DESCUENTO >= 50%
-    # =========================================================================
+    # Modelo 1: Fuera de Balance + Contexto 1h + Flujo + OB/FVG + Descuento >= 50%
     if estado_amt == "OUT_OF_BALANCE_UP" and ctx_1h["sesgo"] == "COMPRA" and adx_val >= min(adx_min, 28.0):
         if descuento_long_pct < DESCUENTO_MIN_FIBO:
             return None
@@ -387,7 +485,7 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
             sl_final = float(precio - riesgo_dist)
             tp_final = float(max(impulso_high, precio + riesgo_dist * 2.2))
 
-            pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
+            pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final, saldo_usd=saldo_usd)
             zona_txt = "Order Block Alcista" if en_ob else "FVG / Imbalance Alcista"
 
             return {
@@ -398,14 +496,14 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
                 "tp": tp_final,
                 "riesgo_usd": r_usd,
                 "riesgo_pct": r_pct,
-                "apto_cuenta": r_pct <= RIESGO_MAX_PCT_CUENTA,
+                "apto_cuenta": r_pct <= riesgo_max_pct,
                 "poc": poc,
                 "vah": vah,
                 "val": val,
                 "plan": (
                     f"1) 1h ALCISTA + Fuera de Balance sobre VAH (${vah:,.4f}) con ADX {adx_val:.1f}.\n"
-                    f"2) Retroceso en {zona_txt} con descuento Fibonacci {descuento_long_pct:.1f}% (≥50%) y VWAP/EMA alineados.\n"
-                    f"3) SL en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
+                    f"2) Retroceso en {zona_txt} con descuento Fibonacci {descuento_long_pct:.1f}% (≥50%).\n"
+                    f"3) SL en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}%).\n"
                     f"4) TP en ${tp_final:,.4f}; protege a Break-Even si el impulso continúa."
                 ),
             }
@@ -426,7 +524,7 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
             sl_final = float(precio + riesgo_dist)
             tp_final = float(min(impulso_low, precio - riesgo_dist * 2.2))
 
-            pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
+            pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final, saldo_usd=saldo_usd)
             zona_txt = "Order Block Bajista" if en_ob else "FVG / Imbalance Bajista"
 
             return {
@@ -437,21 +535,19 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
                 "tp": tp_final,
                 "riesgo_usd": r_usd,
                 "riesgo_pct": r_pct,
-                "apto_cuenta": r_pct <= RIESGO_MAX_PCT_CUENTA,
+                "apto_cuenta": r_pct <= riesgo_max_pct,
                 "poc": poc,
                 "vah": vah,
                 "val": val,
                 "plan": (
                     f"1) 1h BAJISTA + Fuera de Balance bajo VAL (${val:,.4f}) con ADX {adx_val:.1f}.\n"
-                    f"2) Retroceso en {zona_txt} con descuento Fibonacci {descuento_short_pct:.1f}% (≥50%) y VWAP/EMA alineados.\n"
-                    f"3) SL en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
+                    f"2) Retroceso en {zona_txt} con descuento Fibonacci {descuento_short_pct:.1f}% (≥50%).\n"
+                    f"3) SL en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}%).\n"
                     f"4) TP en ${tp_final:,.4f}; protege a Break-Even si el impulso continúa."
                 ),
             }
 
-    # =========================================================================
-    # MODELO 2: BALANCE / CONSOLIDACIÓN -> FAKEOUT EN VAH/VAL -> RETORNO AL POC
-    # =========================================================================
+    # Modelo 2: Balance -> Fakeout en VAH/VAL -> Retorno al POC
     min_rango_amt = sl_min_dist * (2.2 if timeframe == "5m" else 1.6)
     if estado_amt == "BALANCE" and (vah - val) >= min_rango_amt:
         fakeout_arriba = (
@@ -467,7 +563,7 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
             sl_final = float(precio + riesgo_dist)
             tp_final = float(poc)
             if (precio - tp_final) >= riesgo_dist * 1.4:
-                pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
+                pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final, saldo_usd=saldo_usd)
                 return {
                     "id_senal": "UNIFIED_MEAN_REV_SHORT",
                     "modelo": "Unificado M2: Reversión al POC tras Fakeout en VAH",
@@ -476,13 +572,13 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
                     "tp": tp_final,
                     "riesgo_usd": r_usd,
                     "riesgo_pct": r_pct,
-                    "apto_cuenta": r_pct <= RIESGO_MAX_PCT_CUENTA,
+                    "apto_cuenta": r_pct <= riesgo_max_pct,
                     "poc": poc,
                     "vah": vah,
                     "val": val,
                     "plan": (
                         f"1) Balance/Rango con fakeout sobre VAH (${vah:,.4f}) y rechazo hacia el área de valor.\n"
-                        f"2) SL con colchón sobre fakeout en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
+                        f"2) SL con colchón sobre fakeout en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}%).\n"
                         f"3) TP objetivo en POC (${tp_final:,.4f}); cuida el spread antes de entrar."
                     ),
                 }
@@ -500,7 +596,7 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
             sl_final = float(precio - riesgo_dist)
             tp_final = float(poc)
             if (tp_final - precio) >= riesgo_dist * 1.4:
-                pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
+                pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final, saldo_usd=saldo_usd)
                 return {
                     "id_senal": "UNIFIED_MEAN_REV_LONG",
                     "modelo": "Unificado M2: Reversión al POC tras Fakeout en VAL",
@@ -509,28 +605,29 @@ def evaluar_motor_unificado(df, symbol, timeframe, ctx_1h):
                     "tp": tp_final,
                     "riesgo_usd": r_usd,
                     "riesgo_pct": r_pct,
-                    "apto_cuenta": r_pct <= RIESGO_MAX_PCT_CUENTA,
+                    "apto_cuenta": r_pct <= riesgo_max_pct,
                     "poc": poc,
                     "vah": vah,
                     "val": val,
                     "plan": (
                         f"1) Balance/Rango con fakeout bajo VAL (${val:,.4f}) y rechazo hacia el área de valor.\n"
-                        f"2) SL con colchón bajo fakeout en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
+                        f"2) SL con colchón bajo fakeout en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}%).\n"
                         f"3) TP objetivo en POC (${tp_final:,.4f}); cuida el spread antes de entrar."
                     ),
                 }
 
     return None
 
+
 # ==========================================
 # 🛠️ OBTENCIÓN DE DATOS CON CACHÉ CANÓNICA
 # ==========================================
-def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
+def obtener_datos(symbol: str, timeframe: str, limit: int = 100, ttl_segundos: int = 60) -> pd.DataFrame:
     canon = canonizar_simbolo(symbol)
     cache_key = f"{canon}_{timeframe}_{limit}"
     ahora = time.time()
 
-    with CACHE_LOCK:
+    with STATE_LOCK:
         cached = CACHE_DATOS_GLOBAL.get(cache_key)
         if cached and (ahora - cached["ts"] < ttl_segundos) and cached.get("es_real", False):
             df_cached = cached["df"].copy()
@@ -552,7 +649,8 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
                         df = temp_df
                         es_real = True
                         break
-            except Exception:
+            except Exception as exc:
+                logger.debug("Error CCXT %s [%s]: %s", symbol, timeframe, exc)
                 continue
     elif symbol in FOREX_MARKETS or canon == "XAUUSD":
         interval_map = {"5m": "5m", "15m": "15m", "1h": "60m"}
@@ -567,14 +665,17 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
                     if not hist.empty and "Close" in hist.columns:
                         temp_df = hist.reset_index()
                         time_col = "Datetime" if "Datetime" in temp_df.columns else ("Date" if "Date" in temp_df.columns else temp_df.columns[0])
-                        temp_df.rename(columns={
-                            time_col: "timestamp",
-                            "Open": "open",
-                            "High": "high",
-                            "Low": "low",
-                            "Close": "close",
-                            "Volume": "volume"
-                        }, inplace=True)
+                        temp_df.rename(
+                            columns={
+                                time_col: "timestamp",
+                                "Open": "open",
+                                "High": "high",
+                                "Low": "low",
+                                "Close": "close",
+                                "Volume": "volume",
+                            },
+                            inplace=True,
+                        )
                         temp_df["timestamp"] = _normalizar_timestamp(temp_df["timestamp"])
                         temp_df["volume"] = temp_df["volume"].fillna(0)
                         temp_df = temp_df.dropna(subset=["open", "high", "low", "close"]).tail(limit).copy()
@@ -582,7 +683,8 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
                             df = temp_df
                             es_real = True
                             break
-                except Exception:
+                except Exception as exc:
+                    logger.debug("Error YF %s (%s) [%s]: %s", sym_try, periodo, timeframe, exc)
                     continue
             if es_real:
                 break
@@ -595,14 +697,16 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
         returns = rng.normal(0.0001, 0.002, limit)
         prices = base_val * np.cumprod(1 + returns)
 
-        df = pd.DataFrame({
-            "timestamp": fechas,
-            "open": prices * (1 + rng.normal(0, 0.0005, limit)),
-            "high": prices * (1 + abs(rng.normal(0, 0.001, limit))),
-            "low": prices * (1 - abs(rng.normal(0, 0.001, limit))),
-            "close": prices,
-            "volume": rng.integers(1000, 10000, limit)
-        })
+        df = pd.DataFrame(
+            {
+                "timestamp": fechas,
+                "open": prices * (1 + rng.normal(0, 0.0005, limit)),
+                "high": prices * (1 + abs(rng.normal(0, 0.001, limit))),
+                "low": prices * (1 - abs(rng.normal(0, 0.001, limit))),
+                "close": prices,
+                "volume": rng.integers(1000, 10000, limit),
+            }
+        )
         es_real = False
 
     if not df.empty and len(df) > 5:
@@ -619,21 +723,25 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
     df.attrs["es_real"] = es_real
 
     if es_real:
-        with CACHE_LOCK:
+        with STATE_LOCK:
             CACHE_DATOS_GLOBAL[cache_key] = {"ts": ahora, "df": df.copy(), "es_real": True}
 
     return df
 
-# ==========================================
-# 🤖 MOTOR EN FONDO: CONTEXTO 1H -> GATILLO 15M/5M
-# ==========================================
-def ejecutar_logica_autopiloto(es_hilo_fondo=False):
-    global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
 
-    if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Ejecutando barrido unificado (1h contexto -> 15m/5m)..."
+# ==========================================
+# 🤖 MOTOR CON OBSERVABILIDAD DE CICLO
+# ==========================================
+def ejecutar_logica_autopiloto(es_hilo_fondo: bool = False) -> int:
+    _actualizar_telemetria(
+        estado="Ejecutando barrido institucional..." if not es_hilo_fondo else TELEMETRIA_MOTOR["estado"],
+        latido_hilo=time.time(),
+    )
 
     alertas_nuevas = 0
+    activos_reales = 0
+    candidatas = 0
+    bloqueadas_riesgo = 0
     vistos_en_ciclo = set()
 
     for symbol in ALL_TRACKED_SYMBOLS:
@@ -648,19 +756,23 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
             df_1h = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
             if df_1h.empty or not df_1h.attrs.get("es_real", False):
                 continue
+            activos_reales += 1
             ctx_1h = analizar_contexto_macro_1h(df_1h)
 
             for tf in ("15m", "5m"):
-                if not es_hilo_fondo:
-                    AUTOPILOTO_STATUS = f"Evaluando {canon} [1h:{ctx_1h['sesgo']} -> {tf}]..."
-
                 df_tf = obtener_datos(symbol, tf, limit=90, ttl_segundos=60)
                 if df_tf.empty or not df_tf.attrs.get("es_real", False):
                     continue
 
                 resultado = evaluar_motor_unificado(df_tf, symbol=symbol, timeframe=tf, ctx_1h=ctx_1h)
                 if resultado:
+                    candidatas += 1
                     if FILTRAR_SOLO_RIESGO_APTO_TG and not resultado.get("apto_cuenta", True):
+                        bloqueadas_riesgo += 1
+                        logger.info(
+                            "Señal bloqueada por riesgo en %s [%s]: %.1f%% > %.1f%%",
+                            canon, tf, resultado["riesgo_pct"], RIESGO_MAX_PCT_CUENTA,
+                        )
                         continue
 
                     ultima = df_tf.iloc[-1]
@@ -670,7 +782,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     r_pct = resultado["riesgo_pct"]
 
                     msg = (
-                        f"🏦 *SEÑAL UNIFICADA (AMT + FLUJO + OB/FVG)*\n"
+                        f"🏦 *SEÑAL UNIFICADA PRO (AMT + FLUJO + OB/FVG)*\n"
                         f"🌐 *Mercado:* `{tipo}` | *Activo:* `{canon}` | *TF:* `{tf}` (1h: `{ctx_1h['sesgo']}`)\n"
                         f"💲 *Precio:* `${precio:,.4f}` | *ADX:* `{adx_val:.1f}`\n"
                         f"🧠 *Modelo:* {resultado['modelo']}\n"
@@ -684,86 +796,128 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     clave_alerta = f"{canon}_{resultado['id_senal']}"
                     ahora = time.time()
 
-                    if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > COOLDOWN_ALERTA_SEG:
+                    with STATE_LOCK:
+                        ultimo_envio = ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0.0)
+
+                    if ahora - ultimo_envio > COOLDOWN_ALERTA_SEG:
                         if enviar_telegram(msg):
-                            ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
+                            with STATE_LOCK:
+                                ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
+                                TELEMETRIA_MOTOR["alertas_enviadas_total"] += 1
                             alertas_nuevas += 1
                     break
 
-            time.sleep(0.12)
-        except Exception:
+            time.sleep(0.10)
+        except Exception as exc:
+            logger.exception("Error procesando %s: %s", canon, exc)
             continue
 
-    if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = f"✅ Barrido unificado listo. Alertas enviadas: {alertas_nuevas}"
-    else:
-        AUTOPILOTO_STATUS = "⚡ Motor Unificado activo (1h contexto -> 15m/5m cada 30s)..."
+    _actualizar_telemetria(
+        estado="⚡ Motor activo y auditado" if es_hilo_fondo else f"✅ Barrido listo ({alertas_nuevas} alertas nuevas)",
+        ultimo_ciclo=datetime.now().strftime("%H:%M:%S"),
+        activos_reales=activos_reales,
+        candidatas=candidatas,
+        bloqueadas_riesgo=bloqueadas_riesgo,
+    )
+    return alertas_nuevas
+
 
 @st.cache_resource
 def iniciar_hilo_autopiloto():
     def loop():
-        time.sleep(4)
+        time.sleep(3)
         while True:
             try:
                 ejecutar_logica_autopiloto(es_hilo_fondo=True)
-            except Exception:
-                pass
-            time.sleep(30)
-    thread = threading.Thread(target=loop, daemon=True)
+            except Exception as exc:
+                logger.exception("Error en hilo autopiloto: %s", exc)
+            time.sleep(INTERVALO_CICLO_SEG)
+
+    thread = threading.Thread(target=loop, daemon=True, name="QuantAutopilotThread")
     thread.start()
     return thread
+
 
 iniciar_hilo_autopiloto()
 
 # ==========================================
-# 📊 INTERFAZ GRÁFICA PRINCIPAL
+# 📊 INTERFAZ DE VISUALIZACIÓN & AUDITORÍA
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — UNIFIED AMT & FLOW</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>AMT (POC/VAH/VAL) + Fractalidad (1h -> 15m/5m) + Flujo (ADX/VWAP/EMAs/CVD) + OB/FVG (Desc ≥50%) + Freno Exhaustación</p>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — PRO</h1>", unsafe_allow_html=True)
+st.markdown(
+    "<p style='text-align: center; color: gray;'>AMT (POC/VAH/VAL) + Contexto 1h -> Gatillo 15m/5m + Flujo (ADX/VWAP/EMAs/CVD) + OB/FVG + Auditoría de Riesgo</p>",
+    unsafe_allow_html=True,
+)
 st.markdown("---")
+
+tel = _leer_telemetria()
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Activos Reales (1h)", f"{tel['activos_reales']}/{len(set(canonizar_simbolo(s) for s in ALL_TRACKED_SYMBOLS))}")
+c2.metric("Candidatas Detectadas", tel["candidatas"])
+c3.metric("Bloqueadas por Riesgo", tel["bloqueadas_riesgo"])
+c4.metric("Alertas Enviadas", tel["alertas_enviadas_total"])
+c5.metric("Último Ciclo", tel["ultimo_ciclo"])
 
 st.sidebar.header("🌐 Configuración del Gráfico")
 symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_TRACKED_SYMBOLS)
 timeframe = st.sidebar.selectbox("Temporalidad", ["15m", "5m", "1h"])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Estado del Motor")
-st.sidebar.info(AUTOPILOTO_STATUS)
-if ULTIMO_ERROR_TG:
-    st.sidebar.caption(f"⚠️ Telegram: {ULTIMO_ERROR_TG}")
+st.sidebar.subheader("📡 Estado y Diagnóstico")
+st.sidebar.info(tel["estado"])
+if tel["ultimo_error_tg"]:
+    st.sidebar.error(f"Telegram: {tel['ultimo_error_tg']}")
 
-if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
-    with st.spinner("Ejecutando barrido unificado..."):
-        ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        st.sidebar.success("¡Escaneo completado!")
+col_b1, col_b2 = st.sidebar.columns(2)
+if col_b1.button("⚡ Escanear"):
+    ejecutar_logica_autopiloto(es_hilo_fondo=False)
+    st.rerun()
+
+if col_b2.button("📨 Test TG"):
+    ok = enviar_telegram("🧪 *Test de conexión Quant Terminal*: Canal Telegram operativo.")
+    if ok:
+        st.sidebar.success("Mensaje enviado ✅")
+    else:
+        st.sidebar.error("Falló envío ❌")
 
 with st.sidebar.expander("🔍 Diagnóstico Cripto / Oro"):
     for sym_diag in ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XAUUSD=X"]:
         df_d = obtener_datos(sym_diag, timeframe, limit=85, ttl_segundos=60)
-        real_txt = "REAL ✅" if df_d.attrs.get("es_real", False) else "SIN DATO REAL ❌"
+        real_txt = "REAL ✅" if df_d.attrs.get("es_real", False) else "RESPALDO ⚠️"
         adx_d = float(df_d["adx"].iloc[-1]) if not df_d.empty and "adx" in df_d.columns else 0.0
         umbral_d = obtener_umbral_adx(sym_diag)
         st.caption(f"{sym_diag}: {real_txt} | ADX: {adx_d:.1f} (min >{umbral_d:.0f})")
 
+
 @st.fragment(run_every="10s")
-def render_trading_panel(symbol, timeframe):
-    df = obtener_datos(symbol, timeframe, limit=120, ttl_segundos=30)
+def render_trading_panel(sym: str, tf: str):
+    df = obtener_datos(sym, tf, limit=120, ttl_segundos=30)
     if df.empty:
-        st.error(f"No se pudieron cargar los datos para {symbol}.")
+        st.error(f"No se pudieron cargar los datos para {sym}.")
         return
 
     if not df.attrs.get("es_real", False):
-        st.warning("⚠️ Datos de respaldo activos por límite temporal de proveedor externo. No se enviarán alertas de Telegram con estos datos.")
+        st.warning("⚠️ Datos de respaldo activos por límite temporal del proveedor. No se emiten alertas de Telegram con estos datos.")
 
     perfil_panel = calcular_perfil_volumen_amt(df, lookback=36)
 
     col_grafico, col_paneles = st.columns([2.5, 1])
     with col_grafico:
         fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2, 0.8])
-        fig.add_trace(go.Candlestick(
-            x=df["timestamp"], open=df["open"], high=df["high"], low=df["low"], close=df["close"],
-            increasing_line_color="#00FFAA", decreasing_line_color="#FF3333", name="Precio"
-        ), row=1, col=1)
+        fig.add_trace(
+            go.Candlestick(
+                x=df["timestamp"],
+                open=df["open"],
+                high=df["high"],
+                low=df["low"],
+                close=df["close"],
+                increasing_line_color="#00FFAA",
+                decreasing_line_color="#FF3333",
+                name="Precio",
+            ),
+            row=1,
+            col=1,
+        )
         fig.add_trace(go.Scatter(x=df["timestamp"], y=df["vwap"], line=dict(color="#FF00FF", width=2), name="VWAP"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df["timestamp"], y=df["ema_fast"], line=dict(color="#FFFF00", width=1.2), name="EMA 9"), row=1, col=1)
         fig.add_trace(go.Scatter(x=df["timestamp"], y=df["ema_slow"], line=dict(color="#00BFFF", width=1.2), name="EMA 21"), row=1, col=1)
@@ -773,7 +927,13 @@ def render_trading_panel(symbol, timeframe):
 
         colors = ["#00FFAA" if r["close"] >= r["open"] else "#FF3333" for _, r in df.iterrows()]
         fig.add_trace(go.Bar(x=df["timestamp"], y=df["volume"], marker_color=colors, name="Volumen"), row=2, col=1)
-        fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=600, margin=dict(l=10, r=10, t=10, b=10), showlegend=True)
+        fig.update_layout(
+            template="plotly_dark",
+            xaxis_rangeslider_visible=False,
+            height=600,
+            margin=dict(l=10, r=10, t=10, b=10),
+            showlegend=True,
+        )
         st.plotly_chart(fig, use_container_width=True)
 
     with col_paneles:
@@ -781,9 +941,13 @@ def render_trading_panel(symbol, timeframe):
         ultima = df.iloc[-1]
         anterior = df.iloc[-2]
         precio_actual = float(ultima["close"])
-        st.metric(label=f"{canonizar_simbolo(symbol)} [{timeframe}]", value=f"${precio_actual:,.4f}", delta=f"{precio_actual - float(anterior['close']):,.4f}")
+        st.metric(
+            label=f"{canonizar_simbolo(sym)} [{tf}]",
+            value=f"${precio_actual:,.4f}",
+            delta=f"{precio_actual - float(anterior['close']):,.4f}",
+        )
 
-        df_1h_panel = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
+        df_1h_panel = obtener_datos(sym, "1h", limit=90, ttl_segundos=90)
         ctx_1h_panel = analizar_contexto_macro_1h(df_1h_panel)
         st.info(f"🧭 Contexto 1h: **{ctx_1h_panel['sesgo']}** | AMT: **{perfil_panel['estado']}**")
         st.caption(f"POC: `${perfil_panel['poc']:,.4f}` | VAL: `${perfil_panel['val']:,.4f}` | VAH: `${perfil_panel['vah']:,.4f}`")
@@ -802,12 +966,17 @@ def render_trading_panel(symbol, timeframe):
 
         st.markdown("---")
         st.markdown("### 🎯 Gatillo Unificado")
-        tf_eval = "15m" if timeframe == "1h" else timeframe
-        df_eval = obtener_datos(symbol, tf_eval, limit=90, ttl_segundos=60) if tf_eval != timeframe else df
-        senal = evaluar_motor_unificado(df_eval, symbol=symbol, timeframe=tf_eval, ctx_1h=ctx_1h_panel)
+        tf_eval = "15m" if tf == "1h" else tf
+        df_eval = obtener_datos(sym, tf_eval, limit=90, ttl_segundos=60) if tf_eval != tf else df
+        senal = evaluar_motor_unificado(df_eval, symbol=sym, timeframe=tf_eval, ctx_1h=ctx_1h_panel)
         if senal:
-            st.success(f"**{senal['modelo']}**\n\n**Acción:** {senal['direccion']}\n\n{senal['plan']}")
+            estado_riesgo = "✅ Apto para cuenta" if senal["apto_cuenta"] else f"⚠️ Supera tope ({senal['riesgo_pct']}%)"
+            st.success(
+                f"**{senal['modelo']}** ({estado_riesgo})\n\n"
+                f"**Acción:** {senal['direccion']}\n\n{senal['plan']}"
+            )
         else:
-            st.caption("Esperando setup unificado válido (sin exhaustación y con riesgo apto para $10 USD).")
+            st.caption("Sin setup unificado válido en esta vela.")
+
 
 render_trading_panel(symbol, timeframe)
