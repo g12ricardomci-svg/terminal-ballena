@@ -23,7 +23,7 @@ if "alertas_enviadas" not in st.session_state:
 if "historial_senales" not in st.session_state:
     st.session_state["historial_senales"] = []
 if "ultimo_estado_tg" not in st.session_state:
-    st.session_state["ultimo_estado_tg"] = ""
+    st.session_state["ultimo_estado_tg"] = "Aún no se ha enviado ningún mensaje."
 
 # 3. UNIVERSO DE ACTIVOS (EXCLUSIVO FOREX, ORO Y CRIPTO)
 ACTIVOS_ESCANEO = {
@@ -386,7 +386,7 @@ def enviar_mensaje_telegram(texto: str, token: str, chat_id: str) -> tuple[bool,
     token_limpio = (token or "").strip()
     chat_limpio = (chat_id or "").strip()
     if not token_limpio or not chat_limpio:
-        return False, "Falta Token o Chat ID de Telegram."
+        return False, "Falta Token o Chat ID."
     url = f"https://api.telegram.org/bot{token_limpio}/sendMessage"
     try:
         resp = requests.post(
@@ -396,9 +396,9 @@ def enviar_mensaje_telegram(texto: str, token: str, chat_id: str) -> tuple[bool,
         )
         if resp.status_code == 200:
             return True, "Enviado correctamente."
-        return False, f"Telegram respondió {resp.status_code}: {resp.text[:160]}"
+        return False, f"Error Telegram ({resp.status_code}): {resp.text[:180]}"
     except Exception as e:
-        return False, f"Error de red al enviar a Telegram: {e}"
+        return False, f"Error de conexión: {e}"
 
 
 def enviar_alerta_telegram(senal: dict, token: str, chat_id: str) -> tuple[bool, str]:
@@ -442,43 +442,44 @@ with st.sidebar:
     st.subheader("📲 Alertas Telegram")
     base_token, base_chat = obtener_credenciales_base_telegram()
 
-    if not (base_token and base_chat):
-        st.caption("Puedes configurar `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` en Secrets o escribirlos aquí abajo:")
-        token_tg = st.text_input("Token del Bot", value=base_token, type="password", placeholder="123456:ABC...")
-        chat_tg = st.text_input("Chat ID", value=base_chat, placeholder="987654321")
-    else:
-        token_tg = base_token
-        chat_tg = base_chat
-        st.success("Credenciales detectadas desde Secrets/entorno.")
+    # Campos directos siempre disponibles para ingresar o corregir Token y Chat ID al instante
+    token_tg = st.text_input(
+        "Token del Bot (BotFather)",
+        value=base_token,
+        type="password",
+        placeholder="123456789:AA...",
+    )
+    chat_tg = st.text_input(
+        "Chat ID",
+        value=base_chat,
+        placeholder="Ej: 123456789 o -100123456789",
+    )
 
-    tg_configurado = bool((token_tg or "").strip() and (chat_tg or "").strip())
-
+    tiene_creds = bool((token_tg or "").strip() and (chat_tg or "").strip())
     enviar_tg = st.checkbox(
         "Enviar alertas a Telegram",
-        value=tg_configurado,
-        disabled=not tg_configurado,
+        value=tiene_creds,
+        disabled=not tiene_creds,
     )
     solo_aptas_tg = st.checkbox(
         "Solo enviar señales dentro del límite de saldo",
         value=False,
-        disabled=not tg_configurado,
+        disabled=not tiene_creds,
     )
 
-    if tg_configurado:
-        if st.button("✉️ Probar mensaje de prueba", use_container_width=True):
-            ok_test, msg_test = enviar_mensaje_telegram(
-                "✅ *Prueba de conexión Telegram:* Terminal Cuantitativa activa y conectada.",
-                token_tg,
-                chat_tg,
-            )
-            st.session_state["ultimo_estado_tg"] = msg_test
-            if ok_test:
-                st.success("Mensaje de prueba enviado a Telegram.")
-            else:
-                st.error(msg_test)
+    if st.button("✉️ Probar envío a Telegram", use_container_width=True, disabled=not tiene_creds):
+        ok_test, msg_test = enviar_mensaje_telegram(
+            "✅ *Prueba de conexión Telegram:* Terminal Cuantitativa conectada y lista.",
+            token_tg,
+            chat_tg,
+        )
+        st.session_state["ultimo_estado_tg"] = msg_test
+        if ok_test:
+            st.success("Mensaje enviado a Telegram.")
+        else:
+            st.error(msg_test)
 
-    if st.session_state["ultimo_estado_tg"]:
-        st.caption(f"Estado TG: {st.session_state['ultimo_estado_tg']}")
+    st.caption(f"Estado TG: {st.session_state['ultimo_estado_tg']}")
 
     st.divider()
     auto_refresh = st.checkbox("Auto-actualizar cada 60s", value=False)
