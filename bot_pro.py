@@ -115,7 +115,7 @@ def _leer_secreto_o_env(claves: list[str]) -> str:
     return ""
 
 
-def obtener_credenciales_telegram() -> tuple[str, str]:
+def obtener_credenciales_base_telegram() -> tuple[str, str]:
     token = _leer_secreto_o_env(["TELEGRAM_TOKEN", "BOT_TOKEN", "TOKEN_TELEGRAM", "TG_TOKEN"])
     chat_id = _leer_secreto_o_env(["TELEGRAM_CHAT_ID", "CHAT_ID", "TG_CHAT_ID"])
     return token, chat_id
@@ -383,13 +383,15 @@ def evaluar_estrategia_unificada(
 
 
 def enviar_mensaje_telegram(texto: str, token: str, chat_id: str) -> tuple[bool, str]:
-    if not token or not chat_id:
-        return False, "Falta TELEGRAM_TOKEN o TELEGRAM_CHAT_ID en Secrets."
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    token_limpio = (token or "").strip()
+    chat_limpio = (chat_id or "").strip()
+    if not token_limpio or not chat_limpio:
+        return False, "Falta Token o Chat ID de Telegram."
+    url = f"https://api.telegram.org/bot{token_limpio}/sendMessage"
     try:
         resp = requests.post(
             url,
-            json={"chat_id": chat_id, "text": texto, "parse_mode": "Markdown"},
+            json={"chat_id": chat_limpio, "text": texto, "parse_mode": "Markdown"},
             timeout=10,
         )
         if resp.status_code == 200:
@@ -438,8 +440,18 @@ with st.sidebar:
 
     st.divider()
     st.subheader("📲 Alertas Telegram")
-    token_tg, chat_tg = obtener_credenciales_telegram()
-    tg_configurado = bool(token_tg and chat_tg)
+    base_token, base_chat = obtener_credenciales_base_telegram()
+
+    if not (base_token and base_chat):
+        st.caption("Puedes configurar `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` en Secrets o escribirlos aquí abajo:")
+        token_tg = st.text_input("Token del Bot", value=base_token, type="password", placeholder="123456:ABC...")
+        chat_tg = st.text_input("Chat ID", value=base_chat, placeholder="987654321")
+    else:
+        token_tg = base_token
+        chat_tg = base_chat
+        st.success("Credenciales detectadas desde Secrets/entorno.")
+
+    tg_configurado = bool((token_tg or "").strip() and (chat_tg or "").strip())
 
     enviar_tg = st.checkbox(
         "Enviar alertas a Telegram",
@@ -452,9 +464,7 @@ with st.sidebar:
         disabled=not tg_configurado,
     )
 
-    if not tg_configurado:
-        st.warning("Configura `TELEGRAM_TOKEN` y `TELEGRAM_CHAT_ID` en Streamlit Cloud > Settings > Secrets.")
-    else:
+    if tg_configurado:
         if st.button("✉️ Probar mensaje de prueba", use_container_width=True):
             ok_test, msg_test = enviar_mensaje_telegram(
                 "✅ *Prueba de conexión Telegram:* Terminal Cuantitativa activa y conectada.",
