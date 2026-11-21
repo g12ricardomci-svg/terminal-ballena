@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 # ⚙️ CONFIGURACIÓN GLOBAL, BANK ($10 USD) & CREDENCIALES
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
-TELEGRAM_CHAT_ID = "1496321437"
+TELEGRAM_CHAT_IDS = ["1496321437", "5880373359"]
 BANK_USD = 10.0
 RIESGO_POR_OPERACION = 0.02  # 2% = $0.20 USD por operación
 
@@ -129,14 +129,18 @@ def obtener_noticias_en_vivo(ttl_segundos=180):
 # ==========================================
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
     headers = {"Content-Type": "application/json; charset=utf-8"}
-    try:
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        resp = requests.post(url, data=data, headers=headers, timeout=5)
-        return resp.status_code == 200
-    except Exception:
-        return False
+    enviado_alguno = False
+    for chat_id in TELEGRAM_CHAT_IDS:
+        payload = {"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}
+        try:
+            data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            resp = requests.post(url, data=data, headers=headers, timeout=5)
+            if resp.status_code == 200:
+                enviado_alguno = True
+        except Exception:
+            continue
+    return enviado_alguno
 
 
 # ==========================================
@@ -290,7 +294,7 @@ def evaluar_estrategia_intradia_1h(df, adx_min=25.0, sesgo_1h="NEUTRO", vp_info=
 
     # 1) SEGUIMIENTO DE TENDENCIA / RUPTURA A FAVOR DE 1H
     if adx_val >= adx_min:
-        if sesgo_1h == "ALCISTA" and precio > ema_fast > ema_slow and precio >= vwap_val and cvd_alcista:
+        if sesgo_1h == "ALCISTA" and ema_fast > ema_slow and precio >= vwap_val and cvd_alcista:
             sl = min(float(df["low"].iloc[-5:].min()), precio - atr_ref * 1.0)
             riesgo = max(precio - sl, atr_ref * 0.8)
             sl = precio - riesgo
@@ -307,7 +311,7 @@ def evaluar_estrategia_intradia_1h(df, adx_min=25.0, sesgo_1h="NEUTRO", vp_info=
                 )
             }
 
-        if sesgo_1h == "BAJISTA" and precio < ema_fast < ema_slow and precio <= vwap_val and cvd_bajista:
+        if sesgo_1h == "BAJISTA" and ema_fast < ema_slow and precio <= vwap_val and cvd_bajista:
             sl = max(float(df["high"].iloc[-5:].max()), precio + atr_ref * 1.0)
             riesgo = max(sl - precio, atr_ref * 0.8)
             sl = precio + riesgo
@@ -326,7 +330,7 @@ def evaluar_estrategia_intradia_1h(df, adx_min=25.0, sesgo_1h="NEUTRO", vp_info=
 
     # 2) OPERATIVA EN RANGOS (ADX BAJO: RSI + BOLLINGER + POC)
     if adx_val < adx_min:
-        if (precio <= bb_low or precio <= val) and rsi_val <= 35.0 and cvd_alcista:
+        if (precio <= bb_low or precio <= val) and rsi_val <= 40.0 and cvd_alcista:
             sl = float(u["low"]) - atr_ref * 0.5
             riesgo = max(precio - sl, atr_ref * 0.6)
             tp = max(poc, precio + riesgo * 1.5)
@@ -339,7 +343,7 @@ def evaluar_estrategia_intradia_1h(df, adx_min=25.0, sesgo_1h="NEUTRO", vp_info=
                 "plan": f"1) Rango lateral (ADX {adx_val:.1f}) en sobreventa (RSI {rsi_val:.1f}).\n2) Objetivo hacia POC (${poc:,.4f})."
             }
 
-        if (precio >= bb_up or precio >= vah) and rsi_val >= 65.0 and cvd_bajista:
+        if (precio >= bb_up or precio >= vah) and rsi_val >= 60.0 and cvd_bajista:
             sl = float(u["high"]) + atr_ref * 0.5
             riesgo = max(sl - precio, atr_ref * 0.6)
             tp = min(poc, precio - riesgo * 1.5)
