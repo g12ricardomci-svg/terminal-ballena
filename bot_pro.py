@@ -4,7 +4,6 @@ import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from typing import Any
 from urllib.parse import quote, urlencode
 
 import numpy as np
@@ -14,149 +13,50 @@ import requests
 import streamlit as st
 
 
-APP_NAME = "MESA / AMT · Terminal de mercado"
-USER_AGENT = "Mozilla/5.0 (compatible; AMTMarketDashboard/1.0)"
-TIMEFRAME_MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
-STALE_AFTER_MINUTES = {"5m": 12.5, "15m": 37.5, "1h": 150, "4h": 600}
+st.set_page_config(page_title="Mesa AMT", layout="wide")
 
-INSTRUMENTS: dict[str, dict[str, str]] = {
-    "BTC/USDT": {
-        "label": "Bitcoin / USDT",
-        "market": "Cripto",
-        "provider": "okx",
-        "source": "OKX",
-        "provider_symbol": "BTC-USDT",
-        "class": "crypto",
-    },
-    "ETH/USDT": {
-        "label": "Ethereum / USDT",
-        "market": "Cripto",
-        "provider": "okx",
-        "source": "OKX",
-        "provider_symbol": "ETH-USDT",
-        "class": "crypto",
-    },
-    "BNB/USDT": {
-        "label": "BNB / USDT",
-        "market": "Cripto",
-        "provider": "okx",
-        "source": "OKX",
-        "provider_symbol": "BNB-USDT",
-        "class": "crypto",
-    },
-    "NQ=F": {
-        "label": "Nasdaq 100 Futures",
-        "market": "Índices",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "NQ=F",
-        "class": "index",
-    },
-    "ES=F": {
-        "label": "S&P 500 Futures",
-        "market": "Índices",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "ES=F",
-        "class": "index",
-    },
-    "EURUSD=X": {
-        "label": "EUR / USD",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "EURUSD=X",
-        "class": "forex",
-    },
-    "GBPUSD=X": {
-        "label": "GBP / USD",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "GBPUSD=X",
-        "class": "forex",
-    },
-    "USDJPY=X": {
-        "label": "USD / JPY",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "USDJPY=X",
-        "class": "forex",
-    },
-    "AUDUSD=X": {
-        "label": "AUD / USD",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "AUDUSD=X",
-        "class": "forex",
-    },
-    "USDCAD=X": {
-        "label": "USD / CAD",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "USDCAD=X",
-        "class": "forex",
-    },
-    "USDCHF=X": {
-        "label": "USD / CHF",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "USDCHF=X",
-        "class": "forex",
-    },
-    "NZDUSD=X": {
-        "label": "NZD / USD",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "NZDUSD=X",
-        "class": "forex",
-    },
-    "EURJPY=X": {
-        "label": "EUR / JPY",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "EURJPY=X",
-        "class": "forex",
-    },
-    "GBPJPY=X": {
-        "label": "GBP / JPY",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "GBPJPY=X",
-        "class": "forex",
-    },
-    "EURGBP=X": {
-        "label": "EUR / GBP",
-        "market": "FX",
-        "provider": "yahoo",
-        "source": "Yahoo Finance",
-        "provider_symbol": "EURGBP=X",
-        "class": "forex",
-    },
-    "XAUUSD=X": {
-        "label": "Oro · Gold Futures",
-        "market": "Metales",
-        "provider": "yahoo",
-        "source": "Yahoo Finance · GC=F",
-        "provider_symbol": "GC=F",
-        "class": "metal",
-    },
+USER_AGENT = "Mozilla/5.0 (compatible; MesaAMT/1.0)"
+MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
+STALE_MINUTES = {"5m": 13, "15m": 38, "1h": 150, "4h": 600}
+
+# Símbolo: nombre, categoría, proveedor, símbolo del proveedor, clase de activo.
+RAW_INSTRUMENTS = {
+    "BTC/USDT": ("Bitcoin / USDT", "Cripto", "okx", "BTC-USDT", "crypto"),
+    "ETH/USDT": ("Ethereum / USDT", "Cripto", "okx", "ETH-USDT", "crypto"),
+    "BNB/USDT": ("BNB / USDT", "Cripto", "okx", "BNB-USDT", "crypto"),
+    "NQ=F": ("Nasdaq 100 Futures", "Índices", "yahoo", "NQ=F", "index"),
+    "ES=F": ("S&P 500 Futures", "Índices", "yahoo", "ES=F", "index"),
+    "EURUSD=X": ("EUR / USD", "FX", "yahoo", "EURUSD=X", "forex"),
+    "GBPUSD=X": ("GBP / USD", "FX", "yahoo", "GBPUSD=X", "forex"),
+    "USDJPY=X": ("USD / JPY", "FX", "yahoo", "USDJPY=X", "forex"),
+    "AUDUSD=X": ("AUD / USD", "FX", "yahoo", "AUDUSD=X", "forex"),
+    "USDCAD=X": ("USD / CAD", "FX", "yahoo", "USDCAD=X", "forex"),
+    "USDCHF=X": ("USD / CHF", "FX", "yahoo", "USDCHF=X", "forex"),
+    "NZDUSD=X": ("NZD / USD", "FX", "yahoo", "NZDUSD=X", "forex"),
+    "EURJPY=X": ("EUR / JPY", "FX", "yahoo", "EURJPY=X", "forex"),
+    "GBPJPY=X": ("GBP / JPY", "FX", "yahoo", "GBPJPY=X", "forex"),
+    "EURGBP=X": ("EUR / GBP", "FX", "yahoo", "EURGBP=X", "forex"),
+    "XAUUSD=X": ("Oro · Gold Futures", "Metales", "yahoo", "GC=F", "metal"),
 }
 
+INSTRUMENTS = {
+    symbol: {
+        "label": values[0],
+        "market": values[1],
+        "provider": values[2],
+        "ticker": values[3],
+        "class": values[4],
+        "source": "OKX" if values[2] == "okx" else "Yahoo Finance",
+    }
+    for symbol, values in RAW_INSTRUMENTS.items()
+}
+INSTRUMENTS["XAUUSD=X"]["source"] = "Yahoo Finance · GC=F"
 WATCHLIST = ["BTC/USDT", "ETH/USDT", "NQ=F", "EURUSD=X", "XAUUSD=X"]
 
-NEWS_TOPICS: dict[str, str] = {
+NEWS_TOPICS = {
     "Todos los temas": (
         "economía OR mercados financieros OR bolsa OR inflación OR bancos centrales "
-        "OR tasas de interés OR empleo OR petróleo OR geopolítica OR bitcoin "
-        "OR criptomonedas"
+        "OR tasas de interés OR empleo OR petróleo OR geopolítica OR bitcoin OR criptomonedas"
     ),
     "Política monetaria": (
         "bancos centrales OR tasas de interés OR Reserva Federal OR Fed "
@@ -172,99 +72,73 @@ NEWS_TOPICS: dict[str, str] = {
     "Cripto": "bitcoin OR criptomonedas OR ethereum OR regulación cripto",
 }
 
-HEADLINE_RULES: list[tuple[str, re.Pattern[str], list[str]]] = [
-    (
-        "Cripto",
-        re.compile(r"bitcoin|ethereum|criptomon|cripto|blockchain", re.IGNORECASE),
-        ["activos digitales"],
-    ),
+NEWS_RULES = [
+    ("Cripto", r"bitcoin|ethereum|criptomon|cripto|blockchain", ["activos digitales"]),
     (
         "Energía y materias primas",
-        re.compile(
-            r"petróleo|petroleo|gas natural|energía|energia|oro|materias primas|minería|mineras",
-            re.IGNORECASE,
-        ),
+        r"petróleo|petroleo|gas natural|energía|energia|oro|materias primas|minería|mineras",
         ["energía", "materias primas", "divisas"],
     ),
     (
         "Política monetaria",
-        re.compile(
-            r"fed|reserva federal|banco central|tasas de interés|tipos de interés|"
-            r"tipos de interes|tasas",
-            re.IGNORECASE,
-        ),
+        r"fed|reserva federal|banco central|tasas de interés|tipos de interés|tasas",
         ["divisas", "bonos", "índices", "oro"],
     ),
     (
         "Renta fija",
-        re.compile(r"renta fija|bonos|bono|deuda pública|deuda publica", re.IGNORECASE),
+        r"renta fija|bonos|bono|deuda pública|deuda publica",
         ["bonos", "divisas", "índices"],
     ),
     (
         "Inflación y empleo",
-        re.compile(r"inflac|ipc|empleo|nóminas|nominas|salarios", re.IGNORECASE),
+        r"inflac|ipc|empleo|nóminas|nominas|salarios",
         ["divisas", "bonos", "índices", "oro"],
     ),
     (
         "Riesgo soberano",
-        re.compile(r"riesgo país|riesgo pais|riesgo soberano", re.IGNORECASE),
+        r"riesgo país|riesgo pais|riesgo soberano",
         ["bonos", "divisas", "índices"],
     ),
     (
         "Geopolítica",
-        re.compile(
-            r"geopol|guerra|conflicto|sanciones|ataque|irán|iran|china|aranceles",
-            re.IGNORECASE,
-        ),
+        r"geopol|guerra|conflicto|sanciones|ataque|irán|iran|china|aranceles",
         ["oro", "energía", "divisas", "índices"],
     ),
     (
         "Mercados globales",
-        re.compile(r"mercados|bolsa|acciones|índices|indices|dólar|dolar|divisas", re.IGNORECASE),
+        r"mercados|bolsa|acciones|índices|indices|dólar|dolar|divisas",
         ["índices", "divisas"],
     ),
 ]
 
 
-def _ensure_supported(symbol: str) -> dict[str, str]:
-    instrument = INSTRUMENTS.get(symbol)
-    if instrument is None:
-        raise ValueError(f"Símbolo no soportado: {symbol}")
-    return instrument
-
-
-def _drop_incomplete_bars(frame: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+def drop_open_candles(frame: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     if frame.empty:
         return frame
-    duration = pd.Timedelta(minutes=TIMEFRAME_MINUTES[timeframe])
-    now = pd.Timestamp.now(tz="UTC")
-    return frame.loc[frame.index + duration <= now]
+    duration = pd.Timedelta(minutes=MINUTES[timeframe])
+    return frame.loc[frame.index + duration <= pd.Timestamp.now(tz="UTC")]
 
 
-def _fetch_okx_candles(symbol: str, timeframe: str) -> pd.DataFrame:
-    instrument = _ensure_supported(symbol)
+def fetch_okx(symbol: str, timeframe: str) -> pd.DataFrame:
     bars = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H"}
-    params = {
-        "instId": instrument["provider_symbol"],
-        "bar": bars[timeframe],
-        "limit": "200",
-    }
     response = requests.get(
         "https://www.okx.com/api/v5/market/candles",
-        params=params,
+        params={
+            "instId": INSTRUMENTS[symbol]["ticker"],
+            "bar": bars[timeframe],
+            "limit": "200",
+        },
         headers={"User-Agent": USER_AGENT},
         timeout=15,
     )
     response.raise_for_status()
     payload = response.json()
-    if payload.get("code") != "0":
-        raise RuntimeError(payload.get("msg") or "OKX no entregó cotizaciones.")
 
-    rows = payload.get("data", [])
-    if not rows:
-        raise RuntimeError("OKX no devolvió velas para este instrumento.")
+    if payload.get("code") != "0" or not payload.get("data"):
+        raise RuntimeError(payload.get("msg") or "OKX no devolvió cotizaciones.")
+
     frame = pd.DataFrame(
-        rows,
+        payload["data"],
         columns=[
             "timestamp",
             "open",
@@ -272,8 +146,8 @@ def _fetch_okx_candles(symbol: str, timeframe: str) -> pd.DataFrame:
             "low",
             "close",
             "volume",
-            "volume_currency",
-            "volume_quote",
+            "vol_ccy",
+            "vol_quote",
             "confirmed",
         ],
     )
@@ -285,16 +159,14 @@ def _fetch_okx_candles(symbol: str, timeframe: str) -> pd.DataFrame:
     frame = frame.loc[frame["confirmed"].astype(str) == "1"].copy()
     frame = frame.set_index("timestamp").sort_index()
     frame = frame[["open", "high", "low", "close", "volume"]]
-    for column in frame.columns:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
-    frame = frame.dropna(subset=["open", "high", "low", "close"])
+    frame = frame.apply(pd.to_numeric, errors="coerce").dropna(
+        subset=["open", "high", "low", "close"]
+    )
     frame["volume"] = frame["volume"].fillna(0)
-    frame.index.name = "timestamp"
-    return _drop_incomplete_bars(frame, timeframe).tail(180)
+    return drop_open_candles(frame, timeframe).tail(180)
 
 
-def _fetch_yahoo_candles(symbol: str, timeframe: str) -> pd.DataFrame:
-    instrument = _ensure_supported(symbol)
+def fetch_yahoo(symbol: str, timeframe: str) -> pd.DataFrame:
     intervals = {
         "5m": ("5m", "5d"),
         "15m": ("15m", "60d"),
@@ -302,27 +174,22 @@ def _fetch_yahoo_candles(symbol: str, timeframe: str) -> pd.DataFrame:
         "4h": ("60m", "1mo"),
     }
     interval, period = intervals[timeframe]
-    ticker = quote(instrument["provider_symbol"], safe="")
+    ticker = quote(INSTRUMENTS[symbol]["ticker"], safe="")
     query = urlencode({"interval": interval, "range": period, "events": "div,splits"})
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?{query}"
-    response = requests.get(
-        url,
-        headers={"User-Agent": USER_AGENT},
-        timeout=15,
-    )
+    response = requests.get(url, headers={"User-Agent": USER_AGENT}, timeout=15)
     response.raise_for_status()
-    payload = response.json().get("chart", {})
-    if payload.get("error"):
-        raise RuntimeError("Yahoo Finance informó un error al consultar el símbolo.")
-    result_list = payload.get("result") or []
-    if not result_list:
-        raise RuntimeError("Yahoo Finance no devolvió velas para este instrumento.")
 
-    result = result_list[0]
+    chart = response.json().get("chart", {})
+    results = chart.get("result") or []
+    if chart.get("error") or not results:
+        raise RuntimeError("Yahoo Finance no devolvió cotizaciones para este símbolo.")
+
+    result = results[0]
     timestamps = result.get("timestamp") or []
     quote_data = result.get("indicators", {}).get("quote", [{}])[0]
     if not timestamps:
-        raise RuntimeError("Yahoo Finance no devolvió horarios de cotización.")
+        raise RuntimeError("Yahoo Finance no devolvió velas.")
 
     frame = pd.DataFrame(
         {
@@ -335,14 +202,13 @@ def _fetch_yahoo_candles(symbol: str, timeframe: str) -> pd.DataFrame:
         index=pd.to_datetime(timestamps, unit="s", utc=True),
     )
     frame.index.name = "timestamp"
-    for column in frame.columns:
-        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.apply(pd.to_numeric, errors="coerce")
     frame = frame.dropna(subset=["open", "high", "low", "close"])
     frame = frame.loc[~frame.index.duplicated(keep="last")].sort_index()
     frame["volume"] = frame["volume"].fillna(0)
 
     if timeframe == "4h":
-        frame = _drop_incomplete_bars(frame, "1h")
+        frame = drop_open_candles(frame, "1h")
         frame = (
             frame.resample("4h", origin="start_day", label="left", closed="left")
             .agg(
@@ -356,77 +222,76 @@ def _fetch_yahoo_candles(symbol: str, timeframe: str) -> pd.DataFrame:
             )
             .dropna(subset=["open", "high", "low", "close"])
         )
-        frame = _drop_incomplete_bars(frame, "4h")
-    else:
-        frame = _drop_incomplete_bars(frame, timeframe)
 
-    frame.index.name = "timestamp"
+    frame = drop_open_candles(frame, timeframe)
     return frame.tail(180)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
 def fetch_candles(symbol: str, timeframe: str) -> pd.DataFrame:
-    """Carga velas cerradas de un proveedor público y las guarda cinco minutos."""
-    instrument = _ensure_supported(symbol)
-    if timeframe not in TIMEFRAME_MINUTES:
-        raise ValueError("Temporalidad no soportada.")
-    if instrument["provider"] == "okx":
-        frame = _fetch_okx_candles(symbol, timeframe)
+    if symbol not in INSTRUMENTS or timeframe not in MINUTES:
+        raise ValueError("Símbolo o temporalidad no soportados.")
+
+    if INSTRUMENTS[symbol]["provider"] == "okx":
+        frame = fetch_okx(symbol, timeframe)
     else:
-        frame = _fetch_yahoo_candles(symbol, timeframe)
+        frame = fetch_yahoo(symbol, timeframe)
+
     if len(frame) < 30:
-        raise RuntimeError(
-            f"El proveedor solo entregó {len(frame)} velas cerradas; "
-            "no hay suficiente historial para calcular el contexto."
-        )
+        raise RuntimeError("El proveedor entregó menos de 30 velas cerradas.")
     return frame
 
 
-def _volume_weights(frame: pd.DataFrame) -> tuple[np.ndarray, bool]:
+def volume_weights(frame: pd.DataFrame) -> tuple[np.ndarray, bool]:
     volume = frame["volume"].fillna(0).to_numpy(dtype=float)
     approximate = bool(np.any(volume <= 0))
-    if np.sum(volume) <= 0:
+
+    if volume.sum() <= 0:
         volume = np.maximum(
             (frame["high"] - frame["low"]).to_numpy(dtype=float),
             1e-9,
         )
         approximate = True
+
     return volume, approximate
 
 
-def _calculate_profile(frame: pd.DataFrame, bins: int = 18) -> dict[str, Any]:
+def volume_profile(frame: pd.DataFrame, bins: int = 18) -> dict:
     selected = frame.iloc[:-3].tail(36)
     if len(selected) < 6:
         selected = frame.tail(min(36, len(frame)))
-    current_price = float(frame["close"].iloc[-1])
+
+    price = float(frame["close"].iloc[-1])
     low = float(selected["low"].min())
     high = float(selected["high"].max())
-    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+
+    if not np.isfinite(low) or high <= low:
         return {
-            "poc": current_price,
-            "vah": current_price,
-            "val": current_price,
+            "poc": price,
+            "vah": price,
+            "val": price,
             "state": "balance",
-            "approximate": True,
+            "approx": True,
         }
 
     width = (high - low) / bins
-    weights, _ = _volume_weights(selected)
+    weights, _ = volume_weights(selected)
     typical = (
-        selected["high"].to_numpy(dtype=float)
-        + selected["low"].to_numpy(dtype=float)
-        + selected["close"].to_numpy(dtype=float)
+        selected["high"].to_numpy()
+        + selected["low"].to_numpy()
+        + selected["close"].to_numpy()
     ) / 3
     indexes = np.clip(((typical - low) / width).astype(int), 0, bins - 1)
     distribution = np.bincount(indexes, weights=weights, minlength=bins)
     poc_index = int(np.argmax(distribution))
-    total = float(distribution.sum())
-    accumulated = float(distribution[poc_index])
     low_index = high_index = poc_index
+    accumulated = float(distribution[poc_index])
+    total = float(distribution.sum())
 
     while accumulated < total * 0.7 and (low_index > 0 or high_index < bins - 1):
         below = distribution[low_index - 1] if low_index > 0 else -1
         above = distribution[high_index + 1] if high_index < bins - 1 else -1
+
         if above >= below and high_index < bins - 1:
             high_index += 1
             accumulated += float(above)
@@ -440,63 +305,60 @@ def _calculate_profile(frame: pd.DataFrame, bins: int = 18) -> dict[str, Any]:
     vah = low + (high_index + 1) * width
     state = (
         "out-of-balance-up"
-        if current_price > vah
+        if price > vah
         else "out-of-balance-down"
-        if current_price < val
+        if price < val
         else "balance"
     )
+
     return {
         "poc": low + (poc_index + 0.5) * width,
         "vah": vah,
         "val": val,
         "state": state,
-        "approximate": True,
+        "approx": True,
     }
 
 
-def _calculate_lvns(frame: pd.DataFrame, bins: int = 12) -> list[float]:
+def calculate_lvns(frame: pd.DataFrame, bins: int = 12) -> list[float]:
     selected = frame.tail(18)
     if len(selected) < 6:
         return []
+
     low = float(selected["low"].min())
     high = float(selected["high"].max())
     if high <= low:
         return []
 
     width = (high - low) / bins
-    weights, _ = _volume_weights(selected)
-    distribution = np.zeros(bins, dtype=float)
-    for position, (_, row) in enumerate(selected.iterrows()):
-        start = int(np.clip((float(row["low"]) - low) / width, 0, bins - 1))
-        end = int(np.clip((float(row["high"]) - low) / width, 0, bins - 1))
-        share = weights[position] / max(end - start + 1, 1)
-        distribution[start : end + 1] += share
+    weights, _ = volume_weights(selected)
+    distribution = np.zeros(bins)
+
+    for pos, (_, row) in enumerate(selected.iterrows()):
+        start = int(np.clip((row["low"] - low) / width, 0, bins - 1))
+        end = int(np.clip((row["high"] - low) / width, 0, bins - 1))
+        distribution[start : end + 1] += weights[pos] / (end - start + 1)
 
     average = float(distribution.mean())
-    if average <= 0:
-        return []
-    levels: list[float] = []
-    for index in range(1, bins - 1):
-        if (
-            distribution[index] <= distribution[index - 1]
-            and distribution[index] <= distribution[index + 1]
-            and distribution[index] < average * 0.6
-        ):
-            levels.append(low + (index + 0.5) * width)
-    return levels[:6]
+    return [
+        low + (i + 0.5) * width
+        for i in range(1, bins - 1)
+        if distribution[i] <= distribution[i - 1]
+        and distribution[i] <= distribution[i + 1]
+        and distribution[i] < average * 0.6
+    ][:6]
 
 
-def _detect_order_block(frame: pd.DataFrame) -> dict[str, Any] | None:
-    first_index = max(2, len(frame) - 10)
-    for index in range(len(frame) - 2, first_index - 1, -1):
-        base = frame.iloc[index]
-        impulse = frame.iloc[index + 1]
-        body = abs(float(impulse["close"]) - float(impulse["open"]))
-        prior = frame.iloc[max(0, index - 10) : index]
+def find_order_block(frame: pd.DataFrame) -> dict | None:
+    for i in range(len(frame) - 2, max(1, len(frame) - 10) - 1, -1):
+        base = frame.iloc[i]
+        impulse = frame.iloc[i + 1]
+        body = abs(float(impulse["close"] - impulse["open"]))
+        prior = frame.iloc[max(0, i - 10) : i]
         average_range = (
             float((prior["high"] - prior["low"]).mean()) if len(prior) else 0
         )
-        threshold = average_range * 0.8 if average_range > 0 else body * 0.8
+        threshold = average_range * 0.8 if average_range else body * 0.8
 
         if (
             base["close"] < base["open"]
@@ -508,7 +370,7 @@ def _detect_order_block(frame: pd.DataFrame) -> dict[str, Any] | None:
                 "type": "OB_ALCISTA",
                 "low": float(base["low"]),
                 "high": float(base["high"]),
-                "timestamp": frame.index[index].isoformat(),
+                "timestamp": frame.index[i],
             }
 
         if (
@@ -521,24 +383,23 @@ def _detect_order_block(frame: pd.DataFrame) -> dict[str, Any] | None:
                 "type": "OB_BAJISTA",
                 "low": float(base["low"]),
                 "high": float(base["high"]),
-                "timestamp": frame.index[index].isoformat(),
+                "timestamp": frame.index[i],
             }
 
     return None
 
 
-def _detect_fair_value_gap(frame: pd.DataFrame) -> dict[str, Any] | None:
-    first_index = max(2, len(frame) - 7)
-    for index in range(len(frame) - 1, first_index - 1, -1):
-        first = frame.iloc[index - 2]
-        third = frame.iloc[index]
+def find_fvg(frame: pd.DataFrame) -> dict | None:
+    for i in range(len(frame) - 1, max(2, len(frame) - 7) - 1, -1):
+        first = frame.iloc[i - 2]
+        third = frame.iloc[i]
 
         if third["low"] > first["high"]:
             return {
                 "type": "FVG_ALCISTA",
                 "low": float(first["high"]),
                 "high": float(third["low"]),
-                "timestamp": frame.index[index].isoformat(),
+                "timestamp": frame.index[i],
             }
 
         if third["high"] < first["low"]:
@@ -546,13 +407,13 @@ def _detect_fair_value_gap(frame: pd.DataFrame) -> dict[str, Any] | None:
                 "type": "FVG_BAJISTA",
                 "low": float(third["high"]),
                 "high": float(first["low"]),
-                "timestamp": frame.index[index].isoformat(),
+                "timestamp": frame.index[i],
             }
 
     return None
 
 
-def calculate_technicals(frame: pd.DataFrame) -> dict[str, Any]:
+def technicals(frame: pd.DataFrame) -> dict:
     candles = frame.copy()
     close = candles["close"].astype(float)
     high = candles["high"].astype(float)
@@ -563,72 +424,70 @@ def calculate_technicals(frame: pd.DataFrame) -> dict[str, Any]:
     candles["ema21"] = close.ewm(span=21, adjust=False).mean()
 
     typical = (high + low + close) / 3
-    rolling_volume = volume.rolling(24, min_periods=1).sum()
-    rolling_weighted = (typical * volume).rolling(24, min_periods=1).sum()
-    fallback_vwap = close.rolling(24, min_periods=1).mean()
+    vol_sum = volume.rolling(24, min_periods=1).sum()
+    weighted = (typical * volume).rolling(24, min_periods=1).sum()
+    fallback = close.rolling(24, min_periods=1).mean()
     candles["vwap"] = (
-        rolling_weighted / rolling_volume.replace(0, np.nan)
-    ).fillna(fallback_vwap)
+        weighted / vol_sum.replace(0, np.nan)
+    ).fillna(fallback)
 
-    candle_range = (high - low).replace(0, np.nan)
-    candle_delta = ((close - candles["open"]) / candle_range).fillna(0) * volume
-    candles["cvd_proxy"] = candle_delta.cumsum()
+    spread = (high - low).replace(0, np.nan)
+    candles["cvd"] = (((close - candles["open"]) / spread).fillna(0) * volume).cumsum()
 
-    previous_close = close.shift(1)
+    previous = close.shift(1)
     true_range = pd.concat(
         [
             high - low,
-            (high - previous_close).abs(),
-            (low - previous_close).abs(),
+            (high - previous).abs(),
+            (low - previous).abs(),
         ],
         axis=1,
     ).max(axis=1)
     candles["atr"] = true_range.rolling(14, min_periods=1).mean()
 
-    up_move = high.diff()
-    down_move = -low.diff()
-    positive_dm = pd.Series(
-        np.where((up_move > down_move) & (up_move > 0), up_move, 0),
+    up = high.diff()
+    down = -low.diff()
+    plus_dm = pd.Series(
+        np.where((up > down) & (up > 0), up, 0),
         index=candles.index,
-        dtype=float,
     )
-    negative_dm = pd.Series(
-        np.where((down_move > up_move) & (down_move > 0), down_move, 0),
+    minus_dm = pd.Series(
+        np.where((down > up) & (down > 0), down, 0),
         index=candles.index,
-        dtype=float,
     )
-    smoothed_tr = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    smooth_tr = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
     plus_di = (
         100
-        * positive_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-        / smoothed_tr.replace(0, np.nan)
+        * plus_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        / smooth_tr.replace(0, np.nan)
     )
     minus_di = (
         100
-        * negative_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
-        / smoothed_tr.replace(0, np.nan)
+        * minus_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        / smooth_tr.replace(0, np.nan)
     )
-    denominator = (plus_di + minus_di).replace(0, np.nan)
-    dx = (100 * (plus_di - minus_di).abs() / denominator).fillna(0)
+    dx = (
+        100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+    ).fillna(0)
     candles["adx"] = dx.ewm(alpha=1 / 14, adjust=False, min_periods=1).mean()
 
-    _, volume_approximate = _volume_weights(frame)
+    _, approximate = volume_weights(frame)
     return {
         "candles": candles,
+        "profile": volume_profile(frame),
+        "lvns": calculate_lvns(frame),
+        "ob": find_order_block(frame),
+        "fvg": find_fvg(frame),
         "atr": float(candles["atr"].iloc[-1]),
         "adx": float(candles["adx"].iloc[-1]),
-        "profile": _calculate_profile(frame),
-        "lvns": _calculate_lvns(frame),
-        "order_block": _detect_order_block(frame),
-        "fair_value_gap": _detect_fair_value_gap(frame),
-        "cvd_proxy": float(candles["cvd_proxy"].iloc[-1]),
-        "volume_approximate": volume_approximate,
+        "cvd": float(candles["cvd"].iloc[-1]),
+        "volume_approx": approximate,
     }
 
 
-def _bias(technicals: dict[str, Any], require_adx: bool = False) -> str:
-    last = technicals["candles"].iloc[-1]
-    adx_ok = not require_adx or technicals["adx"] >= 22
+def bias(data: dict, require_adx: bool = False) -> str:
+    last = data["candles"].iloc[-1]
+    adx_ok = not require_adx or data["adx"] >= 22
 
     if last["close"] > last["vwap"] and last["ema9"] > last["ema21"] and adx_ok:
         return "Alcista"
@@ -637,8 +496,8 @@ def _bias(technicals: dict[str, Any], require_adx: bool = False) -> str:
     return "Neutral"
 
 
-def _four_hour_bias(technicals: dict[str, Any]) -> str:
-    last = technicals["candles"].iloc[-1]
+def four_hour_bias(data: dict) -> str:
+    last = data["candles"].iloc[-1]
     if last["ema9"] > last["ema21"]:
         return "Alcista"
     if last["ema9"] < last["ema21"]:
@@ -646,56 +505,55 @@ def _four_hour_bias(technicals: dict[str, Any]) -> str:
     return "Neutral"
 
 
-def _near_zone(price: float, zone: dict[str, Any] | None, tolerance: float) -> bool:
-    return bool(
-        zone
-        and price >= float(zone["low"]) - tolerance
-        and price <= float(zone["high"]) + tolerance
-    )
+def stale(frame: pd.DataFrame, timeframe: str) -> bool:
+    if frame.empty:
+        return True
+    age = (pd.Timestamp.now(tz="UTC") - frame.index[-1]).total_seconds() / 60
+    return age > STALE_MINUTES[timeframe]
 
 
-def _impulse_retracements(candles: pd.DataFrame) -> tuple[float, float, float, float]:
-    recent = candles.tail(18)
-    high = float(recent["high"].max())
-    low = float(recent["low"].min())
-    price = float(candles["close"].iloc[-1])
-    width = max(high - low, 1e-12)
-    long_discount = (high - price) / width * 100
-    short_discount = (price - low) / width * 100
-    return high, low, long_discount, short_discount
+def near_zone(price: float, zone: dict | None, tolerance: float) -> bool:
+    return bool(zone and zone["low"] - tolerance <= price <= zone["high"] + tolerance)
 
 
-def _evaluate_signal(
+def evaluate_signal(
     symbol: str,
-    data: dict[str, Any],
-    context_1h: dict[str, Any],
-    context_4h: dict[str, Any],
-    stale: bool,
-) -> dict[str, Any] | None:
+    data: dict,
+    h1: dict,
+    h4: dict,
+    is_stale: bool,
+) -> dict | None:
     candles = data["candles"]
-    if stale or len(candles) < 30:
+    if is_stale or len(candles) < 30:
         return None
 
-    instrument = _ensure_supported(symbol)
     last = candles.iloc[-1]
     previous = candles.iloc[-2]
     price = float(last["close"])
-    high, low, long_discount, short_discount = _impulse_retracements(candles)
+    atr = max(float(data["atr"]), 0)
     profile = data["profile"]
     poc, vah, val = profile["poc"], profile["vah"], profile["val"]
-    atr = max(float(data["atr"]), 0)
+    bias_1h = bias(h1, True)
+    bias_4h = four_hour_bias(h4)
+    adx_floor = {
+        "crypto": 28,
+        "forex": 25,
+        "metal": 30,
+        "index": 25,
+    }[INSTRUMENTS[symbol]["class"]]
+
+    recent = candles.tail(18)
+    swing_high = float(recent["high"].max())
+    swing_low = float(recent["low"].min())
+    swing = max(swing_high - swing_low, 1e-12)
+    long_discount = (swing_high - price) / swing * 100
+    short_discount = (price - swing_low) / swing * 100
+    bullish = last["close"] > last["open"]
+    bearish = last["close"] < last["open"]
     tolerance = max(atr * 0.35, price * 0.00001)
-    bias_1h = _bias(context_1h, require_adx=True)
-    bias_4h = _four_hour_bias(context_4h)
-    adx_minimum = {"crypto": 28, "forex": 25, "metal": 30, "index": 25}[
-        instrument["class"]
-    ]
 
-    bullish = float(last["close"]) > float(last["open"])
-    bearish = float(last["close"]) < float(last["open"])
-    order_block = data["order_block"]
-    fair_value_gap = data["fair_value_gap"]
-
+    ob = data["ob"]
+    fvg = data["fvg"]
     lvn = next(
         (
             level
@@ -705,404 +563,328 @@ def _evaluate_signal(
         None,
     )
 
-    local_bullish_zone = (
-        order_block is not None
-        and order_block["type"] == "OB_ALCISTA"
-        and _near_zone(price, order_block, tolerance)
-    ) or (
-        fair_value_gap is not None
-        and fair_value_gap["type"] == "FVG_ALCISTA"
-        and _near_zone(price, fair_value_gap, tolerance)
+    long_zone = (
+        (ob and ob["type"] == "OB_ALCISTA" and near_zone(price, ob, tolerance))
+        or (
+            fvg
+            and fvg["type"] == "FVG_ALCISTA"
+            and near_zone(price, fvg, tolerance)
+        )
     )
-    local_bearish_zone = (
-        order_block is not None
-        and order_block["type"] == "OB_BAJISTA"
-        and _near_zone(price, order_block, tolerance)
-    ) or (
-        fair_value_gap is not None
-        and fair_value_gap["type"] == "FVG_BAJISTA"
-        and _near_zone(price, fair_value_gap, tolerance)
+    short_zone = (
+        (ob and ob["type"] == "OB_BAJISTA" and near_zone(price, ob, tolerance))
+        or (
+            fvg
+            and fvg["type"] == "FVG_BAJISTA"
+            and near_zone(price, fvg, tolerance)
+        )
     )
-
-    recent_volumes = candles["volume"].tail(20)
-    average_volume = float(recent_volumes.mean()) if len(recent_volumes) else 0
+    average_volume = float(candles["volume"].tail(20).mean())
     volume_expansion = (
         average_volume > 0 and float(last["volume"]) > average_volume * 1.15
     )
 
     def make_signal(
-        *,
         code: str,
         model: str,
         direction: str,
         zone_price: float,
         target: float,
         discount: float,
-        higher_timeframe_zone: bool,
-        near_lvn: bool,
+        htf: bool,
         notes: list[str],
-    ) -> dict[str, Any]:
+    ) -> dict:
         buffer = max(atr * 0.35, price * 0.00001)
 
         if direction == "LONG":
-            stop = min(zone_price - buffer, price - buffer)
-            risk = price - stop
+            stop_loss = min(zone_price - buffer, price - buffer)
+            risk = price - stop_loss
             take_profit = max(target, price + risk * 2.5)
         else:
-            stop = max(zone_price + buffer, price + buffer)
-            risk = stop - price
+            stop_loss = max(zone_price + buffer, price + buffer)
+            risk = stop_loss - price
             take_profit = min(target, price - risk * 2.5)
 
-        reward = abs(take_profit - price)
-        quality = (
+        score = (
             int(discount >= 60)
             + int(discount >= 80)
-            + int(higher_timeframe_zone)
-            + int(near_lvn)
+            + int(htf)
+            + int(lvn is not None)
             + int(volume_expansion)
         )
         return {
             "code": code,
             "model": model,
             "direction": direction,
-            "quality": min(quality, 5),
+            "quality": min(score, 5),
             "entry": price,
-            "stop_loss": stop,
-            "take_profit": take_profit,
-            "risk_reward": reward / risk if risk > 0 else None,
-            "discount_percent": round(discount, 1),
+            "stop": stop_loss,
+            "target": take_profit,
+            "rr": abs(take_profit - price) / risk if risk > 0 else None,
             "notes": notes,
         }
 
-    # Modelo 1: continuación fuera de balance con retroceso a una zona local.
+    # Modelo 1: tendencia fuera de balance con retroceso a una zona.
     if (
         profile["state"] == "out-of-balance-up"
         and bias_1h == "Alcista"
-        and data["adx"] >= adx_minimum
+        and data["adx"] >= adx_floor
         and bias_4h != "Bajista"
         and long_discount >= 50
-        and (local_bullish_zone or lvn is not None)
+        and (long_zone or lvn is not None)
         and bullish
-        and (price >= float(last["ema21"]) or price >= float(last["vwap"]))
+        and (price >= last["ema21"] or price >= last["vwap"])
     ):
-        selected_zone = (
-            order_block
-            if order_block
-            and order_block["type"] == "OB_ALCISTA"
-            and _near_zone(price, order_block, tolerance)
-            else fair_value_gap
-            if fair_value_gap
-            and fair_value_gap["type"] == "FVG_ALCISTA"
-            and _near_zone(price, fair_value_gap, tolerance)
+        zone = (
+            ob
+            if ob
+            and ob["type"] == "OB_ALCISTA"
+            and near_zone(price, ob, tolerance)
+            else fvg
+            if fvg
+            and fvg["type"] == "FVG_ALCISTA"
+            and near_zone(price, fvg, tolerance)
             else None
         )
         return make_signal(
-            code="AMT_TREND_LONG",
-            model="Tendencia fuera de balance",
-            direction="LONG",
-            zone_price=(
-                float(selected_zone["low"])
-                if selected_zone
-                else lvn or price - atr
-            ),
-            target=high,
-            discount=long_discount,
-            higher_timeframe_zone=bias_4h == "Alcista",
-            near_lvn=lvn is not None,
-            notes=[
-                "Precio sobre el área de valor previa con sesgo 1H alineado.",
-                "Zona y retroceso calculados con velas OHLCV cerradas.",
+            "AMT_TREND_LONG",
+            "Tendencia fuera de balance",
+            "LONG",
+            zone["low"] if zone else lvn or price - atr,
+            swing_high,
+            long_discount,
+            bias_4h == "Alcista",
+            [
+                "Precio sobre el área de valor con sesgo 1H alineado.",
+                "Zona calculada con velas cerradas.",
             ],
         )
 
     if (
         profile["state"] == "out-of-balance-down"
         and bias_1h == "Bajista"
-        and data["adx"] >= adx_minimum
+        and data["adx"] >= adx_floor
         and bias_4h != "Alcista"
         and short_discount >= 50
-        and (local_bearish_zone or lvn is not None)
+        and (short_zone or lvn is not None)
         and bearish
-        and (price <= float(last["ema21"]) or price <= float(last["vwap"]))
+        and (price <= last["ema21"] or price <= last["vwap"])
     ):
-        selected_zone = (
-            order_block
-            if order_block
-            and order_block["type"] == "OB_BAJISTA"
-            and _near_zone(price, order_block, tolerance)
-            else fair_value_gap
-            if fair_value_gap
-            and fair_value_gap["type"] == "FVG_BAJISTA"
-            and _near_zone(price, fair_value_gap, tolerance)
+        zone = (
+            ob
+            if ob
+            and ob["type"] == "OB_BAJISTA"
+            and near_zone(price, ob, tolerance)
+            else fvg
+            if fvg
+            and fvg["type"] == "FVG_BAJISTA"
+            and near_zone(price, fvg, tolerance)
             else None
         )
         return make_signal(
-            code="AMT_TREND_SHORT",
-            model="Tendencia fuera de balance",
-            direction="SHORT",
-            zone_price=(
-                float(selected_zone["high"])
-                if selected_zone
-                else lvn or price + atr
-            ),
-            target=low,
-            discount=short_discount,
-            higher_timeframe_zone=bias_4h == "Bajista",
-            near_lvn=lvn is not None,
-            notes=[
-                "Precio bajo el área de valor previa con sesgo 1H alineado.",
-                "Zona y retroceso calculados con velas OHLCV cerradas.",
+            "AMT_TREND_SHORT",
+            "Tendencia fuera de balance",
+            "SHORT",
+            zone["high"] if zone else lvn or price + atr,
+            swing_low,
+            short_discount,
+            bias_4h == "Bajista",
+            [
+                "Precio bajo el área de valor con sesgo 1H alineado.",
+                "Zona calculada con velas cerradas.",
             ],
         )
 
     # Modelo 2: ruptura fallida del área de valor y retorno al POC.
-    fakeout_above = (
-        (float(previous["high"]) > vah or float(last["high"]) > vah)
+    failed_high = (
+        (previous["high"] > vah or last["high"] > vah)
         and price < vah
         and bearish
         and poc < price
     )
-    if profile["state"] == "balance" and fakeout_above and bias_1h != "Alcista":
-        fakeout_high = max(float(previous["high"]), float(last["high"]))
-        stop = fakeout_high + max(atr * 0.25, price * 0.00001)
+    if profile["state"] == "balance" and failed_high and bias_1h != "Alcista":
+        stop = max(float(previous["high"]), float(last["high"])) + max(
+            atr * 0.25, price * 0.00001
+        )
         risk = stop - price
-
         if risk > 0 and price - poc >= risk * 1.3:
             return {
                 "code": "AMT_MEAN_REVERSION_SHORT",
-                "model": "Reversión al POC tras ruptura fallida",
+                "model": "Reversión al POC",
                 "direction": "SHORT",
                 "quality": 3,
                 "entry": price,
-                "stop_loss": stop,
-                "take_profit": poc,
-                "risk_reward": (price - poc) / risk,
-                "discount_percent": 0,
+                "stop": stop,
+                "target": poc,
+                "rr": (price - poc) / risk,
                 "notes": [
-                    "Ruptura fallida sobre VAH; objetivo técnico en el POC.",
-                    "Regla heurística sin probabilidad validada.",
+                    "Ruptura fallida sobre VAH; objetivo técnico en POC.",
+                    "Regla heurística sin backtesting.",
                 ],
             }
 
-    fakeout_below = (
-        (float(previous["low"]) < val or float(last["low"]) < val)
+    failed_low = (
+        (previous["low"] < val or last["low"] < val)
         and price > val
         and bullish
         and poc > price
     )
-    if profile["state"] == "balance" and fakeout_below and bias_1h != "Bajista":
-        fakeout_low = min(float(previous["low"]), float(last["low"]))
-        stop = fakeout_low - max(atr * 0.25, price * 0.00001)
+    if profile["state"] == "balance" and failed_low and bias_1h != "Bajista":
+        stop = min(float(previous["low"]), float(last["low"])) - max(
+            atr * 0.25, price * 0.00001
+        )
         risk = price - stop
-
         if risk > 0 and poc - price >= risk * 1.3:
             return {
                 "code": "AMT_MEAN_REVERSION_LONG",
-                "model": "Reversión al POC tras ruptura fallida",
+                "model": "Reversión al POC",
                 "direction": "LONG",
                 "quality": 3,
                 "entry": price,
-                "stop_loss": stop,
-                "take_profit": poc,
-                "risk_reward": (poc - price) / risk,
-                "discount_percent": 0,
+                "stop": stop,
+                "target": poc,
+                "rr": (poc - price) / risk,
                 "notes": [
-                    "Ruptura fallida bajo VAL; objetivo técnico en el POC.",
-                    "Regla heurística sin probabilidad validada.",
+                    "Ruptura fallida bajo VAL; objetivo técnico en POC.",
+                    "Regla heurística sin backtesting.",
                 ],
             }
 
-    # Modelo 3: zona 4H con confirmación de order block local.
-    four_hour_zones = [
-        zone
-        for zone in (context_4h["order_block"], context_4h["fair_value_gap"])
-        if zone is not None
-    ]
-    four_hour_tolerance = max(float(context_4h["atr"]) * 0.25, tolerance)
+    # Modelo 3: zona 4H con confirmación local.
+    h4_zones = [zone for zone in (h4["ob"], h4["fvg"]) if zone]
+    h4_tolerance = max(float(h4["atr"]) * 0.25, tolerance)
 
-    bullish_4h_zone = next(
-        (
-            zone
-            for zone in four_hour_zones
-            if zone["type"].endswith("ALCISTA")
-            and _near_zone(price, zone, four_hour_tolerance)
-        ),
-        None,
-    )
     if (
         bias_4h == "Alcista"
-        and bullish_4h_zone
-        and order_block
-        and order_block["type"] == "OB_ALCISTA"
-        and _near_zone(price, order_block, tolerance)
+        and ob
+        and ob["type"] == "OB_ALCISTA"
+        and near_zone(price, ob, tolerance)
         and bullish
         and long_discount >= 50
+        and any(
+            zone["type"].endswith("ALCISTA")
+            and near_zone(price, zone, h4_tolerance)
+            for zone in h4_zones
+        )
     ):
         return make_signal(
-            code="SENSEI_FRACTAL_LONG",
-            model="Fractal 4H con confirmación de temporalidad baja",
-            direction="LONG",
-            zone_price=float(order_block["low"]),
-            target=high,
-            discount=long_discount,
-            higher_timeframe_zone=True,
-            near_lvn=lvn is not None,
-            notes=[
-                "Sesgo 4H alcista y precio dentro de una zona 4H detectada.",
-                "El order block local usa velas cerradas.",
-            ],
+            "SENSEI_FRACTAL_LONG",
+            "Fractal 4H",
+            "LONG",
+            ob["low"],
+            swing_high,
+            long_discount,
+            True,
+            ["Sesgo 4H alcista con zona 4H y confirmación local.", "Regla heurística."],
         )
 
-    bearish_4h_zone = next(
-        (
-            zone
-            for zone in four_hour_zones
-            if zone["type"].endswith("BAJISTA")
-            and _near_zone(price, zone, four_hour_tolerance)
-        ),
-        None,
-    )
     if (
         bias_4h == "Bajista"
-        and bearish_4h_zone
-        and order_block
-        and order_block["type"] == "OB_BAJISTA"
-        and _near_zone(price, order_block, tolerance)
+        and ob
+        and ob["type"] == "OB_BAJISTA"
+        and near_zone(price, ob, tolerance)
         and bearish
         and short_discount >= 50
+        and any(
+            zone["type"].endswith("BAJISTA")
+            and near_zone(price, zone, h4_tolerance)
+            for zone in h4_zones
+        )
     ):
         return make_signal(
-            code="SENSEI_FRACTAL_SHORT",
-            model="Fractal 4H con confirmación de temporalidad baja",
-            direction="SHORT",
-            zone_price=float(order_block["high"]),
-            target=low,
-            discount=short_discount,
-            higher_timeframe_zone=True,
-            near_lvn=lvn is not None,
-            notes=[
-                "Sesgo 4H bajista y precio dentro de una zona 4H detectada.",
-                "El order block local usa velas cerradas.",
-            ],
+            "SENSEI_FRACTAL_SHORT",
+            "Fractal 4H",
+            "SHORT",
+            ob["high"],
+            swing_low,
+            short_discount,
+            True,
+            ["Sesgo 4H bajista con zona 4H y confirmación local.", "Regla heurística."],
         )
 
     return None
 
 
-def _is_stale(frame: pd.DataFrame, timeframe: str) -> bool:
-    if frame.empty:
-        return True
-    age_minutes = (
-        pd.Timestamp.now(tz="UTC") - frame.index[-1]
-    ).total_seconds() / 60
-    return age_minutes > STALE_AFTER_MINUTES[timeframe]
-
-
-def build_analysis(symbol: str, timeframe: str) -> dict[str, Any]:
-    _ensure_supported(symbol)
+def build_analysis(symbol: str, timeframe: str) -> dict:
+    if symbol not in INSTRUMENTS:
+        raise ValueError("Símbolo no soportado.")
     if timeframe not in ("5m", "15m", "1h"):
-        raise ValueError("Selecciona una temporalidad de gráfica válida.")
+        raise ValueError("Temporalidad no válida.")
 
-    evaluation_timeframe = "15m" if timeframe == "1h" else timeframe
+    eval_tf = "15m" if timeframe == "1h" else timeframe
     chart_frame = fetch_candles(symbol, timeframe)
-    hourly_frame = chart_frame if timeframe == "1h" else fetch_candles(symbol, "1h")
-    four_hour_frame = fetch_candles(symbol, "4h")
-    evaluation_frame = (
-        chart_frame
-        if evaluation_timeframe == timeframe
-        else fetch_candles(symbol, evaluation_timeframe)
-    )
+    h1_frame = chart_frame if timeframe == "1h" else fetch_candles(symbol, "1h")
+    h4_frame = fetch_candles(symbol, "4h")
+    eval_frame = chart_frame if eval_tf == timeframe else fetch_candles(symbol, eval_tf)
 
-    chart_technicals = calculate_technicals(chart_frame)
-    hourly_technicals = (
-        chart_technicals
-        if timeframe == "1h"
-        else calculate_technicals(hourly_frame)
-    )
-    four_hour_technicals = calculate_technicals(four_hour_frame)
-    evaluation_technicals = (
-        chart_technicals
-        if evaluation_timeframe == timeframe
-        else calculate_technicals(evaluation_frame)
-    )
+    chart_data = technicals(chart_frame)
+    h1 = chart_data if timeframe == "1h" else technicals(h1_frame)
+    h4 = technicals(h4_frame)
+    eval_data = chart_data if eval_tf == timeframe else technicals(eval_frame)
 
-    stale = _is_stale(chart_frame, timeframe)
-    signal_stale = stale or _is_stale(evaluation_frame, evaluation_timeframe)
-    signal = _evaluate_signal(
-        symbol,
-        evaluation_technicals,
-        hourly_technicals,
-        four_hour_technicals,
-        signal_stale,
-    )
-
-    latest = chart_technicals["candles"].iloc[-1]
-    previous = chart_technicals["candles"].iloc[-2]
-    change_percent = (
-        (float(latest["close"]) - float(previous["close"]))
-        / float(previous["close"])
-        * 100
-        if float(previous["close"]) != 0
+    is_stale = stale(chart_frame, timeframe) or stale(eval_frame, eval_tf)
+    signal = evaluate_signal(symbol, eval_data, h1, h4, is_stale)
+    last = chart_data["candles"].iloc[-1]
+    previous = chart_data["candles"].iloc[-2]
+    change = (
+        (float(last["close"]) / float(previous["close"]) - 1) * 100
+        if previous["close"]
         else 0
     )
 
-    bias_1h = _bias(hourly_technicals, require_adx=True)
-    bias_4h = _four_hour_bias(four_hour_technicals)
-    _, _, long_discount, short_discount = _impulse_retracements(
-        evaluation_technicals["candles"]
-    )
-    selected_discount = (
+    bias_1h = bias(h1, True)
+    bias_4h = four_hour_bias(h4)
+    recent = eval_data["candles"].tail(18)
+    swing = max(float(recent["high"].max() - recent["low"].min()), 1e-12)
+    close = float(eval_data["candles"]["close"].iloc[-1])
+    long_discount = (float(recent["high"].max()) - close) / swing * 100
+    short_discount = (close - float(recent["low"].min())) / swing * 100
+    discount = (
         short_discount
-        if bias_1h == "Bajista" or (bias_1h == "Neutral" and bias_4h == "Bajista")
+        if bias_1h == "Bajista"
+        or (bias_1h == "Neutral" and bias_4h == "Bajista")
         else long_discount
     )
 
     notes = [
         "POC, VAH, VAL y LVN se estiman con velas OHLCV; no son volumen negociado por nivel.",
-        "El CVD es un proxy por dirección de vela; no representa flujo bid/ask real.",
-        "Las reglas no están validadas con backtesting y no son recomendaciones de inversión.",
+        "CVD es un proxy por dirección de vela, no flujo bid/ask real.",
+        "Las reglas son heurísticas sin backtesting; no constituyen recomendaciones.",
     ]
-    if chart_technicals["volume_approximate"]:
+    if chart_data["volume_approx"]:
         notes.append(
             "El proveedor reporta volumen cero o incompleto; los indicadores de volumen son aproximados."
         )
     if timeframe == "1h":
-        notes.append(
-            "La gráfica usa 1H y la evaluación de señal usa 15m, como en la configuración original."
-        )
-    if stale:
-        notes.append(
-            "La última vela está retrasada; no se presenta una señal con datos desactualizados."
-        )
+        notes.append("Gráfica y niveles en 1H; el setup se evalúa en 15m.")
+    if is_stale:
+        notes.append("Datos retrasados: no se muestra una señal activa.")
 
     return {
         "symbol": symbol,
-        "instrument": INSTRUMENTS[symbol],
-        "timeframe": timeframe,
-        "evaluation_timeframe": evaluation_timeframe,
+        "label": INSTRUMENTS[symbol]["label"],
         "source": INSTRUMENTS[symbol]["source"],
-        "chart_frame": chart_technicals["candles"],
-        "chart_technicals": chart_technicals,
-        "evaluation_technicals": evaluation_technicals,
-        "bias_1h": bias_1h,
-        "bias_4h": bias_4h,
-        "stale": stale,
+        "timeframe": timeframe,
+        "eval_tf": eval_tf,
+        "candles": chart_data["candles"],
+        "chart_data": chart_data,
+        "data": eval_data,
+        "bias1h": bias_1h,
+        "bias4h": bias_4h,
+        "state": eval_data["profile"]["state"],
+        "adx": eval_data["adx"],
+        "discount": round(discount, 1),
+        "stale": is_stale,
         "signal": signal,
-        "current_price": float(latest["close"]),
-        "change_percent": change_percent,
+        "price": float(last["close"]),
+        "change": change,
         "as_of": chart_frame.index[-1],
-        "market_state": evaluation_technicals["profile"]["state"],
-        "adx": evaluation_technicals["adx"],
-        "discount_percent": round(selected_discount, 1),
-        "data_notes": notes,
+        "notes": notes,
     }
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_news(topic: str, limit: int = 12) -> list[dict[str, Any]]:
-    if topic not in NEWS_TOPICS:
-        raise ValueError("Tema de noticias no válido.")
-
+def fetch_news(topic: str) -> list[dict]:
     params = {
         "q": f"{NEWS_TOPICS[topic]} when:1d",
         "hl": "es-419",
@@ -1114,86 +896,304 @@ def fetch_news(topic: str, limit: int = 12) -> list[dict[str, Any]]:
         params=params,
         headers={
             "User-Agent": USER_AGENT,
-            "Accept": "application/rss+xml, application/xml, text/xml",
+            "Accept": "application/rss+xml, application/xml",
         },
         timeout=15,
     )
     response.raise_for_status()
 
     root = ET.fromstring(response.content)
-    news_items: list[dict[str, Any]] = []
-    seen_urls: set[str] = set()
-
-    if topic == "Todos los temas":
-        fallback_scope = ["mercados globales"]
-    elif topic == "Cripto":
-        fallback_scope = ["cripto"]
-    elif topic == "Energía y materias primas":
-        fallback_scope = ["energía", "materias primas", "divisas"]
-    elif topic == "Geopolítica":
-        fallback_scope = ["oro", "energía", "divisas", "índices"]
-    else:
-        fallback_scope = ["divisas", "bonos", "índices", "oro"]
+    items = []
+    seen = set()
 
     for item in root.findall("./channel/item"):
         title = (item.findtext("title") or "").strip()
         url = (item.findtext("link") or "").strip()
-        source = item.findtext("source") or "Fuente enlazada"
-        published_raw = item.findtext("pubDate") or ""
-
-        if not title or not url or not url.startswith("https://") or url in seen_urls:
+        if not title or not url.startswith("https://") or url in seen:
             continue
-        seen_urls.add(url)
+        seen.add(url)
 
-        published_at = None
-        if published_raw:
-            try:
-                published_at = parsedate_to_datetime(published_raw)
-                if published_at.tzinfo is None:
-                    published_at = published_at.replace(tzinfo=timezone.utc)
-                published_at = published_at.astimezone(timezone.utc)
-            except (TypeError, ValueError, OverflowError):
-                published_at = None
+        date = None
+        try:
+            date = parsedate_to_datetime(item.findtext("pubDate") or "")
+            if date.tzinfo is None:
+                date = date.replace(tzinfo=timezone.utc)
+            date = date.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            pass
 
         matches = [
-            (category, markets)
-            for category, pattern, markets in HEADLINE_RULES
-            if pattern.search(title)
+            (name, markets)
+            for name, pattern, markets in NEWS_RULES
+            if re.search(pattern, title, re.IGNORECASE)
         ]
-
         if matches:
             category = matches[0][0]
-            market_scope = list(
-                dict.fromkeys(
-                    market
-                    for _, markets in matches
-                    for market in markets
-                )
-            )
+            markets = list(dict.fromkeys(m for _, values in matches for m in values))
         else:
             category = topic if topic != "Todos los temas" else "Mercados globales"
-            market_scope = fallback_scope
+            markets = ["mercados globales"]
 
-        news_items.append(
+        items.append(
             {
                 "title": title[:360],
                 "url": url,
-                "source": source[:120],
-                "published_at": published_at,
+                "source": item.findtext("source") or "Fuente enlazada",
+                "date": date,
                 "category": category,
-                "market_scope": market_scope,
+                "markets": markets,
             }
         )
 
-    news_items.sort(
-        key=lambda item: item["published_at"]
+    items.sort(
+        key=lambda item: item["date"]
         or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
-    return news_items[: min(max(limit, 5), 30)]
+    return items[:12]
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_watchlist() -> list[dict[str, **…**
+def fetch_watchlist() -> list[dict]:
+    rows = []
+
+    for symbol in WATCHLIST:
+        instrument = INSTRUMENTS[symbol]
+        try:
+            frame = fetch_candles(symbol, "1h")
+            last = float(frame["close"].iloc[-1])
+            previous = float(frame["close"].iloc[-2])
+            change = (last / previous - 1) * 100 if previous else 0
+
+            rows.append(
+                {
+                    "Activo": instrument["label"],
+                    "Símbolo": symbol,
+                    "Precio": last,
+                    "Cambio 1h": change,
+                    "Estado": "Desactualizado" if stale(frame, "1h") else "Disponible",
+                    "Fuente": instrument["source"],
+                }
+            )
+        except Exception:
+            rows.append(
+                {
+                    "Activo": instrument["label"],
+                    "Símbolo": symbol,
+                    "Precio": np.nan,
+                    "Cambio 1h": np.nan,
+                    "Estado": "Sin cotización",
+                    "Fuente": instrument["source"],
+                }
+            )
+
+    return rows
+
+
+def format_price(value: float, symbol: str) -> str:
+    if symbol in ("XAUUSD=X", "BTC/USDT", "ETH/USDT", "BNB/USDT", "NQ=F", "ES=F"):
+        decimals = 2
+    elif "JPY" in symbol:
+        decimals = 3
+    else:
+        decimals = 5
+
+    return f"{value:,.{decimals}f}" if np.isfinite(value) else "—"
+
+
+def build_chart(analysis: dict) -> go.Figure:
+    candles = analysis["candles"].tail(180)
+    profile = analysis["chart_data"]["profile"]
+    fig = go.Figure()
+
+    fig.add_hrect(
+        y0=profile["val"],
+        y1=profile["vah"],
+        fillcolor="rgba(196,153,79,0.12)",
+        line_width=0,
+        layer="below",
+    )
+    fig.add_trace(
+        go.Candlestick(
+            x=candles.index,
+            open=candles["open"],
+            high=candles["high"],
+            low=candles["low"],
+            close=candles["close"],
+            name="Velas",
+            increasing_line_color="#27725d",
+            decreasing_line_color="#c2664f",
+        )
+    )
+
+    for column, label, color in (
+        ("ema9", "EMA 9", "#27725d"),
+        ("ema21", "EMA 21", "#846c98"),
+        ("vwap", "VWAP", "#496f92"),
+    ):
+        fig.add_trace(
+            go.Scatter(
+                x=candles.index,
+                y=candles[column],
+                mode="lines",
+                name=label,
+                line={"width": 1.4, "color": color},
+            )
+        )
+
+    for value, name, color, dash in (
+        (profile["poc"], "POC", "#6b6455", "solid"),
+        (profile["vah"], "VAH", "#b18c47", "dot"),
+        (profile["val"], "VAL", "#b18c47", "dot"),
+    ):
+        fig.add_hline(
+            y=value,
+            line_color=color,
+            line_dash=dash,
+            line_width=1,
+            annotation_text=name,
+            annotation_position="right",
+        )
+
+    for value in analysis["chart_data"]["lvns"]:
+        fig.add_hline(
+            y=value,
+            line_color="#b7a36e",
+            line_dash="dash",
+            line_width=1,
+            opacity=0.6,
+        )
+
+    fig.update_layout(
+        template="plotly_white",
+        height=460,
+        margin={"l": 10, "r": 42, "t": 30, "b": 10},
+        xaxis_rangeslider_visible=False,
+        hovermode="x unified",
+        legend={"orientation": "h", "y": 1.05, "x": 0},
+        yaxis={"side": "right"},
+    )
+    return fig
+
+
+def render_signal(signal: dict | None, symbol: str) -> None:
+    if not signal:
+        st.info("Sin señal activa: no se cumplen todas las reglas del modelo.")
+        return
+
+    st.markdown(f"**{signal['direction']} · {signal['model']}**")
+    st.caption(f"Calidad de reglas: {signal['quality']}/5. No es una probabilidad.")
+    cols = st.columns(3)
+    cols[0].metric("Entrada teórica", format_price(signal["entry"], symbol))
+    cols[1].metric("Stop técnico", format_price(signal["stop"], symbol))
+    cols[2].metric("Objetivo técnico", format_price(signal["target"], symbol))
+    st.metric("R:R heurístico", f"{signal['rr']:.2f}" if signal["rr"] is not None else "—")
+
+    for note in signal["notes"]:
+        st.write(f"- {note}")
+
+    st.warning("Niveles informativos. No calcula lotaje ni envía órdenes.")
+
+
+def main() -> None:
+    st.title("MESA / AMT · Terminal de mercado")
+    st.caption("Contexto de subasta 1H/4H · Solo lectura · Sin ejecución de operaciones")
+
+    with st.sidebar:
+        st.subheader("Configuración")
+        symbol = st.selectbox(
+            "Instrumento",
+            list(INSTRUMENTS),
+            format_func=lambda value: f"{value} · {INSTRUMENTS[value]['label']}",
+        )
+        timeframe = st.selectbox("Temporalidad", ["5m", "15m", "1h"], index=2)
+
+        if st.button("Actualizar datos", use_container_width=True):
+            st.cache_data.clear()
+            st.rerun()
+
+        st.caption("Datos en caché durante cinco minutos.")
+        st.info("No requiere claves API. No se conecta al broker y no opera.")
+
+    try:
+        with st.spinner("Cargando velas cerradas y calculando análisis..."):
+            analysis = build_analysis(symbol, timeframe)
+    except Exception as error:
+        st.error(f"No se pudo cargar el análisis: {error}")
+        st.caption("El proveedor puede limitar o retrasar datos. Intenta actualizar.")
+        st.stop()
+
+    cols = st.columns(4)
+    cols[0].metric("Último cierre", format_price(analysis["price"], symbol))
+    cols[1].metric("Cambio de vela", f"{analysis['change']:+.2f}%")
+    cols[2].metric("Fuente", analysis["source"])
+    cols[3].metric(
+        "Última vela",
+        pd.Timestamp(analysis["as_of"]).strftime("%d %b %Y, %H:%M UTC"),
+    )
+
+    if analysis["stale"]:
+        st.warning("Cotización retrasada. No se muestra una señal activa.")
+
+    st.subheader(f"{analysis['label']} · {symbol} · {timeframe}")
+    st.plotly_chart(build_chart(analysis), use_container_width=True)
+
+    csv_data = (
+        analysis["candles"]
+        .tail(180)
+        .reset_index()
+        .to_csv(index=False)
+        .encode("utf-8")
+    )
+    st.download_button(
+        "Descargar velas CSV",
+        csv_data,
+        file_name=f"{symbol.replace('/', '-')}-{timeframe}.csv",
+        mime="text/csv",
+    )
+
+    if timeframe == "1h":
+        st.caption("Gráfica y niveles en 1H; la evaluación de setups se hace en 15m.")
+
+    context, setups = st.columns([1.1, 1])
+    with context:
+        st.subheader("Estructura de mercado")
+        metrics = st.columns(2)
+        metrics[0].metric("Sesgo 4H", analysis["bias4h"])
+        metrics[1].metric("Sesgo 1H", analysis["bias1h"])
+        metrics[0].metric(
+            "Estado AMT",
+            {
+                "balance": "Equilibrio",
+                "out-of-balance-up": "Fuera de balance · arriba",
+                "out-of-balance-down": "Fuera de balance · abajo",
+            }.get(analysis["state"], "Sin datos"),
+        )
+        metrics[1].metric(
+            "ADX / descuento",
+            f"{analysis['adx']:.1f} / {analysis['discount']:.1f}%",
+        )
+
+        profile = analysis["chart_data"]["profile"]
+        levels = st.columns(4)
+        levels[0].metric("POC", format_price(profile["poc"], symbol))
+        levels[1].metric("VAH", format_price(profile["vah"], symbol))
+        levels[2].metric("VAL", format_price(profile["val"], symbol))
+        levels[3].metric(
+            "ATR",
+            format_price(analysis["chart_data"]["atr"], symbol),
+        )
+
+        st.caption(
+            f"CVD proxy: {analysis['chart_data']['cvd']:,.2f}; "
+            "no es flujo bid/ask real."
+        )
+        with st.expander("Limitaciones de datos"):
+            for note in analysis["notes"]:
+                st.write(f"- {note}")
+
+    with setups:
+        st.subheader("Señal basada en reglas")
+        st.caption(f"Temporalidad evaluada: {analysis['eval_tf']}") **…**
 
 _This response is too long to display in full._
