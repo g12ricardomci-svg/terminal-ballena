@@ -207,10 +207,7 @@ HEADLINE_RULES: list[tuple[str, re.Pattern[str], list[str]]] = [
     ),
     (
         "Riesgo soberano",
-        re.compile(
-            r"riesgo país|riesgo pais|riesgo soberano",
-            re.IGNORECASE,
-        ),
+        re.compile(r"riesgo país|riesgo pais|riesgo soberano", re.IGNORECASE),
         ["bonos", "divisas", "índices"],
     ),
     (
@@ -323,10 +320,7 @@ def _fetch_yahoo_candles(symbol: str, timeframe: str) -> pd.DataFrame:
 
     result = result_list[0]
     timestamps = result.get("timestamp") or []
-    quote_data = (
-        result.get("indicators", {})
-        .get("quote", [{}])[0]
-    )
+    quote_data = result.get("indicators", {}).get("quote", [{}])[0]
     if not timestamps:
         raise RuntimeError("Yahoo Finance no devolvió horarios de cotización.")
 
@@ -429,6 +423,7 @@ def _calculate_profile(frame: pd.DataFrame, bins: int = 18) -> dict[str, Any]:
     total = float(distribution.sum())
     accumulated = float(distribution[poc_index])
     low_index = high_index = poc_index
+
     while accumulated < total * 0.7 and (low_index > 0 or high_index < bins - 1):
         below = distribution[low_index - 1] if low_index > 0 else -1
         above = distribution[high_index + 1] if high_index < bins - 1 else -1
@@ -440,6 +435,7 @@ def _calculate_profile(frame: pd.DataFrame, bins: int = 18) -> dict[str, Any]:
             accumulated += float(below)
         else:
             break
+
     val = low + low_index * width
     vah = low + (high_index + 1) * width
     state = (
@@ -501,6 +497,7 @@ def _detect_order_block(frame: pd.DataFrame) -> dict[str, Any] | None:
             float((prior["high"] - prior["low"]).mean()) if len(prior) else 0
         )
         threshold = average_range * 0.8 if average_range > 0 else body * 0.8
+
         if (
             base["close"] < base["open"]
             and impulse["close"] > impulse["open"]
@@ -513,6 +510,7 @@ def _detect_order_block(frame: pd.DataFrame) -> dict[str, Any] | None:
                 "high": float(base["high"]),
                 "timestamp": frame.index[index].isoformat(),
             }
+
         if (
             base["close"] > base["open"]
             and impulse["close"] < impulse["open"]
@@ -525,6 +523,7 @@ def _detect_order_block(frame: pd.DataFrame) -> dict[str, Any] | None:
                 "high": float(base["high"]),
                 "timestamp": frame.index[index].isoformat(),
             }
+
     return None
 
 
@@ -533,6 +532,7 @@ def _detect_fair_value_gap(frame: pd.DataFrame) -> dict[str, Any] | None:
     for index in range(len(frame) - 1, first_index - 1, -1):
         first = frame.iloc[index - 2]
         third = frame.iloc[index]
+
         if third["low"] > first["high"]:
             return {
                 "type": "FVG_ALCISTA",
@@ -540,6 +540,7 @@ def _detect_fair_value_gap(frame: pd.DataFrame) -> dict[str, Any] | None:
                 "high": float(third["low"]),
                 "timestamp": frame.index[index].isoformat(),
             }
+
         if third["high"] < first["low"]:
             return {
                 "type": "FVG_BAJISTA",
@@ -547,6 +548,7 @@ def _detect_fair_value_gap(frame: pd.DataFrame) -> dict[str, Any] | None:
                 "high": float(first["low"]),
                 "timestamp": frame.index[index].isoformat(),
             }
+
     return None
 
 
@@ -559,13 +561,14 @@ def calculate_technicals(frame: pd.DataFrame) -> dict[str, Any]:
 
     candles["ema9"] = close.ewm(span=9, adjust=False).mean()
     candles["ema21"] = close.ewm(span=21, adjust=False).mean()
+
     typical = (high + low + close) / 3
     rolling_volume = volume.rolling(24, min_periods=1).sum()
     rolling_weighted = (typical * volume).rolling(24, min_periods=1).sum()
     fallback_vwap = close.rolling(24, min_periods=1).mean()
-    candles["vwap"] = (rolling_weighted / rolling_volume.replace(0, np.nan)).fillna(
-        fallback_vwap
-    )
+    candles["vwap"] = (
+        rolling_weighted / rolling_volume.replace(0, np.nan)
+    ).fillna(fallback_vwap)
 
     candle_range = (high - low).replace(0, np.nan)
     candle_delta = ((close - candles["open"]) / candle_range).fillna(0) * volume
@@ -596,19 +599,20 @@ def calculate_technicals(frame: pd.DataFrame) -> dict[str, Any]:
     )
     smoothed_tr = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
     plus_di = (
-        100 * positive_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        100
+        * positive_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
         / smoothed_tr.replace(0, np.nan)
     )
     minus_di = (
-        100 * negative_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        100
+        * negative_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
         / smoothed_tr.replace(0, np.nan)
     )
     denominator = (plus_di + minus_di).replace(0, np.nan)
     dx = (100 * (plus_di - minus_di).abs() / denominator).fillna(0)
     candles["adx"] = dx.ewm(alpha=1 / 14, adjust=False, min_periods=1).mean()
 
-    volume_weights, volume_approximate = _volume_weights(frame)
-    del volume_weights
+    _, volume_approximate = _volume_weights(frame)
     return {
         "candles": candles,
         "atr": float(candles["atr"].iloc[-1]),
@@ -625,6 +629,7 @@ def calculate_technicals(frame: pd.DataFrame) -> dict[str, Any]:
 def _bias(technicals: dict[str, Any], require_adx: bool = False) -> str:
     last = technicals["candles"].iloc[-1]
     adx_ok = not require_adx or technicals["adx"] >= 22
+
     if last["close"] > last["vwap"] and last["ema9"] > last["ema21"] and adx_ok:
         return "Alcista"
     if last["close"] < last["vwap"] and last["ema9"] < last["ema21"] and adx_ok:
@@ -685,10 +690,12 @@ def _evaluate_signal(
     adx_minimum = {"crypto": 28, "forex": 25, "metal": 30, "index": 25}[
         instrument["class"]
     ]
+
     bullish = float(last["close"]) > float(last["open"])
     bearish = float(last["close"]) < float(last["open"])
     order_block = data["order_block"]
     fair_value_gap = data["fair_value_gap"]
+
     lvn = next(
         (
             level
@@ -716,9 +723,12 @@ def _evaluate_signal(
         and fair_value_gap["type"] == "FVG_BAJISTA"
         and _near_zone(price, fair_value_gap, tolerance)
     )
+
     recent_volumes = candles["volume"].tail(20)
     average_volume = float(recent_volumes.mean()) if len(recent_volumes) else 0
-    volume_expansion = average_volume > 0 and float(last["volume"]) > average_volume * 1.15
+    volume_expansion = (
+        average_volume > 0 and float(last["volume"]) > average_volume * 1.15
+    )
 
     def make_signal(
         *,
@@ -733,6 +743,7 @@ def _evaluate_signal(
         notes: list[str],
     ) -> dict[str, Any]:
         buffer = max(atr * 0.35, price * 0.00001)
+
         if direction == "LONG":
             stop = min(zone_price - buffer, price - buffer)
             risk = price - stop
@@ -741,6 +752,7 @@ def _evaluate_signal(
             stop = max(zone_price + buffer, price + buffer)
             risk = stop - price
             take_profit = min(target, price - risk * 2.5)
+
         reward = abs(take_profit - price)
         quality = (
             int(discount >= 60)
@@ -788,7 +800,11 @@ def _evaluate_signal(
             code="AMT_TREND_LONG",
             model="Tendencia fuera de balance",
             direction="LONG",
-            zone_price=float(selected_zone["low"]) if selected_zone else lvn or price - atr,
+            zone_price=(
+                float(selected_zone["low"])
+                if selected_zone
+                else lvn or price - atr
+            ),
             target=high,
             discount=long_discount,
             higher_timeframe_zone=bias_4h == "Alcista",
@@ -824,7 +840,11 @@ def _evaluate_signal(
             code="AMT_TREND_SHORT",
             model="Tendencia fuera de balance",
             direction="SHORT",
-            zone_price=float(selected_zone["high"]) if selected_zone else lvn or price + atr,
+            zone_price=(
+                float(selected_zone["high"])
+                if selected_zone
+                else lvn or price + atr
+            ),
             target=low,
             discount=short_discount,
             higher_timeframe_zone=bias_4h == "Bajista",
@@ -846,6 +866,7 @@ def _evaluate_signal(
         fakeout_high = max(float(previous["high"]), float(last["high"]))
         stop = fakeout_high + max(atr * 0.25, price * 0.00001)
         risk = stop - price
+
         if risk > 0 and price - poc >= risk * 1.3:
             return {
                 "code": "AMT_MEAN_REVERSION_SHORT",
@@ -873,6 +894,7 @@ def _evaluate_signal(
         fakeout_low = min(float(previous["low"]), float(last["low"]))
         stop = fakeout_low - max(atr * 0.25, price * 0.00001)
         risk = price - stop
+
         if risk > 0 and poc - price >= risk * 1.3:
             return {
                 "code": "AMT_MEAN_REVERSION_LONG",
@@ -897,6 +919,7 @@ def _evaluate_signal(
         if zone is not None
     ]
     four_hour_tolerance = max(float(context_4h["atr"]) * 0.25, tolerance)
+
     bullish_4h_zone = next(
         (
             zone
@@ -962,6 +985,7 @@ def _evaluate_signal(
                 "El order block local usa velas cerradas.",
             ],
         )
+
     return None
 
 
@@ -978,8 +1002,8 @@ def build_analysis(symbol: str, timeframe: str) -> dict[str, Any]:
     _ensure_supported(symbol)
     if timeframe not in ("5m", "15m", "1h"):
         raise ValueError("Selecciona una temporalidad de gráfica válida.")
-    evaluation_timeframe = "15m" if timeframe == "1h" else timeframe
 
+    evaluation_timeframe = "15m" if timeframe == "1h" else timeframe
     chart_frame = fetch_candles(symbol, timeframe)
     hourly_frame = chart_frame if timeframe == "1h" else fetch_candles(symbol, "1h")
     four_hour_frame = fetch_candles(symbol, "4h")
@@ -1001,6 +1025,7 @@ def build_analysis(symbol: str, timeframe: str) -> dict[str, Any]:
         if evaluation_timeframe == timeframe
         else calculate_technicals(evaluation_frame)
     )
+
     stale = _is_stale(chart_frame, timeframe)
     signal_stale = stale or _is_stale(evaluation_frame, evaluation_timeframe)
     signal = _evaluate_signal(
@@ -1020,6 +1045,7 @@ def build_analysis(symbol: str, timeframe: str) -> dict[str, Any]:
         if float(previous["close"]) != 0
         else 0
     )
+
     bias_1h = _bias(hourly_technicals, require_adx=True)
     bias_4h = _four_hour_bias(four_hour_technicals)
     _, _, long_discount, short_discount = _impulse_retracements(
@@ -1030,6 +1056,7 @@ def build_analysis(symbol: str, timeframe: str) -> dict[str, Any]:
         if bias_1h == "Bajista" or (bias_1h == "Neutral" and bias_4h == "Bajista")
         else long_discount
     )
+
     notes = [
         "POC, VAH, VAL y LVN se estiman con velas OHLCV; no son volumen negociado por nivel.",
         "El CVD es un proxy por dirección de vela; no representa flujo bid/ask real.",
@@ -1075,6 +1102,7 @@ def build_analysis(symbol: str, timeframe: str) -> dict[str, Any]:
 def fetch_news(topic: str, limit: int = 12) -> list[dict[str, Any]]:
     if topic not in NEWS_TOPICS:
         raise ValueError("Tema de noticias no válido.")
+
     params = {
         "q": f"{NEWS_TOPICS[topic]} when:1d",
         "hl": "es-419",
@@ -1091,26 +1119,28 @@ def fetch_news(topic: str, limit: int = 12) -> list[dict[str, Any]]:
         timeout=15,
     )
     response.raise_for_status()
+
     root = ET.fromstring(response.content)
     news_items: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
-    fallback_scope = (
-        ["mercados globales"]
-        if topic == "Todos los temas"
-        else ["cripto"]
-        if topic == "Cripto"
-        else ["energía", "materias primas", "divisas"]
-        if topic == "Energía y materias primas"
-        else ["oro", "energía", "divisas", "índices"]
-        if topic == "Geopolítica"
-        else ["divisas", "bonos", "índices", "oro"]
-    )
+
+    if topic == "Todos los temas":
+        fallback_scope = ["mercados globales"]
+    elif topic == "Cripto":
+        fallback_scope = ["cripto"]
+    elif topic == "Energía y materias primas":
+        fallback_scope = ["energía", "materias primas", "divisas"]
+    elif topic == "Geopolítica":
+        fallback_scope = ["oro", "energía", "divisas", "índices"]
+    else:
+        fallback_scope = ["divisas", "bonos", "índices", "oro"]
 
     for item in root.findall("./channel/item"):
         title = (item.findtext("title") or "").strip()
         url = (item.findtext("link") or "").strip()
         source = item.findtext("source") or "Fuente enlazada"
         published_raw = item.findtext("pubDate") or ""
+
         if not title or not url or not url.startswith("https://") or url in seen_urls:
             continue
         seen_urls.add(url)
@@ -1130,6 +1160,7 @@ def fetch_news(topic: str, limit: int = 12) -> list[dict[str, Any]]:
             for category, pattern, markets in HEADLINE_RULES
             if pattern.search(title)
         ]
+
         if matches:
             category = matches[0][0]
             market_scope = list(
@@ -1155,16 +1186,14 @@ def fetch_news(topic: str, limit: int = 12) -> list[dict[str, Any]]:
         )
 
     news_items.sort(
-        key=lambda item: item["published_at"] or datetime.min.replace(tzinfo=timezone.utc),
+        key=lambda item: item["published_at"]
+        or datetime.min.replace(tzinfo=timezone.utc),
         reverse=True,
     )
     return news_items[: min(max(limit, 5), 30)]
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_watchlist() -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for symbol in WATCHLIST:
-        instrument = INSTRUMENTS[symb **…**
+def fetch_watchlist() -> list[dict[str, **…**
 
 _This response is too long to display in full._
