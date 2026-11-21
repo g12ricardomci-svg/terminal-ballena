@@ -1,1279 +1,1170 @@
-import os
-import streamlit as st
-import ccxt
-import yfinance as yf
-import pandas as pd
-import numpy as np
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-import requests
-import time
-import threading
+from __future__ import annotations
+
+import re
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
+from typing import Any
+from urllib.parse import quote, urlencode
 
-# ==========================================
-# ⚙️ CONFIGURACIÓN GLOBAL & GESTIÓN PARA CUENTA DE $10 USD
-# ==========================================
-def _leer_secreto(nombre, defecto=""):
-    """Lee credenciales de .streamlit/secrets.toml o de variables de entorno (nunca del código)."""
-    try:
-        if nombre in st.secrets:
-            return str(st.secrets[nombre])
-    except Exception:
-        pass
-    return os.environ.get(nombre, defecto)
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import requests
+import streamlit as st
 
-TELEGRAM_TOKEN = _leer_secreto("TELEGRAM_TOKEN", "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs")
-TELEGRAM_CHAT_ID = _leer_secreto("TELEGRAM_CHAT_ID", "1496321437")
 
-SALDO_CUENTA_USD = 10.0
-RIESGO_MAX_PCT_CUENTA = 15.0        # Bloquea alertas si 0.01 lotes arriesga más del 15% ($1.50 USD)
-DESCUENTO_MIN_FIBO = 50.0           # Regla El Sensei: exigir >= 50% de descuento antes de alertar
-FILTRAR_SOLO_RIESGO_APTO_TG = True  # Evita alertas con SL demasiado ancho para $10 USD
+APP_NAME = "MESA / AMT · Terminal de mercado"
+USER_AGENT = "Mozilla/5.0 (compatible; AMTMarketDashboard/1.0)"
+TIMEFRAME_MINUTES = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
+STALE_AFTER_MINUTES = {"5m": 12.5, "15m": 37.5, "1h": 150, "4h": 600}
 
-# --- 🆕 EL SENSEI: fractalidad 4H -> entrada en temporalidad baja ---
-USAR_CONTEXTO_4H = True             # 4H manda la dirección y marca el Order Block principal
-FIBO_NIVELES = [50, 60, 70, 80, 90] # Niveles de descuento institucional (más profundo = mejor entrada)
-CALIDAD_MINIMA = 0                  # 0 = solo informativa. Sube a 2-3 para alertas más exigentes (escala 0-5)
-
-# --- 🆕 FABIO VALENTINO: ubicación, agresión y sesiones ---
-USAR_LVN_COMO_ZONA = True           # Un Nodo de Bajo Volumen del impulso también vale como zona de entrada (Modelo 1)
-USAR_FILTRO_SESIONES = False        # True = Modelo 1 solo en Nueva York, Modelo 2 solo en Londres (horas en UTC)
-SESION_NY_UTC = (13.5, 21.0)        # Apertura NY ~13:30 UTC (varía 1h con el cambio de horario de verano)
-SESION_LONDRES_UTC = (7.0, 16.0)
-SOLO_VELA_CERRADA = True            # Las alertas evalúan la última vela CERRADA (evita señales que desaparecen)
-
-# --- 🆕 Mercado cerrado / datos viejos (evita alertas con precios de la sesión anterior) ---
-BLOQUEAR_SI_MERCADO_CERRADO = True  # Forex/oro: sin alertas de viernes ~22:00 UTC a domingo ~22:00 UTC o con velas viejas
-
-# --- 🆕 ADX mínimo por mercado (punto de partida; no está calibrado con backtest) ---
-ADX_MIN_POR_MERCADO = {"FOREX": 25.0, "CRYPTO": 28.0, "METAL": 30.0}
-
-# --- 🆕 Freno de exhaustación (Larry Williams) como VETO ---
-EXHAUSTACION_VETA_MODELO_2 = False  # Modelos 1 y 3 (tendencia) siempre vetados; el 2 (reversión) solo si pones True
-
-st.set_page_config(page_title="Institutional Quant Terminal — AMT & Smart Money", layout="wide", page_icon="🏦")
-
-CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
-FOREX_MARKETS = [
-    "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
-    "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X",
-    "XAUUSD=X"
-]
-NASDAQ_MARKETS = []
-
-MAPA_CANONICO = {
-    "XAUUSD": "XAUUSD",
-    "XAUUSD=X": "XAUUSD",
-    "GC=F": "XAUUSD",
+INSTRUMENTS: dict[str, dict[str, str]] = {
+    "BTC/USDT": {
+        "label": "Bitcoin / USDT",
+        "market": "Cripto",
+        "provider": "okx",
+        "source": "OKX",
+        "provider_symbol": "BTC-USDT",
+        "class": "crypto",
+    },
+    "ETH/USDT": {
+        "label": "Ethereum / USDT",
+        "market": "Cripto",
+        "provider": "okx",
+        "source": "OKX",
+        "provider_symbol": "ETH-USDT",
+        "class": "crypto",
+    },
+    "BNB/USDT": {
+        "label": "BNB / USDT",
+        "market": "Cripto",
+        "provider": "okx",
+        "source": "OKX",
+        "provider_symbol": "BNB-USDT",
+        "class": "crypto",
+    },
+    "NQ=F": {
+        "label": "Nasdaq 100 Futures",
+        "market": "Índices",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "NQ=F",
+        "class": "index",
+    },
+    "ES=F": {
+        "label": "S&P 500 Futures",
+        "market": "Índices",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "ES=F",
+        "class": "index",
+    },
+    "EURUSD=X": {
+        "label": "EUR / USD",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "EURUSD=X",
+        "class": "forex",
+    },
+    "GBPUSD=X": {
+        "label": "GBP / USD",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "GBPUSD=X",
+        "class": "forex",
+    },
+    "USDJPY=X": {
+        "label": "USD / JPY",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "USDJPY=X",
+        "class": "forex",
+    },
+    "AUDUSD=X": {
+        "label": "AUD / USD",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "AUDUSD=X",
+        "class": "forex",
+    },
+    "USDCAD=X": {
+        "label": "USD / CAD",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "USDCAD=X",
+        "class": "forex",
+    },
+    "USDCHF=X": {
+        "label": "USD / CHF",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "USDCHF=X",
+        "class": "forex",
+    },
+    "NZDUSD=X": {
+        "label": "NZD / USD",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "NZDUSD=X",
+        "class": "forex",
+    },
+    "EURJPY=X": {
+        "label": "EUR / JPY",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "EURJPY=X",
+        "class": "forex",
+    },
+    "GBPJPY=X": {
+        "label": "GBP / JPY",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "GBPJPY=X",
+        "class": "forex",
+    },
+    "EURGBP=X": {
+        "label": "EUR / GBP",
+        "market": "FX",
+        "provider": "yahoo",
+        "source": "Yahoo Finance",
+        "provider_symbol": "EURGBP=X",
+        "class": "forex",
+    },
+    "XAUUSD=X": {
+        "label": "Oro · Gold Futures",
+        "market": "Metales",
+        "provider": "yahoo",
+        "source": "Yahoo Finance · GC=F",
+        "provider_symbol": "GC=F",
+        "class": "metal",
+    },
 }
 
-def canonizar_simbolo(symbol):
-    s = str(symbol or "").strip().upper()
-    return MAPA_CANONICO.get(s, s)
+WATCHLIST = ["BTC/USDT", "ETH/USDT", "NQ=F", "EURUSD=X", "XAUUSD=X"]
 
-def clasificar_mercado(symbol):
-    canon = canonizar_simbolo(symbol)
-    if symbol in CRYPTO_MARKETS or "/" in canon:
-        return "CRYPTO"
-    if canon == "XAUUSD":
-        return "METAL"
-    return "FOREX"
+NEWS_TOPICS: dict[str, str] = {
+    "Todos los temas": (
+        "economía OR mercados financieros OR bolsa OR inflación OR bancos centrales "
+        "OR tasas de interés OR empleo OR petróleo OR geopolítica OR bitcoin "
+        "OR criptomonedas"
+    ),
+    "Política monetaria": (
+        "bancos centrales OR tasas de interés OR Reserva Federal OR Fed "
+        "OR Banco Central Europeo OR ECB"
+    ),
+    "Inflación y empleo": (
+        "inflación OR IPC OR empleo OR nóminas OR salarios OR crecimiento económico"
+    ),
+    "Geopolítica": (
+        "geopolítica OR conflicto internacional OR sanciones OR guerra OR comercio mundial"
+    ),
+    "Energía y materias primas": "petróleo OR energía OR gas natural OR oro OR materias primas",
+    "Cripto": "bitcoin OR criptomonedas OR ethereum OR regulación cripto",
+}
 
-def tamano_pip(symbol):
-    canon = canonizar_simbolo(symbol)
-    if canon == "XAUUSD":
-        return 0.10
-    if "JPY" in canon:
-        return 0.01
-    return 0.0001
+HEADLINE_RULES: list[tuple[str, re.Pattern[str], list[str]]] = [
+    (
+        "Cripto",
+        re.compile(r"bitcoin|ethereum|criptomon|cripto|blockchain", re.IGNORECASE),
+        ["activos digitales"],
+    ),
+    (
+        "Energía y materias primas",
+        re.compile(
+            r"petróleo|petroleo|gas natural|energía|energia|oro|materias primas|minería|mineras",
+            re.IGNORECASE,
+        ),
+        ["energía", "materias primas", "divisas"],
+    ),
+    (
+        "Política monetaria",
+        re.compile(
+            r"fed|reserva federal|banco central|tasas de interés|tipos de interés|"
+            r"tipos de interes|tasas",
+            re.IGNORECASE,
+        ),
+        ["divisas", "bonos", "índices", "oro"],
+    ),
+    (
+        "Renta fija",
+        re.compile(r"renta fija|bonos|bono|deuda pública|deuda publica", re.IGNORECASE),
+        ["bonos", "divisas", "índices"],
+    ),
+    (
+        "Inflación y empleo",
+        re.compile(r"inflac|ipc|empleo|nóminas|nominas|salarios", re.IGNORECASE),
+        ["divisas", "bonos", "índices", "oro"],
+    ),
+    (
+        "Riesgo soberano",
+        re.compile(
+            r"riesgo país|riesgo pais|riesgo soberano",
+            re.IGNORECASE,
+        ),
+        ["bonos", "divisas", "índices"],
+    ),
+    (
+        "Geopolítica",
+        re.compile(
+            r"geopol|guerra|conflicto|sanciones|ataque|irán|iran|china|aranceles",
+            re.IGNORECASE,
+        ),
+        ["oro", "energía", "divisas", "índices"],
+    ),
+    (
+        "Mercados globales",
+        re.compile(r"mercados|bolsa|acciones|índices|indices|dólar|dolar|divisas", re.IGNORECASE),
+        ["índices", "divisas"],
+    ),
+]
 
-def calcular_riesgo_001_lotes(symbol, precio, sl):
-    canon = canonizar_simbolo(symbol)
-    mercado = clasificar_mercado(symbol)
-    dist = abs(float(precio) - float(sl))
-    if dist <= 0 or float(precio) <= 0:
-        return 0.0, 0.0, 0.0
 
-    pip = tamano_pip(symbol)
-    pips_o_pts = dist / pip
+def _ensure_supported(symbol: str) -> dict[str, str]:
+    instrument = INSTRUMENTS.get(symbol)
+    if instrument is None:
+        raise ValueError(f"Símbolo no soportado: {symbol}")
+    return instrument
 
-    if mercado == "CRYPTO":
-        riesgo_usd = dist * 0.01
-    elif canon == "XAUUSD":
-        riesgo_usd = dist * 1.0
-    elif canon.endswith("USD"):
-        pips = dist / 0.0001
-        riesgo_usd = pips * 0.10
-    elif "JPY" in canon:
-        pips = dist / 0.01
-        riesgo_usd = pips * (10.0 / float(precio))
-    else:
-        pips = dist / 0.0001
-        riesgo_usd = pips * (0.10 / float(precio))
 
-    riesgo_usd = round(float(riesgo_usd), 2)
-    riesgo_pct = round((riesgo_usd / max(SALDO_CUENTA_USD, 0.01)) * 100.0, 1)
-    return round(float(pips_o_pts), 1), riesgo_usd, riesgo_pct
+def _drop_incomplete_bars(frame: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    duration = pd.Timedelta(minutes=TIMEFRAME_MINUTES[timeframe])
+    now = pd.Timestamp.now(tz="UTC")
+    return frame.loc[frame.index + duration <= now]
 
-ALL_TRACKED_SYMBOLS = list(dict.fromkeys(CRYPTO_MARKETS + FOREX_MARKETS))
 
-def _crear_exchange(ex_id):
-    try:
-        cls = getattr(ccxt, ex_id)
-        return cls({"enableRateLimit": True})
-    except Exception:
-        return None
+def _fetch_okx_candles(symbol: str, timeframe: str) -> pd.DataFrame:
+    instrument = _ensure_supported(symbol)
+    bars = {"5m": "5m", "15m": "15m", "1h": "1H", "4h": "4H"}
+    params = {
+        "instId": instrument["provider_symbol"],
+        "bar": bars[timeframe],
+        "limit": "200",
+    }
+    response = requests.get(
+        "https://www.okx.com/api/v5/market/candles",
+        params=params,
+        headers={"User-Agent": USER_AGENT},
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get("code") != "0":
+        raise RuntimeError(payload.get("msg") or "OKX no entregó cotizaciones.")
 
-EXCHANGE_OKX = _crear_exchange("okx")
-EXCHANGE_BINANCE = _crear_exchange("binance")
+    rows = payload.get("data", [])
+    if not rows:
+        raise RuntimeError("OKX no devolvió velas para este instrumento.")
+    frame = pd.DataFrame(
+        rows,
+        columns=[
+            "timestamp",
+            "open",
+            "high",
+            "low",
+            "close",
+            "volume",
+            "volume_currency",
+            "volume_quote",
+            "confirmed",
+        ],
+    )
+    frame["timestamp"] = pd.to_datetime(
+        pd.to_numeric(frame["timestamp"], errors="coerce"),
+        unit="ms",
+        utc=True,
+    )
+    frame = frame.loc[frame["confirmed"].astype(str) == "1"].copy()
+    frame = frame.set_index("timestamp").sort_index()
+    frame = frame[["open", "high", "low", "close", "volume"]]
+    for column in frame.columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["open", "high", "low", "close"])
+    frame["volume"] = frame["volume"].fillna(0)
+    frame.index.name = "timestamp"
+    return _drop_incomplete_bars(frame, timeframe).tail(180)
 
-ALERTAS_ENVIADAS_GLOBAL = {}
-CACHE_DATOS_GLOBAL = {}
-CACHE_LOCK = threading.Lock()
-ALERTAS_LOCK = threading.Lock()
-AUTOPILOTO_STATUS = "Motor AMT + Order Blocks activo: Analizando contexto 4h/1h + entrada 15m/5m..."
-ULTIMO_ERROR_TG = ""
-DIAGNOSTICO = {}
 
-# ==========================================
-# 🧠 FUNCIONES MATEMÁTICAS: AMT (FABIO VALENTINO) + OB/FVG (EL SENSEI)
-# ==========================================
-def enviar_telegram(mensaje):
-    global ULTIMO_ERROR_TG
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        ULTIMO_ERROR_TG = "Falta TELEGRAM_TOKEN / TELEGRAM_CHAT_ID (secrets o variables de entorno)"
-        return False
-    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
-    try:
-        resp = requests.post(url, json=payload, timeout=8)
-        if resp.status_code == 200:
-            ULTIMO_ERROR_TG = ""
-            return True
-        ULTIMO_ERROR_TG = f"HTTP {resp.status_code}: {resp.text[:140]}"
-        return False
-    except Exception as e:
-        ULTIMO_ERROR_TG = str(e).replace(TELEGRAM_TOKEN, "***")[:140]
-        return False
+def _fetch_yahoo_candles(symbol: str, timeframe: str) -> pd.DataFrame:
+    instrument = _ensure_supported(symbol)
+    intervals = {
+        "5m": ("5m", "5d"),
+        "15m": ("15m", "60d"),
+        "1h": ("60m", "1mo"),
+        "4h": ("60m", "1mo"),
+    }
+    interval, period = intervals[timeframe]
+    ticker = quote(instrument["provider_symbol"], safe="")
+    query = urlencode({"interval": interval, "range": period, "events": "div,splits"})
+    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?{query}"
+    response = requests.get(
+        url,
+        headers={"User-Agent": USER_AGENT},
+        timeout=15,
+    )
+    response.raise_for_status()
+    payload = response.json().get("chart", {})
+    if payload.get("error"):
+        raise RuntimeError("Yahoo Finance informó un error al consultar el símbolo.")
+    result_list = payload.get("result") or []
+    if not result_list:
+        raise RuntimeError("Yahoo Finance no devolvió velas para este instrumento.")
 
-def _normalizar_timestamp(serie):
-    ts = pd.to_datetime(serie)
-    if getattr(ts.dt, "tz", None) is not None:
-        ts = ts.dt.tz_convert(None)
-    return ts
+    result = result_list[0]
+    timestamps = result.get("timestamp") or []
+    quote_data = (
+        result.get("indicators", {})
+        .get("quote", [{}])[0]
+    )
+    if not timestamps:
+        raise RuntimeError("Yahoo Finance no devolvió horarios de cotización.")
 
-def _resamplear_a_4h(df):
-    """yfinance no ofrece 4h: se construye agrupando velas de 1h."""
-    d = df.set_index("timestamp")
-    agg = d.resample("4h").agg({
-        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-    }).dropna(subset=["open", "high", "low", "close"])
-    return agg.reset_index()
+    frame = pd.DataFrame(
+        {
+            "open": quote_data.get("open") or [None] * len(timestamps),
+            "high": quote_data.get("high") or [None] * len(timestamps),
+            "low": quote_data.get("low") or [None] * len(timestamps),
+            "close": quote_data.get("close") or [None] * len(timestamps),
+            "volume": quote_data.get("volume") or [0] * len(timestamps),
+        },
+        index=pd.to_datetime(timestamps, unit="s", utc=True),
+    )
+    frame.index.name = "timestamp"
+    for column in frame.columns:
+        frame[column] = pd.to_numeric(frame[column], errors="coerce")
+    frame = frame.dropna(subset=["open", "high", "low", "close"])
+    frame = frame.loc[~frame.index.duplicated(keep="last")].sort_index()
+    frame["volume"] = frame["volume"].fillna(0)
 
-def obtener_sl_minimo(symbol, timeframe, precio):
-    mercado = clasificar_mercado(symbol)
-    pip = tamano_pip(symbol)
-    if mercado == "FOREX":
-        pips_min = {"5m": 8.0, "15m": 11.0, "1h": 16.0}.get(timeframe, 10.0)
-        return pips_min * pip
-    if mercado == "METAL":
-        pts_min = {"5m": 4.0, "15m": 7.0, "1h": 12.0}.get(timeframe, 7.0)
-        return pts_min
-    pct_min = {"5m": 0.0040, "15m": 0.0070, "1h": 0.0120}.get(timeframe, 0.0070)
-    return float(precio) * pct_min
-
-def calcular_vwap(df):
-    if df.empty:
-        return pd.Series(dtype=float)
-    if "volume" not in df.columns or float(df["volume"].sum()) <= 0:
-        return df["close"].rolling(20, min_periods=1).mean()
-    tp = (df["high"] + df["low"] + df["close"]) / 3.0
-    vol_roll = df["volume"].rolling(24, min_periods=1).sum().replace(0, np.nan)
-    vwap = (tp * df["volume"]).rolling(24, min_periods=1).sum() / vol_roll
-    return vwap.fillna(df["close"].rolling(20, min_periods=1).mean())
-
-def calcular_adx(df, period=14):
-    if len(df) < period + 2:
-        return 25.0
-    try:
-        d = df.copy()
-        d["up_move"] = d["high"] - d["high"].shift()
-        d["down_move"] = d["low"].shift() - d["low"]
-        d["plus_dm"] = np.where((d["up_move"] > d["down_move"]) & (d["up_move"] > 0), d["up_move"], 0.0)
-        d["minus_dm"] = np.where((d["down_move"] > d["up_move"]) & (d["down_move"] > 0), d["down_move"], 0.0)
-        d["tr"] = np.maximum(
-            d["high"] - d["low"],
-            np.maximum(abs(d["high"] - d["close"].shift()), abs(d["low"] - d["close"].shift()))
+    if timeframe == "4h":
+        frame = _drop_incomplete_bars(frame, "1h")
+        frame = (
+            frame.resample("4h", origin="start_day", label="left", closed="left")
+            .agg(
+                {
+                    "open": "first",
+                    "high": "max",
+                    "low": "min",
+                    "close": "last",
+                    "volume": "sum",
+                }
+            )
+            .dropna(subset=["open", "high", "low", "close"])
         )
-        d["atr"] = d["tr"].ewm(span=period, adjust=False).mean()
-        plus_di = 100.0 * (d["plus_dm"].ewm(span=period, adjust=False).mean() / d["atr"].replace(0, np.nan))
-        minus_di = 100.0 * (d["minus_dm"].ewm(span=period, adjust=False).mean() / d["atr"].replace(0, np.nan))
-        dx = 100.0 * (abs(plus_di - minus_di) / (plus_di + minus_di).replace(0, np.nan))
-        adx_series = dx.ewm(span=period, adjust=False).mean()
-        val = adx_series.iloc[-1]
-        return 25.0 if pd.isna(val) else float(val)
-    except Exception:
-        return 25.0
+        frame = _drop_incomplete_bars(frame, "4h")
+    else:
+        frame = _drop_incomplete_bars(frame, timeframe)
 
-def calcular_cvd_proxy(df):
-    rango = (df["high"] - df["low"]).replace(0, np.nan)
-    delta_ratio = ((df["close"] - df["open"]) / rango).fillna(0.0)
-    delta_vol = df["volume"] * delta_ratio
-    return delta_vol.cumsum()
+    frame.index.name = "timestamp"
+    return frame.tail(180)
 
-def calcular_perfil_volumen_amt(df, lookback=36, bins=18):
-    """
-    Calcula POC (Point of Control), VAH (Value Area High), VAL (Value Area Low)
-    y estado AMT (BALANCE vs FUERA DE BALANCE) según Fabio Valentino.
-    """
-    sub = df.iloc[-lookback:].copy() if len(df) >= lookback else df.copy()
-    p_min = float(sub["low"].min())
-    p_max = float(sub["high"].max())
-    precio_actual = float(sub["close"].iloc[-1])
 
-    if p_max <= p_min:
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_candles(symbol: str, timeframe: str) -> pd.DataFrame:
+    """Carga velas cerradas de un proveedor público y las guarda cinco minutos."""
+    instrument = _ensure_supported(symbol)
+    if timeframe not in TIMEFRAME_MINUTES:
+        raise ValueError("Temporalidad no soportada.")
+    if instrument["provider"] == "okx":
+        frame = _fetch_okx_candles(symbol, timeframe)
+    else:
+        frame = _fetch_yahoo_candles(symbol, timeframe)
+    if len(frame) < 30:
+        raise RuntimeError(
+            f"El proveedor solo entregó {len(frame)} velas cerradas; "
+            "no hay suficiente historial para calcular el contexto."
+        )
+    return frame
+
+
+def _volume_weights(frame: pd.DataFrame) -> tuple[np.ndarray, bool]:
+    volume = frame["volume"].fillna(0).to_numpy(dtype=float)
+    approximate = bool(np.any(volume <= 0))
+    if np.sum(volume) <= 0:
+        volume = np.maximum(
+            (frame["high"] - frame["low"]).to_numpy(dtype=float),
+            1e-9,
+        )
+        approximate = True
+    return volume, approximate
+
+
+def _calculate_profile(frame: pd.DataFrame, bins: int = 18) -> dict[str, Any]:
+    selected = frame.iloc[:-3].tail(36)
+    if len(selected) < 6:
+        selected = frame.tail(min(36, len(frame)))
+    current_price = float(frame["close"].iloc[-1])
+    low = float(selected["low"].min())
+    high = float(selected["high"].max())
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
         return {
-            "poc": precio_actual,
-            "vah": precio_actual,
-            "val": precio_actual,
-            "estado": "BALANCE",
+            "poc": current_price,
+            "vah": current_price,
+            "val": current_price,
+            "state": "balance",
+            "approximate": True,
         }
 
-    # Perfil previo (excluyendo las últimas 3 velas para detectar ruptura real fuera de balance)
-    sub_prev = sub.iloc[:-3] if len(sub) > 12 else sub
-    prev_min = float(sub_prev["low"].min())
-    prev_max = float(sub_prev["high"].max())
-    if prev_max <= prev_min:
-        prev_min, prev_max = p_min, p_max
-
-    edges = np.linspace(prev_min, prev_max, bins + 1)
-    centers = (edges[:-1] + edges[1:]) / 2.0
-    vol_bins = np.zeros(bins, dtype=float)
-
-    tiene_vol = ("volume" in sub_prev.columns) and (float(sub_prev["volume"].sum()) > 0)
-    for _, row in sub_prev.iterrows():
-        tp = (float(row["high"]) + float(row["low"]) + float(row["close"])) / 3.0
-        peso = float(row["volume"]) if tiene_vol else (float(row["high"]) - float(row["low"]) + 1e-9)
-        idx = int(np.clip(np.digitize(tp, edges) - 1, 0, bins - 1))
-        vol_bins[idx] += max(peso, 1e-9)
-
-    poc_idx = int(np.argmax(vol_bins))
-    poc = float(centers[poc_idx])
-
-    # Construir Value Area (~70% del volumen alrededor del POC)
-    total_vol = float(vol_bins.sum())
-    acum = float(vol_bins[poc_idx])
-    low_i = poc_idx
-    high_i = poc_idx
-    while acum < total_vol * 0.70 and (low_i > 0 or high_i < bins - 1):
-        v_low = vol_bins[low_i - 1] if low_i > 0 else -1.0
-        v_high = vol_bins[high_i + 1] if high_i < bins - 1 else -1.0
-        if v_high >= v_low and high_i < bins - 1:
-            high_i += 1
-            acum += v_high
-        elif low_i > 0:
-            low_i -= 1
-            acum += v_low
+    width = (high - low) / bins
+    weights, _ = _volume_weights(selected)
+    typical = (
+        selected["high"].to_numpy(dtype=float)
+        + selected["low"].to_numpy(dtype=float)
+        + selected["close"].to_numpy(dtype=float)
+    ) / 3
+    indexes = np.clip(((typical - low) / width).astype(int), 0, bins - 1)
+    distribution = np.bincount(indexes, weights=weights, minlength=bins)
+    poc_index = int(np.argmax(distribution))
+    total = float(distribution.sum())
+    accumulated = float(distribution[poc_index])
+    low_index = high_index = poc_index
+    while accumulated < total * 0.7 and (low_index > 0 or high_index < bins - 1):
+        below = distribution[low_index - 1] if low_index > 0 else -1
+        above = distribution[high_index + 1] if high_index < bins - 1 else -1
+        if above >= below and high_index < bins - 1:
+            high_index += 1
+            accumulated += float(above)
+        elif low_index > 0:
+            low_index -= 1
+            accumulated += float(below)
         else:
             break
-
-    val = float(edges[low_i])
-    vah = float(edges[high_i + 1])
-
-    if precio_actual > vah:
-        estado = "OUT_OF_BALANCE_UP"
-    elif precio_actual < val:
-        estado = "OUT_OF_BALANCE_DOWN"
-    else:
-        estado = "BALANCE"
-
+    val = low + low_index * width
+    vah = low + (high_index + 1) * width
+    state = (
+        "out-of-balance-up"
+        if current_price > vah
+        else "out-of-balance-down"
+        if current_price < val
+        else "balance"
+    )
     return {
-        "poc": poc,
+        "poc": low + (poc_index + 0.5) * width,
         "vah": vah,
         "val": val,
-        "estado": estado,
+        "state": state,
+        "approximate": True,
     }
 
-def calcular_lvns(df, lookback=18, bins=12):
-    """
-    🆕 FABIO (Modelo 1, Paso 2 - Ubicación): Nodos de Bajo Volumen (LVN) dentro del impulso reciente.
-    Son zonas por donde el precio pasó rápido (poco volumen); suelen reaccionar al volver.
-    Si el activo no tiene volumen (forex en yfinance), usa tiempo-en-precio como aproximación.
-    """
-    sub = df.iloc[-lookback:] if len(df) >= lookback else df
-    if len(sub) < 6:
+
+def _calculate_lvns(frame: pd.DataFrame, bins: int = 12) -> list[float]:
+    selected = frame.tail(18)
+    if len(selected) < 6:
         return []
-    p_min, p_max = float(sub["low"].min()), float(sub["high"].max())
-    if p_max <= p_min:
+    low = float(selected["low"].min())
+    high = float(selected["high"].max())
+    if high <= low:
         return []
 
-    edges = np.linspace(p_min, p_max, bins + 1)
-    centers = (edges[:-1] + edges[1:]) / 2.0
-    vol_bins = np.zeros(bins, dtype=float)
-    tiene_vol = ("volume" in sub.columns) and (float(sub["volume"].sum()) > 0)
+    width = (high - low) / bins
+    weights, _ = _volume_weights(selected)
+    distribution = np.zeros(bins, dtype=float)
+    for position, (_, row) in enumerate(selected.iterrows()):
+        start = int(np.clip((float(row["low"]) - low) / width, 0, bins - 1))
+        end = int(np.clip((float(row["high"]) - low) / width, 0, bins - 1))
+        share = weights[position] / max(end - start + 1, 1)
+        distribution[start : end + 1] += share
 
-    for _, row in sub.iterrows():
-        i0 = int(np.clip(np.digitize(float(row["low"]), edges) - 1, 0, bins - 1))
-        i1 = int(np.clip(np.digitize(float(row["high"]), edges) - 1, 0, bins - 1))
-        peso = float(row["volume"]) if tiene_vol else 1.0
-        vol_bins[i0:i1 + 1] += peso / (i1 - i0 + 1)
-
-    media = float(vol_bins.mean())
-    if media <= 0:
+    average = float(distribution.mean())
+    if average <= 0:
         return []
+    levels: list[float] = []
+    for index in range(1, bins - 1):
+        if (
+            distribution[index] <= distribution[index - 1]
+            and distribution[index] <= distribution[index + 1]
+            and distribution[index] < average * 0.6
+        ):
+            levels.append(low + (index + 0.5) * width)
+    return levels[:6]
 
-    lvns = []
-    for i in range(1, bins - 1):
-        if vol_bins[i] <= vol_bins[i - 1] and vol_bins[i] <= vol_bins[i + 1] and vol_bins[i] < media * 0.6:
-            lvns.append(float(centers[i]))
-    return lvns
 
-def lvn_mas_cercano(lvns, precio, tolerancia):
-    candidatos = [x for x in lvns if abs(x - precio) <= tolerancia]
-    if not candidatos:
-        return None
-    return min(candidatos, key=lambda x: abs(x - precio))
-
-def detectar_fvg_3_velas(df):
-    """Detecta Imbalance / Fair Value Gap de 3 velas."""
-    if len(df) < 5:
-        return None
-    for idx in range(len(df) - 1, max(2, len(df) - 8), -1):
-        v1_high = float(df["high"].iloc[idx - 2])
-        v1_low = float(df["low"].iloc[idx - 2])
-        v3_low = float(df["low"].iloc[idx])
-        v3_high = float(df["high"].iloc[idx])
-
-        if v3_low > v1_high:
-            return {"tipo": "FVG_ALCISTA", "zona_low": v1_high, "zona_high": v3_low, "pos": idx}
-        if v3_high < v1_low:
-            return {"tipo": "FVG_BAJISTA", "zona_low": v3_high, "zona_high": v1_low, "pos": idx}
-    return None
-
-def detectar_order_block_institucional(df):
-    """
-    Regla El Sensei:
-    - OB Alcista: última vela bajista antes de un impulso alcista con imbalance.
-    - OB Bajista: última vela alcista antes de un impulso bajista con imbalance.
-    La zona se marca completa: de la mecha máxima a la mecha mínima de la vela.
-    """
-    if len(df) < 12:
-        return None
-    for idx in range(len(df) - 2, max(2, len(df) - 10), -1):
-        vela = df.iloc[idx]
-        sig1 = df.iloc[idx + 1]
-        cuerpo_impulso = abs(float(sig1["close"]) - float(sig1["open"]))
-        rango_prev = (df["high"].iloc[max(0, idx - 10):idx] - df["low"].iloc[max(0, idx - 10):idx]).mean()
-        atr_local = float(rango_prev) if pd.notna(rango_prev) and rango_prev > 0 else cuerpo_impulso
-
-        # OB Alcista: vela roja seguida de vela verde impulsiva
-        if float(vela["close"]) < float(vela["open"]) and float(sig1["close"]) > float(sig1["open"]):
-            if float(sig1["close"]) > float(vela["high"]) and cuerpo_impulso >= atr_local * 0.8:
-                return {
-                    "tipo": "OB_ALCISTA",
-                    "low": float(vela["low"]),
-                    "high": float(vela["high"]),
-                    "pos": idx,
-                }
-
-        # OB Bajista: vela verde seguida de vela roja impulsiva
-        if float(vela["close"]) > float(vela["open"]) and float(sig1["close"]) < float(sig1["open"]):
-            if float(sig1["close"]) < float(vela["low"]) and cuerpo_impulso >= atr_local * 0.8:
-                return {
-                    "tipo": "OB_BAJISTA",
-                    "low": float(vela["low"]),
-                    "high": float(vela["high"]),
-                    "pos": idx,
-                }
-    return None
-
-def analizar_contexto_macro_1h(df_1h, symbol):
-    """
-    Temporalidad Alta (1h): define el sesgo direccional y estado AMT macro.
-    No envía alertas sueltas de 1h; filtra las entradas de 15m/5m.
-    """
-    if df_1h is None or df_1h.empty or len(df_1h) < 30:
-        return {"sesgo": "NEUTRAL", "amt": "BALANCE", "poc": 0.0, "vah": 0.0, "val": 0.0}
-
-    ultima = df_1h.iloc[-1]
-    precio = float(ultima["close"])
-    vwap = float(ultima.get("vwap", precio))
-    ema9 = float(ultima.get("ema_fast", precio))
-    ema21 = float(ultima.get("ema_slow", precio))
-    adx = float(ultima.get("adx", 20.0))
-    perfil = calcular_perfil_volumen_amt(df_1h, lookback=36)
-
-    if precio > vwap and ema9 > ema21 and adx >= 22.0:
-        sesgo = "COMPRA"
-    elif precio < vwap and ema9 < ema21 and adx >= 22.0:
-        sesgo = "VENTA"
-    else:
-        sesgo = "NEUTRAL"
-
-    return {
-        "sesgo": sesgo,
-        "amt": perfil["estado"],
-        "poc": perfil["poc"],
-        "vah": perfil["vah"],
-        "val": perfil["val"],
-        "adx": adx,
-    }
-
-# ---------- 🆕 EL SENSEI: 4H manda la dirección y marca la zona principal ----------
-def analizar_contexto_4h(df_4h):
-    """
-    Temporalidad Alta (4h): sesgo de tendencia + Order Block / FVG principal.
-    Devuelve None si no hay datos suficientes (el motor sigue funcionando sin 4h).
-    """
-    if df_4h is None or df_4h.empty or len(df_4h) < 25:
-        return None
-    ultima = df_4h.iloc[-1]
-    precio = float(ultima["close"])
-    ema9 = float(ultima.get("ema_fast", precio))
-    ema21 = float(ultima.get("ema_slow", precio))
-
-    if ema9 > ema21:
-        sesgo = "COMPRA"
-    elif ema9 < ema21:
-        sesgo = "VENTA"
-    else:
-        sesgo = "NEUTRAL"
-
-    rangos = df_4h["high"].iloc[-21:-1] - df_4h["low"].iloc[-21:-1]
-    atr = float(rangos.mean()) if len(rangos) > 0 and pd.notna(rangos.mean()) else precio * 0.005
-
-    return {
-        "sesgo": sesgo,
-        "ob": detectar_order_block_institucional(df_4h),
-        "fvg": detectar_fvg_3_velas(df_4h),
-        "atr": atr,
-        "precio": precio,
-    }
-
-def alineado_con_4h(ctx_4h, lado):
-    """No operar en contra de la tendencia 4H (si no hay dato 4H, no bloquea)."""
-    if not USAR_CONTEXTO_4H or not ctx_4h:
-        return True
-    contrario = "VENTA" if lado == "LONG" else "COMPRA"
-    return ctx_4h["sesgo"] != contrario
-
-def zona_4h_activa(ctx_4h, precio, lado):
-    """¿El precio está dentro (o muy cerca) del OB/FVG 4H a favor de la dirección?"""
-    if not ctx_4h:
-        return None
-    tol = ctx_4h["atr"] * 0.25
-    if lado == "LONG":
-        tipo_ob, tipo_fvg, etiqueta = "OB_ALCISTA", "FVG_ALCISTA", "Alcista"
-    else:
-        tipo_ob, tipo_fvg, etiqueta = "OB_BAJISTA", "FVG_BAJISTA", "Bajista"
-
-    ob, fvg = ctx_4h.get("ob"), ctx_4h.get("fvg")
-    if ob and ob["tipo"] == tipo_ob and (ob["low"] - tol) <= precio <= (ob["high"] + tol):
-        return {"nombre": f"Order Block {etiqueta} 4H", "low": ob["low"], "high": ob["high"]}
-    if fvg and fvg["tipo"] == tipo_fvg and (fvg["zona_low"] - tol) <= precio <= (fvg["zona_high"] + tol):
-        return {"nombre": f"FVG {etiqueta} 4H", "low": fvg["zona_low"], "high": fvg["zona_high"]}
-    return None
-
-def nivel_fibo(pct):
-    """Nivel de descuento institucional alcanzado: 0, 50, 60, 70, 80 o 90."""
-    nivel = 0
-    for n in FIBO_NIVELES:
-        if pct >= n:
-            nivel = n
-    return nivel
-
-def puntuar_calidad(nivel, zona_htf, lvn_cerca, agresion):
-    """Calidad de la señal (0-5): descuento profundo + zona 4H + LVN + agresión de flujo."""
-    pts = 0
-    if nivel >= 60:
-        pts += 1
-    if nivel >= 80:
-        pts += 1
-    pts += int(bool(zona_htf)) + int(bool(lvn_cerca)) + int(bool(agresion))
-    return pts
-
-def en_sesion(nombres):
-    """🆕 FABIO: Modelo 1 -> Nueva York | Modelo 2 -> Londres. Si el filtro está apagado, siempre True."""
-    if not USAR_FILTRO_SESIONES:
-        return True
-    ahora = datetime.now(timezone.utc)
-    h = ahora.hour + ahora.minute / 60.0
-    rangos = {"NY": SESION_NY_UTC, "LONDRES": SESION_LONDRES_UTC}
-    return any(rangos[n][0] <= h < rangos[n][1] for n in nombres)
-
-def detectar_exhaustacion(df):
-    """
-    🆕 Freno de exhaustación (Larry Williams): vela de rango gigante después de un movimiento largo.
-    Comprar ahí es comprar el techo; vender ahí es vender el suelo.
-    """
-    if len(df) < 22:
-        return False
-    rango_actual = df["high"].iloc[-1] - df["low"].iloc[-1]
-    rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
-    max_previo = rangos_previos.max()
-    mov_previo = abs(df["close"].iloc[-2] - df["close"].iloc[-10])
-    atr_aprox = rangos_previos.mean()
-    return bool((rango_actual > max_previo * 1.15) and (mov_previo > atr_aprox * 3.0))
-
-def umbral_adx(symbol):
-    """🆕 Fuerza mínima de tendencia según el mercado (oro > cripto > forex)."""
-    return ADX_MIN_POR_MERCADO.get(clasificar_mercado(symbol), 25.0)
-
-def mercado_abierto(symbol):
-    """
-    🆕 Cripto: 24/7. Forex y oro: cerrados desde el viernes ~22:00 UTC hasta el domingo ~22:00 UTC
-    (en horario de verano de EE. UU. el cierre/apertura pasa a las 21:00 UTC).
-    """
-    if not BLOQUEAR_SI_MERCADO_CERRADO or clasificar_mercado(symbol) == "CRYPTO":
-        return True
-    ahora = datetime.now(timezone.utc)
-    dia = ahora.weekday()  # lunes=0 ... domingo=6
-    h = ahora.hour + ahora.minute / 60.0
-    if dia == 5:
-        return False
-    if dia == 4 and h >= 22.0:
-        return False
-    if dia == 6 and h < 22.0:
-        return False
-    return True
-
-MINUTOS_TF = {"5m": 5, "15m": 15, "1h": 60, "4h": 240}
-
-def datos_frescos(df, timeframe):
-    """🆕 La última vela debe ser reciente; si no, el proveedor está mostrando una sesión vieja."""
-    if not BLOQUEAR_SI_MERCADO_CERRADO:
-        return True
-    try:
-        ultimo = pd.to_datetime(df["timestamp"].iloc[-1]).to_pydatetime()
-        ahora = datetime.now(timezone.utc).replace(tzinfo=None)
-        edad_min = (ahora - ultimo).total_seconds() / 60.0
-        return edad_min <= max(MINUTOS_TF.get(timeframe, 15) * 2.5, 20.0)
-    except Exception:
-        return True
-
-def evaluar_modelo_fabio_sensei(df, symbol, timeframe, ctx_1h, ctx_4h=None):
-    """
-    Combina:
-    1. Modelo 1 Fabio Valentino (Fuera de Balance + LVN/OB/FVG + Flujo CVD/Volumen -> objetivo POC/extremo).
-    2. Modelo 2 Fabio Valentino (Consolidación / Balance -> Fakeout en VAH/VAL -> retorno al POC).
-    3. Modelo 3 El Sensei (OB/FVG en 4H -> nuevo OB en 15m/5m + Descuento Fibonacci >= 50%).
-    Filtros comunes: alineación 4H/1h, descuento escalonado, sesiones, break-even por CVD.
-    """
-    if df is None or df.empty or len(df) < 30:
-        return None
-
-    mercado = clasificar_mercado(symbol)
-    ultima = df.iloc[-1]
-    anterior = df.iloc[-2]
-    precio = float(ultima["close"])
-    vwap_val = float(ultima.get("vwap", precio))
-    ema_fast = float(ultima.get("ema_fast", precio))
-    ema_slow = float(ultima.get("ema_slow", precio))
-    adx_val = float(ultima.get("adx", 20.0))
-
-    rangos_previos = (df["high"].iloc[-21:-1] - df["low"].iloc[-21:-1])
-    atr_ref = float(rangos_previos.mean()) if len(rangos_previos) > 0 and pd.notna(rangos_previos.mean()) else max(precio * 0.002, tamano_pip(symbol) * 8)
-
-    perfil = calcular_perfil_volumen_amt(df, lookback=36)
-    poc, vah, val, estado_amt = perfil["poc"], perfil["vah"], perfil["val"], perfil["estado"]
-    ob = detectar_order_block_institucional(df)
-    fvg = detectar_fvg_3_velas(df)
-    lvns = calcular_lvns(df, lookback=18, bins=12)
-    lvn_cerca = lvn_mas_cercano(lvns, precio, atr_ref * 0.5)
-
-    vol_actual = float(ultima.get("volume", 0.0))
-    vol_ma = float(ultima.get("vol_ma", 0.0))
-    cvd_actual = float(ultima.get("cvd", 0.0))
-    cvd_prev = float(anterior.get("cvd", 0.0))
-
-    # 🆕 Agresión de flujo (proxy del "order flow" de Fabio: volumen anormal + CVD a favor)
-    volumen_fuerte = vol_ma > 0 and vol_actual > vol_ma * 1.5
-    agresion_compra = volumen_fuerte and cvd_actual > cvd_prev
-    agresion_venta = volumen_fuerte and cvd_actual < cvd_prev
-
-    # Impulso reciente (últimas 18 velas) para medir el Descuento Fibonacci (regla El Sensei >= 50%)
-    impulso_high = float(df["high"].iloc[-18:].max())
-    impulso_low = float(df["low"].iloc[-18:].min())
-    rango_impulso = max(impulso_high - impulso_low, 1e-9)
-    descuento_long_pct = ((impulso_high - precio) / rango_impulso) * 100.0
-    descuento_short_pct = ((precio - impulso_low) / rango_impulso) * 100.0
-
-    sl_min_dist = obtener_sl_minimo(symbol, timeframe, precio)
-    pip = tamano_pip(symbol)
-
-    vela_alcista = float(ultima["close"]) > float(ultima["open"])
-    vela_bajista = float(ultima["close"]) < float(ultima["open"])
-
-    exhaustado = detectar_exhaustacion(df)  # 🆕 veto: no comprar techo / vender suelo
-    adx_min = umbral_adx(symbol)            # 🆕 ADX mínimo según mercado
-
-    # =========================================================================
-    # MODELO 1: TENDENCIA FUERA DE BALANCE (FABIO) + LVN/OB/FVG + DESCUENTO >= 50% (SENSEI)
-    # =========================================================================
-    if (estado_amt == "OUT_OF_BALANCE_UP" and ctx_1h["sesgo"] == "COMPRA" and adx_val >= adx_min and not exhaustado
-            and alineado_con_4h(ctx_4h, "LONG") and en_sesion(("NY",))
-            and descuento_long_pct >= DESCUENTO_MIN_FIBO):  # Regla anti-pico: descuento mínimo
-
-        en_ob = ob and ob["tipo"] == "OB_ALCISTA" and (ob["low"] - atr_ref * 0.35) <= precio <= (ob["high"] + atr_ref * 0.35)
-        en_fvg = fvg and fvg["tipo"] == "FVG_ALCISTA" and (fvg["zona_low"] - atr_ref * 0.35) <= precio <= (fvg["zona_high"] + atr_ref * 0.35)
-        en_lvn = USAR_LVN_COMO_ZONA and lvn_cerca is not None
-        reaccion_alcista = vela_alcista and (precio >= ema_slow or precio >= vwap_val)
-        flujo_ok = (cvd_actual > cvd_prev) or (vol_ma > 0 and vol_actual > vol_ma * 1.15) or (mercado in ("FOREX", "METAL") and ema_fast >= ema_slow)
-
-        nivel = nivel_fibo(descuento_long_pct)
-        zona4 = zona_4h_activa(ctx_4h, precio, "LONG")
-        calidad = puntuar_calidad(nivel, zona4, lvn_cerca is not None, agresion_compra)
-
-        if (en_ob or en_fvg or en_lvn) and reaccion_alcista and flujo_ok and calidad >= CALIDAD_MINIMA:
-            if en_ob:
-                base_zona, zona_txt = ob["low"], "Order Block Alcista"
-            elif en_fvg:
-                base_zona, zona_txt = fvg["zona_low"], "FVG / Imbalance Alcista"
-            else:
-                base_zona, zona_txt = lvn_cerca, "Nodo de Bajo Volumen (LVN)"
-            sl_tecnico = float(base_zona - max(atr_ref * 0.35, pip * 2))
-            riesgo_dist = max(abs(precio - sl_tecnico), sl_min_dist)
-            sl_final = float(precio - riesgo_dist)
-            tp_final = float(max(impulso_high, precio + riesgo_dist * 2.5))
-            be_nivel = float(precio + riesgo_dist)
-
-            pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
-            apto = r_pct <= RIESGO_MAX_PCT_CUENTA
-
+def _detect_order_block(frame: pd.DataFrame) -> dict[str, Any] | None:
+    first_index = max(2, len(frame) - 10)
+    for index in range(len(frame) - 2, first_index - 1, -1):
+        base = frame.iloc[index]
+        impulse = frame.iloc[index + 1]
+        body = abs(float(impulse["close"]) - float(impulse["open"]))
+        prior = frame.iloc[max(0, index - 10) : index]
+        average_range = (
+            float((prior["high"] - prior["low"]).mean()) if len(prior) else 0
+        )
+        threshold = average_range * 0.8 if average_range > 0 else body * 0.8
+        if (
+            base["close"] < base["open"]
+            and impulse["close"] > impulse["open"]
+            and impulse["close"] > base["high"]
+            and body >= threshold
+        ):
             return {
-                "id_senal": "AMT_TREND_OB_LONG",
-                "modelo": "Modelo 1: Fuera de Balance + LVN/OB/FVG (Descuento ≥50%)",
-                "direccion": "COMPRA (LONG) 🟢",
-                "sl": sl_final,
-                "tp": tp_final,
-                "be": be_nivel,
-                "riesgo_usd": r_usd,
-                "riesgo_pct": r_pct,
-                "apto_cuenta": apto,
-                "descuento_pct": round(descuento_long_pct, 1),
-                "nivel_fibo": nivel,
-                "calidad": calidad,
-                "poc": poc,
-                "vah": vah,
-                "val": val,
-                "plan": (
-                    f"1) Contexto ALCISTA + Mercado Fuera de Balance arriba de VAH (${vah:,.4f}).\n"
-                    f"2) Retroceso validado en {zona_txt} con descuento Fibonacci del {descuento_long_pct:.1f}% (nivel {nivel}%).\n"
-                    f"3) SL técnico detrás de la zona en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
-                    f"4) TP objetivo en liquidez/máximo (${tp_final:,.4f}).\n"
-                    f"5) Break-Even: sube el SL a entrada cuando el precio toque ${be_nivel:,.4f} (+1R) y el CVD siga a favor."
-                ),
+                "type": "OB_ALCISTA",
+                "low": float(base["low"]),
+                "high": float(base["high"]),
+                "timestamp": frame.index[index].isoformat(),
+            }
+        if (
+            base["close"] > base["open"]
+            and impulse["close"] < impulse["open"]
+            and impulse["close"] < base["low"]
+            and body >= threshold
+        ):
+            return {
+                "type": "OB_BAJISTA",
+                "low": float(base["low"]),
+                "high": float(base["high"]),
+                "timestamp": frame.index[index].isoformat(),
+            }
+    return None
+
+
+def _detect_fair_value_gap(frame: pd.DataFrame) -> dict[str, Any] | None:
+    first_index = max(2, len(frame) - 7)
+    for index in range(len(frame) - 1, first_index - 1, -1):
+        first = frame.iloc[index - 2]
+        third = frame.iloc[index]
+        if third["low"] > first["high"]:
+            return {
+                "type": "FVG_ALCISTA",
+                "low": float(first["high"]),
+                "high": float(third["low"]),
+                "timestamp": frame.index[index].isoformat(),
+            }
+        if third["high"] < first["low"]:
+            return {
+                "type": "FVG_BAJISTA",
+                "low": float(third["high"]),
+                "high": float(first["low"]),
+                "timestamp": frame.index[index].isoformat(),
+            }
+    return None
+
+
+def calculate_technicals(frame: pd.DataFrame) -> dict[str, Any]:
+    candles = frame.copy()
+    close = candles["close"].astype(float)
+    high = candles["high"].astype(float)
+    low = candles["low"].astype(float)
+    volume = candles["volume"].fillna(0).astype(float)
+
+    candles["ema9"] = close.ewm(span=9, adjust=False).mean()
+    candles["ema21"] = close.ewm(span=21, adjust=False).mean()
+    typical = (high + low + close) / 3
+    rolling_volume = volume.rolling(24, min_periods=1).sum()
+    rolling_weighted = (typical * volume).rolling(24, min_periods=1).sum()
+    fallback_vwap = close.rolling(24, min_periods=1).mean()
+    candles["vwap"] = (rolling_weighted / rolling_volume.replace(0, np.nan)).fillna(
+        fallback_vwap
+    )
+
+    candle_range = (high - low).replace(0, np.nan)
+    candle_delta = ((close - candles["open"]) / candle_range).fillna(0) * volume
+    candles["cvd_proxy"] = candle_delta.cumsum()
+
+    previous_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            high - low,
+            (high - previous_close).abs(),
+            (low - previous_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+    candles["atr"] = true_range.rolling(14, min_periods=1).mean()
+
+    up_move = high.diff()
+    down_move = -low.diff()
+    positive_dm = pd.Series(
+        np.where((up_move > down_move) & (up_move > 0), up_move, 0),
+        index=candles.index,
+        dtype=float,
+    )
+    negative_dm = pd.Series(
+        np.where((down_move > up_move) & (down_move > 0), down_move, 0),
+        index=candles.index,
+        dtype=float,
+    )
+    smoothed_tr = true_range.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+    plus_di = (
+        100 * positive_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        / smoothed_tr.replace(0, np.nan)
+    )
+    minus_di = (
+        100 * negative_dm.ewm(alpha=1 / 14, adjust=False, min_periods=14).mean()
+        / smoothed_tr.replace(0, np.nan)
+    )
+    denominator = (plus_di + minus_di).replace(0, np.nan)
+    dx = (100 * (plus_di - minus_di).abs() / denominator).fillna(0)
+    candles["adx"] = dx.ewm(alpha=1 / 14, adjust=False, min_periods=1).mean()
+
+    volume_weights, volume_approximate = _volume_weights(frame)
+    del volume_weights
+    return {
+        "candles": candles,
+        "atr": float(candles["atr"].iloc[-1]),
+        "adx": float(candles["adx"].iloc[-1]),
+        "profile": _calculate_profile(frame),
+        "lvns": _calculate_lvns(frame),
+        "order_block": _detect_order_block(frame),
+        "fair_value_gap": _detect_fair_value_gap(frame),
+        "cvd_proxy": float(candles["cvd_proxy"].iloc[-1]),
+        "volume_approximate": volume_approximate,
+    }
+
+
+def _bias(technicals: dict[str, Any], require_adx: bool = False) -> str:
+    last = technicals["candles"].iloc[-1]
+    adx_ok = not require_adx or technicals["adx"] >= 22
+    if last["close"] > last["vwap"] and last["ema9"] > last["ema21"] and adx_ok:
+        return "Alcista"
+    if last["close"] < last["vwap"] and last["ema9"] < last["ema21"] and adx_ok:
+        return "Bajista"
+    return "Neutral"
+
+
+def _four_hour_bias(technicals: dict[str, Any]) -> str:
+    last = technicals["candles"].iloc[-1]
+    if last["ema9"] > last["ema21"]:
+        return "Alcista"
+    if last["ema9"] < last["ema21"]:
+        return "Bajista"
+    return "Neutral"
+
+
+def _near_zone(price: float, zone: dict[str, Any] | None, tolerance: float) -> bool:
+    return bool(
+        zone
+        and price >= float(zone["low"]) - tolerance
+        and price <= float(zone["high"]) + tolerance
+    )
+
+
+def _impulse_retracements(candles: pd.DataFrame) -> tuple[float, float, float, float]:
+    recent = candles.tail(18)
+    high = float(recent["high"].max())
+    low = float(recent["low"].min())
+    price = float(candles["close"].iloc[-1])
+    width = max(high - low, 1e-12)
+    long_discount = (high - price) / width * 100
+    short_discount = (price - low) / width * 100
+    return high, low, long_discount, short_discount
+
+
+def _evaluate_signal(
+    symbol: str,
+    data: dict[str, Any],
+    context_1h: dict[str, Any],
+    context_4h: dict[str, Any],
+    stale: bool,
+) -> dict[str, Any] | None:
+    candles = data["candles"]
+    if stale or len(candles) < 30:
+        return None
+
+    instrument = _ensure_supported(symbol)
+    last = candles.iloc[-1]
+    previous = candles.iloc[-2]
+    price = float(last["close"])
+    high, low, long_discount, short_discount = _impulse_retracements(candles)
+    profile = data["profile"]
+    poc, vah, val = profile["poc"], profile["vah"], profile["val"]
+    atr = max(float(data["atr"]), 0)
+    tolerance = max(atr * 0.35, price * 0.00001)
+    bias_1h = _bias(context_1h, require_adx=True)
+    bias_4h = _four_hour_bias(context_4h)
+    adx_minimum = {"crypto": 28, "forex": 25, "metal": 30, "index": 25}[
+        instrument["class"]
+    ]
+    bullish = float(last["close"]) > float(last["open"])
+    bearish = float(last["close"]) < float(last["open"])
+    order_block = data["order_block"]
+    fair_value_gap = data["fair_value_gap"]
+    lvn = next(
+        (
+            level
+            for level in data["lvns"]
+            if abs(level - price) <= max(atr * 0.5, 1e-12)
+        ),
+        None,
+    )
+
+    local_bullish_zone = (
+        order_block is not None
+        and order_block["type"] == "OB_ALCISTA"
+        and _near_zone(price, order_block, tolerance)
+    ) or (
+        fair_value_gap is not None
+        and fair_value_gap["type"] == "FVG_ALCISTA"
+        and _near_zone(price, fair_value_gap, tolerance)
+    )
+    local_bearish_zone = (
+        order_block is not None
+        and order_block["type"] == "OB_BAJISTA"
+        and _near_zone(price, order_block, tolerance)
+    ) or (
+        fair_value_gap is not None
+        and fair_value_gap["type"] == "FVG_BAJISTA"
+        and _near_zone(price, fair_value_gap, tolerance)
+    )
+    recent_volumes = candles["volume"].tail(20)
+    average_volume = float(recent_volumes.mean()) if len(recent_volumes) else 0
+    volume_expansion = average_volume > 0 and float(last["volume"]) > average_volume * 1.15
+
+    def make_signal(
+        *,
+        code: str,
+        model: str,
+        direction: str,
+        zone_price: float,
+        target: float,
+        discount: float,
+        higher_timeframe_zone: bool,
+        near_lvn: bool,
+        notes: list[str],
+    ) -> dict[str, Any]:
+        buffer = max(atr * 0.35, price * 0.00001)
+        if direction == "LONG":
+            stop = min(zone_price - buffer, price - buffer)
+            risk = price - stop
+            take_profit = max(target, price + risk * 2.5)
+        else:
+            stop = max(zone_price + buffer, price + buffer)
+            risk = stop - price
+            take_profit = min(target, price - risk * 2.5)
+        reward = abs(take_profit - price)
+        quality = (
+            int(discount >= 60)
+            + int(discount >= 80)
+            + int(higher_timeframe_zone)
+            + int(near_lvn)
+            + int(volume_expansion)
+        )
+        return {
+            "code": code,
+            "model": model,
+            "direction": direction,
+            "quality": min(quality, 5),
+            "entry": price,
+            "stop_loss": stop,
+            "take_profit": take_profit,
+            "risk_reward": reward / risk if risk > 0 else None,
+            "discount_percent": round(discount, 1),
+            "notes": notes,
+        }
+
+    # Modelo 1: continuación fuera de balance con retroceso a una zona local.
+    if (
+        profile["state"] == "out-of-balance-up"
+        and bias_1h == "Alcista"
+        and data["adx"] >= adx_minimum
+        and bias_4h != "Bajista"
+        and long_discount >= 50
+        and (local_bullish_zone or lvn is not None)
+        and bullish
+        and (price >= float(last["ema21"]) or price >= float(last["vwap"]))
+    ):
+        selected_zone = (
+            order_block
+            if order_block
+            and order_block["type"] == "OB_ALCISTA"
+            and _near_zone(price, order_block, tolerance)
+            else fair_value_gap
+            if fair_value_gap
+            and fair_value_gap["type"] == "FVG_ALCISTA"
+            and _near_zone(price, fair_value_gap, tolerance)
+            else None
+        )
+        return make_signal(
+            code="AMT_TREND_LONG",
+            model="Tendencia fuera de balance",
+            direction="LONG",
+            zone_price=float(selected_zone["low"]) if selected_zone else lvn or price - atr,
+            target=high,
+            discount=long_discount,
+            higher_timeframe_zone=bias_4h == "Alcista",
+            near_lvn=lvn is not None,
+            notes=[
+                "Precio sobre el área de valor previa con sesgo 1H alineado.",
+                "Zona y retroceso calculados con velas OHLCV cerradas.",
+            ],
+        )
+
+    if (
+        profile["state"] == "out-of-balance-down"
+        and bias_1h == "Bajista"
+        and data["adx"] >= adx_minimum
+        and bias_4h != "Alcista"
+        and short_discount >= 50
+        and (local_bearish_zone or lvn is not None)
+        and bearish
+        and (price <= float(last["ema21"]) or price <= float(last["vwap"]))
+    ):
+        selected_zone = (
+            order_block
+            if order_block
+            and order_block["type"] == "OB_BAJISTA"
+            and _near_zone(price, order_block, tolerance)
+            else fair_value_gap
+            if fair_value_gap
+            and fair_value_gap["type"] == "FVG_BAJISTA"
+            and _near_zone(price, fair_value_gap, tolerance)
+            else None
+        )
+        return make_signal(
+            code="AMT_TREND_SHORT",
+            model="Tendencia fuera de balance",
+            direction="SHORT",
+            zone_price=float(selected_zone["high"]) if selected_zone else lvn or price + atr,
+            target=low,
+            discount=short_discount,
+            higher_timeframe_zone=bias_4h == "Bajista",
+            near_lvn=lvn is not None,
+            notes=[
+                "Precio bajo el área de valor previa con sesgo 1H alineado.",
+                "Zona y retroceso calculados con velas OHLCV cerradas.",
+            ],
+        )
+
+    # Modelo 2: ruptura fallida del área de valor y retorno al POC.
+    fakeout_above = (
+        (float(previous["high"]) > vah or float(last["high"]) > vah)
+        and price < vah
+        and bearish
+        and poc < price
+    )
+    if profile["state"] == "balance" and fakeout_above and bias_1h != "Alcista":
+        fakeout_high = max(float(previous["high"]), float(last["high"]))
+        stop = fakeout_high + max(atr * 0.25, price * 0.00001)
+        risk = stop - price
+        if risk > 0 and price - poc >= risk * 1.3:
+            return {
+                "code": "AMT_MEAN_REVERSION_SHORT",
+                "model": "Reversión al POC tras ruptura fallida",
+                "direction": "SHORT",
+                "quality": 3,
+                "entry": price,
+                "stop_loss": stop,
+                "take_profit": poc,
+                "risk_reward": (price - poc) / risk,
+                "discount_percent": 0,
+                "notes": [
+                    "Ruptura fallida sobre VAH; objetivo técnico en el POC.",
+                    "Regla heurística sin probabilidad validada.",
+                ],
             }
 
-    if (estado_amt == "OUT_OF_BALANCE_DOWN" and ctx_1h["sesgo"] == "VENTA" and adx_val >= adx_min and not exhaustado
-            and alineado_con_4h(ctx_4h, "SHORT") and en_sesion(("NY",))
-            and descuento_short_pct >= DESCUENTO_MIN_FIBO):
-
-        en_ob = ob and ob["tipo"] == "OB_BAJISTA" and (ob["low"] - atr_ref * 0.35) <= precio <= (ob["high"] + atr_ref * 0.35)
-        en_fvg = fvg and fvg["tipo"] == "FVG_BAJISTA" and (fvg["zona_low"] - atr_ref * 0.35) <= precio <= (fvg["zona_high"] + atr_ref * 0.35)
-        en_lvn = USAR_LVN_COMO_ZONA and lvn_cerca is not None
-        reaccion_bajista = vela_bajista and (precio <= ema_slow or precio <= vwap_val)
-        flujo_ok = (cvd_actual < cvd_prev) or (vol_ma > 0 and vol_actual > vol_ma * 1.15) or (mercado in ("FOREX", "METAL") and ema_fast <= ema_slow)
-
-        nivel = nivel_fibo(descuento_short_pct)
-        zona4 = zona_4h_activa(ctx_4h, precio, "SHORT")
-        calidad = puntuar_calidad(nivel, zona4, lvn_cerca is not None, agresion_venta)
-
-        if (en_ob or en_fvg or en_lvn) and reaccion_bajista and flujo_ok and calidad >= CALIDAD_MINIMA:
-            if en_ob:
-                base_zona, zona_txt = ob["high"], "Order Block Bajista"
-            elif en_fvg:
-                base_zona, zona_txt = fvg["zona_high"], "FVG / Imbalance Bajista"
-            else:
-                base_zona, zona_txt = lvn_cerca, "Nodo de Bajo Volumen (LVN)"
-            sl_tecnico = float(base_zona + max(atr_ref * 0.35, pip * 2))
-            riesgo_dist = max(abs(sl_tecnico - precio), sl_min_dist)
-            sl_final = float(precio + riesgo_dist)
-            tp_final = float(min(impulso_low, precio - riesgo_dist * 2.5))
-            be_nivel = float(precio - riesgo_dist)
-
-            pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
-            apto = r_pct <= RIESGO_MAX_PCT_CUENTA
-
+    fakeout_below = (
+        (float(previous["low"]) < val or float(last["low"]) < val)
+        and price > val
+        and bullish
+        and poc > price
+    )
+    if profile["state"] == "balance" and fakeout_below and bias_1h != "Bajista":
+        fakeout_low = min(float(previous["low"]), float(last["low"]))
+        stop = fakeout_low - max(atr * 0.25, price * 0.00001)
+        risk = price - stop
+        if risk > 0 and poc - price >= risk * 1.3:
             return {
-                "id_senal": "AMT_TREND_OB_SHORT",
-                "modelo": "Modelo 1: Fuera de Balance + LVN/OB/FVG (Descuento ≥50%)",
-                "direccion": "VENTA (SHORT) 🔴",
-                "sl": sl_final,
-                "tp": tp_final,
-                "be": be_nivel,
-                "riesgo_usd": r_usd,
-                "riesgo_pct": r_pct,
-                "apto_cuenta": apto,
-                "descuento_pct": round(descuento_short_pct, 1),
-                "nivel_fibo": nivel,
-                "calidad": calidad,
-                "poc": poc,
-                "vah": vah,
-                "val": val,
-                "plan": (
-                    f"1) Contexto BAJISTA + Mercado Fuera de Balance debajo de VAL (${val:,.4f}).\n"
-                    f"2) Retroceso validado en {zona_txt} con descuento Fibonacci del {descuento_short_pct:.1f}% (nivel {nivel}%).\n"
-                    f"3) SL técnico detrás de la zona en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
-                    f"4) TP objetivo en liquidez/mínimo (${tp_final:,.4f}).\n"
-                    f"5) Break-Even: baja el SL a entrada cuando el precio toque ${be_nivel:,.4f} (+1R) y el CVD siga a favor."
-                ),
+                "code": "AMT_MEAN_REVERSION_LONG",
+                "model": "Reversión al POC tras ruptura fallida",
+                "direction": "LONG",
+                "quality": 3,
+                "entry": price,
+                "stop_loss": stop,
+                "take_profit": poc,
+                "risk_reward": (poc - price) / risk,
+                "discount_percent": 0,
+                "notes": [
+                    "Ruptura fallida bajo VAL; objetivo técnico en el POC.",
+                    "Regla heurística sin probabilidad validada.",
+                ],
             }
 
-    # =========================================================================
-    # MODELO 2: REVERSIÓN A LA MEDIA EN CONSOLIDACIÓN (FABIO: FAKEOUT -> RETORNO AL POC)
-    # =========================================================================
-    if (estado_amt == "BALANCE" and (vah - val) > sl_min_dist * 1.5 and en_sesion(("LONDRES",))
-            and not (exhaustado and EXHAUSTACION_VETA_MODELO_2)):
-        # Fakeout alcista fallido encima de VAH -> Vuelta al POC
-        fakeout_arriba = (
-            (float(anterior["high"]) > vah or float(ultima["high"]) > vah)
-            and float(ultima["close"]) < vah
-            and vela_bajista
-            and (poc < precio)
+    # Modelo 3: zona 4H con confirmación de order block local.
+    four_hour_zones = [
+        zone
+        for zone in (context_4h["order_block"], context_4h["fair_value_gap"])
+        if zone is not None
+    ]
+    four_hour_tolerance = max(float(context_4h["atr"]) * 0.25, tolerance)
+    bullish_4h_zone = next(
+        (
+            zone
+            for zone in four_hour_zones
+            if zone["type"].endswith("ALCISTA")
+            and _near_zone(price, zone, four_hour_tolerance)
+        ),
+        None,
+    )
+    if (
+        bias_4h == "Alcista"
+        and bullish_4h_zone
+        and order_block
+        and order_block["type"] == "OB_ALCISTA"
+        and _near_zone(price, order_block, tolerance)
+        and bullish
+        and long_discount >= 50
+    ):
+        return make_signal(
+            code="SENSEI_FRACTAL_LONG",
+            model="Fractal 4H con confirmación de temporalidad baja",
+            direction="LONG",
+            zone_price=float(order_block["low"]),
+            target=high,
+            discount=long_discount,
+            higher_timeframe_zone=True,
+            near_lvn=lvn is not None,
+            notes=[
+                "Sesgo 4H alcista y precio dentro de una zona 4H detectada.",
+                "El order block local usa velas cerradas.",
+            ],
         )
-        if fakeout_arriba and ctx_1h["sesgo"] != "COMPRA":
-            max_fake = max(float(anterior["high"]), float(ultima["high"]))
-            sl_tecnico = float(max_fake + max(pip * 2, atr_ref * 0.25))
-            riesgo_dist = max(abs(sl_tecnico - precio), sl_min_dist)
-            sl_final = float(precio + riesgo_dist)
-            tp_final = float(poc)
-            if (precio - tp_final) >= riesgo_dist * 1.3:
-                pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
-                apto = r_pct <= RIESGO_MAX_PCT_CUENTA
-                be_nivel = float(precio - riesgo_dist)
-                return {
-                    "id_senal": "AMT_MEAN_REV_SHORT",
-                    "modelo": "Modelo 2: Reversión al POC tras Fakeout en VAH (AMT)",
-                    "direccion": "VENTA (SHORT) 🔴",
-                    "sl": sl_final,
-                    "tp": tp_final,
-                    "be": be_nivel,
-                    "riesgo_usd": r_usd,
-                    "riesgo_pct": r_pct,
-                    "apto_cuenta": apto,
-                    "descuento_pct": 0.0,
-                    "nivel_fibo": 0,
-                    "calidad": None,
-                    "poc": poc,
-                    "vah": vah,
-                    "val": val,
-                    "plan": (
-                        f"1) Mercado en Balance/Rango: ruptura fallida (fakeout) sobre VAH (${vah:,.4f}). No se opera la primera ruptura.\n"
-                        f"2) Segundo impulso de rechazo entrando de nuevo al Área de Valor.\n"
-                        f"3) SL ajustado con colchón sobre el fakeout en ${sl_final:,.4f} (~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
-                        f"4) TP objetivo directo en el Punto de Control (POC) en ${tp_final:,.4f}.\n"
-                        f"5) Break-Even: baja el SL a entrada al tocar ${be_nivel:,.4f} (+1R) si el CVD acompaña."
-                    ),
-                }
 
-        # Fakeout bajista fallido debajo de VAL -> Vuelta al POC
-        fakeout_abajo = (
-            (float(anterior["low"]) < val or float(ultima["low"]) < val)
-            and float(ultima["close"]) > val
-            and vela_alcista
-            and (poc > precio)
+    bearish_4h_zone = next(
+        (
+            zone
+            for zone in four_hour_zones
+            if zone["type"].endswith("BAJISTA")
+            and _near_zone(price, zone, four_hour_tolerance)
+        ),
+        None,
+    )
+    if (
+        bias_4h == "Bajista"
+        and bearish_4h_zone
+        and order_block
+        and order_block["type"] == "OB_BAJISTA"
+        and _near_zone(price, order_block, tolerance)
+        and bearish
+        and short_discount >= 50
+    ):
+        return make_signal(
+            code="SENSEI_FRACTAL_SHORT",
+            model="Fractal 4H con confirmación de temporalidad baja",
+            direction="SHORT",
+            zone_price=float(order_block["high"]),
+            target=low,
+            discount=short_discount,
+            higher_timeframe_zone=True,
+            near_lvn=lvn is not None,
+            notes=[
+                "Sesgo 4H bajista y precio dentro de una zona 4H detectada.",
+                "El order block local usa velas cerradas.",
+            ],
         )
-        if fakeout_abajo and ctx_1h["sesgo"] != "VENTA":
-            min_fake = min(float(anterior["low"]), float(ultima["low"]))
-            sl_tecnico = float(min_fake - max(pip * 2, atr_ref * 0.25))
-            riesgo_dist = max(abs(precio - sl_tecnico), sl_min_dist)
-            sl_final = float(precio - riesgo_dist)
-            tp_final = float(poc)
-            if (tp_final - precio) >= riesgo_dist * 1.3:
-                pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
-                apto = r_pct <= RIESGO_MAX_PCT_CUENTA
-                be_nivel = float(precio + riesgo_dist)
-                return {
-                    "id_senal": "AMT_MEAN_REV_LONG",
-                    "modelo": "Modelo 2: Reversión al POC tras Fakeout en VAL (AMT)",
-                    "direccion": "COMPRA (LONG) 🟢",
-                    "sl": sl_final,
-                    "tp": tp_final,
-                    "be": be_nivel,
-                    "riesgo_usd": r_usd,
-                    "riesgo_pct": r_pct,
-                    "apto_cuenta": apto,
-                    "descuento_pct": 0.0,
-                    "nivel_fibo": 0,
-                    "calidad": None,
-                    "poc": poc,
-                    "vah": vah,
-                    "val": val,
-                    "plan": (
-                        f"1) Mercado en Balance/Rango: ruptura fallida (fakeout) bajo VAL (${val:,.4f}). No se opera la primera ruptura.\n"
-                        f"2) Segundo impulso de rechazo entrando de nuevo al Área de Valor.\n"
-                        f"3) SL ajustado con colchón bajo el fakeout en ${sl_final:,.4f} (~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
-                        f"4) TP objetivo directo en el Punto de Control (POC) en ${tp_final:,.4f}.\n"
-                        f"5) Break-Even: sube el SL a entrada al tocar ${be_nivel:,.4f} (+1R) si el CVD acompaña."
-                    ),
-                }
-
-    # =========================================================================
-    # 🆕 MODELO 3: FRACTAL EL SENSEI (OB/FVG 4H -> NUEVO OB EN 15m/5m + DESCUENTO)
-    # 1) 4H marca dirección y zona principal. 2) El precio llega a esa zona.
-    # 3) En la temporalidad baja se forma un nuevo OB tras el primer rechazo -> entrada ahí.
-    # =========================================================================
-    if USAR_CONTEXTO_4H and ctx_4h and en_sesion(("LONDRES", "NY")) and not exhaustado:
-        # --- LONG ---
-        zona4 = zona_4h_activa(ctx_4h, precio, "LONG")
-        if ctx_4h["sesgo"] == "COMPRA" and zona4 and descuento_long_pct >= DESCUENTO_MIN_FIBO:
-            ob_ltf_ok = ob and ob["tipo"] == "OB_ALCISTA" and (ob["low"] - atr_ref * 0.35) <= precio <= (ob["high"] + atr_ref * 0.35)
-            if ob_ltf_ok and vela_alcista:
-                nivel = nivel_fibo(descuento_long_pct)
-                calidad = puntuar_calidad(nivel, zona4, lvn_cerca is not None, agresion_compra)
-                if calidad >= CALIDAD_MINIMA:
-                    sl_tecnico = float(ob["low"] - max(atr_ref * 0.35, pip * 2))
-                    riesgo_dist = max(abs(precio - sl_tecnico), sl_min_dist)
-                    sl_final = float(precio - riesgo_dist)
-                    tp_final = float(max(impulso_high, precio + riesgo_dist * 2.5))
-                    be_nivel = float(precio + riesgo_dist)
-                    pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
-                    return {
-                        "id_senal": "SENSEI_FRACTAL_LONG",
-                        "modelo": "Modelo 3: Fractal El Sensei (OB 4H → OB bajo)",
-                        "direccion": "COMPRA (LONG) 🟢",
-                        "sl": sl_final,
-                        "tp": tp_final,
-                        "be": be_nivel,
-                        "riesgo_usd": r_usd,
-                        "riesgo_pct": r_pct,
-                        "apto_cuenta": r_pct <= RIESGO_MAX_PCT_CUENTA,
-                        "descuento_pct": round(descuento_long_pct, 1),
-                        "nivel_fibo": nivel,
-                        "calidad": calidad,
-                        "poc": poc,
-                        "vah": vah,
-                        "val": val,
-                        "plan": (
-                            f"1) 4H ALCISTA y el precio llegó a {zona4['nombre']} (${zona4['low']:,.4f} - ${zona4['high']:,.4f}).\n"
-                            f"2) En {timeframe} apareció un nuevo Order Block alcista (${ob['low']:,.4f} - ${ob['high']:,.4f}) con descuento del {descuento_long_pct:.1f}% (nivel {nivel}%).\n"
-                            f"3) SL justo debajo del bloque en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
-                            f"4) TP en la zona opuesta/liquidez (${tp_final:,.4f}).\n"
-                            f"5) Break-Even al tocar ${be_nivel:,.4f} (+1R)."
-                        ),
-                    }
-
-        # --- SHORT ---
-        zona4 = zona_4h_activa(ctx_4h, precio, "SHORT")
-        if ctx_4h["sesgo"] == "VENTA" and zona4 and descuento_short_pct >= DESCUENTO_MIN_FIBO:
-            ob_ltf_ok = ob and ob["tipo"] == "OB_BAJISTA" and (ob["low"] - atr_ref * 0.35) <= precio <= (ob["high"] + atr_ref * 0.35)
-            if ob_ltf_ok and vela_bajista:
-                nivel = nivel_fibo(descuento_short_pct)
-                calidad = puntuar_calidad(nivel, zona4, lvn_cerca is not None, agresion_venta)
-                if calidad >= CALIDAD_MINIMA:
-                    sl_tecnico = float(ob["high"] + max(atr_ref * 0.35, pip * 2))
-                    riesgo_dist = max(abs(sl_tecnico - precio), sl_min_dist)
-                    sl_final = float(precio + riesgo_dist)
-                    tp_final = float(min(impulso_low, precio - riesgo_dist * 2.5))
-                    be_nivel = float(precio - riesgo_dist)
-                    pips_pts, r_usd, r_pct = calcular_riesgo_001_lotes(symbol, precio, sl_final)
-                    return {
-                        "id_senal": "SENSEI_FRACTAL_SHORT",
-                        "modelo": "Modelo 3: Fractal El Sensei (OB 4H → OB bajo)",
-                        "direccion": "VENTA (SHORT) 🔴",
-                        "sl": sl_final,
-                        "tp": tp_final,
-                        "be": be_nivel,
-                        "riesgo_usd": r_usd,
-                        "riesgo_pct": r_pct,
-                        "apto_cuenta": r_pct <= RIESGO_MAX_PCT_CUENTA,
-                        "descuento_pct": round(descuento_short_pct, 1),
-                        "nivel_fibo": nivel,
-                        "calidad": calidad,
-                        "poc": poc,
-                        "vah": vah,
-                        "val": val,
-                        "plan": (
-                            f"1) 4H BAJISTA y el precio llegó a {zona4['nombre']} (${zona4['low']:,.4f} - ${zona4['high']:,.4f}).\n"
-                            f"2) En {timeframe} apareció un nuevo Order Block bajista (${ob['low']:,.4f} - ${ob['high']:,.4f}) con descuento del {descuento_short_pct:.1f}% (nivel {nivel}%).\n"
-                            f"3) SL justo encima del bloque en ${sl_final:,.4f} ({pips_pts} pips/pts -> ~${r_usd:.2f} / {r_pct:.1f}% de $10).\n"
-                            f"4) TP en la zona opuesta/liquidez (${tp_final:,.4f}).\n"
-                            f"5) Break-Even al tocar ${be_nivel:,.4f} (+1R)."
-                        ),
-                    }
-
     return None
 
-# ==========================================
-# 🛠️ OBTENCIÓN DE DATOS CON CACHÉ CANÓNICA
-# ==========================================
-def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
-    canon = canonizar_simbolo(symbol)
-    cache_key = f"{canon}_{timeframe}_{limit}"
-    ahora = time.time()
 
-    with CACHE_LOCK:
-        cached = CACHE_DATOS_GLOBAL.get(cache_key)
-        if cached and (ahora - cached["ts"] < ttl_segundos) and cached.get("es_real", False):
-            df_cached = cached["df"].copy()
-            df_cached.attrs["es_real"] = True
-            return df_cached
+def _is_stale(frame: pd.DataFrame, timeframe: str) -> bool:
+    if frame.empty:
+        return True
+    age_minutes = (
+        pd.Timestamp.now(tz="UTC") - frame.index[-1]
+    ).total_seconds() / 60
+    return age_minutes > STALE_AFTER_MINUTES[timeframe]
 
-    df = pd.DataFrame()
-    es_real = False
 
-    if symbol in CRYPTO_MARKETS:
-        for ex in [e for e in (EXCHANGE_OKX, EXCHANGE_BINANCE) if e is not None]:
-            try:
-                ohlcv = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
-                if ohlcv:
-                    temp_df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
-                    temp_df["timestamp"] = _normalizar_timestamp(pd.to_datetime(temp_df["timestamp"], unit="ms"))
-                    temp_df = temp_df.dropna(subset=["open", "high", "low", "close"]).tail(limit).copy()
-                    if not temp_df.empty and float(temp_df["close"].iloc[-1]) > 0:
-                        df = temp_df
-                        es_real = True
-                        break
-            except Exception:
-                continue
-    elif symbol in FOREX_MARKETS or canon == "XAUUSD":
-        interval_map = {"5m": "5m", "15m": "15m", "1h": "60m", "4h": "60m"}  # 4h se arma desde 60m
-        yf_interval = interval_map.get(timeframe, "60m")
-        periodos_a_probar = ["5d", "1mo"] if timeframe == "5m" else ["1mo", "3mo"]
-        simbolos_yf = ["XAUUSD=X", "GC=F"] if canon == "XAUUSD" else [symbol]
+def build_analysis(symbol: str, timeframe: str) -> dict[str, Any]:
+    _ensure_supported(symbol)
+    if timeframe not in ("5m", "15m", "1h"):
+        raise ValueError("Selecciona una temporalidad de gráfica válida.")
+    evaluation_timeframe = "15m" if timeframe == "1h" else timeframe
 
-        for sym_try in simbolos_yf:
-            for periodo in periodos_a_probar:
-                try:
-                    hist = yf.Ticker(sym_try).history(period=periodo, interval=yf_interval)
-                    if not hist.empty and "Close" in hist.columns:
-                        temp_df = hist.reset_index()
-                        time_col = "Datetime" if "Datetime" in temp_df.columns else ("Date" if "Date" in temp_df.columns else temp_df.columns[0])
-                        temp_df.rename(columns={
-                            time_col: "timestamp",
-                            "Open": "open",
-                            "High": "high",
-                            "Low": "low",
-                            "Close": "close",
-                            "Volume": "volume"
-                        }, inplace=True)
-                        temp_df["timestamp"] = _normalizar_timestamp(temp_df["timestamp"])
-                        temp_df["volume"] = temp_df["volume"].fillna(0)
-                        if timeframe == "4h":
-                            temp_df = _resamplear_a_4h(temp_df)
-                        temp_df = temp_df.dropna(subset=["open", "high", "low", "close"]).tail(limit).copy()
-                        if not temp_df.empty and float(temp_df["close"].iloc[-1]) > 0:
-                            df = temp_df
-                            es_real = True
-                            break
-                except Exception:
-                    continue
-            if es_real:
-                break
+    chart_frame = fetch_candles(symbol, timeframe)
+    hourly_frame = chart_frame if timeframe == "1h" else fetch_candles(symbol, "1h")
+    four_hour_frame = fetch_candles(symbol, "4h")
+    evaluation_frame = (
+        chart_frame
+        if evaluation_timeframe == timeframe
+        else fetch_candles(symbol, evaluation_timeframe)
+    )
 
-    if df.empty or not all(col in df.columns for col in ["open", "high", "low", "close", "volume", "timestamp"]):
-        freq_map = {"5m": "5min", "15m": "15min", "1h": "1h", "4h": "4h"}
-        fechas = pd.date_range(end=datetime.now(), periods=limit, freq=freq_map.get(timeframe, "15min"))
-        base_val = 2650.0 if "XAU" in canon else (1.085 if "EUR" in canon else 150.0)
-        rng = np.random.default_rng(abs(hash(canon + timeframe)) % (2**32))
-        returns = rng.normal(0.0001, 0.002, limit)
-        prices = base_val * np.cumprod(1 + returns)
+    chart_technicals = calculate_technicals(chart_frame)
+    hourly_technicals = (
+        chart_technicals
+        if timeframe == "1h"
+        else calculate_technicals(hourly_frame)
+    )
+    four_hour_technicals = calculate_technicals(four_hour_frame)
+    evaluation_technicals = (
+        chart_technicals
+        if evaluation_timeframe == timeframe
+        else calculate_technicals(evaluation_frame)
+    )
+    stale = _is_stale(chart_frame, timeframe)
+    signal_stale = stale or _is_stale(evaluation_frame, evaluation_timeframe)
+    signal = _evaluate_signal(
+        symbol,
+        evaluation_technicals,
+        hourly_technicals,
+        four_hour_technicals,
+        signal_stale,
+    )
 
-        df = pd.DataFrame({
-            "timestamp": fechas,
-            "open": prices * (1 + rng.normal(0, 0.0005, limit)),
-            "high": prices * (1 + abs(rng.normal(0, 0.001, limit))),
-            "low": prices * (1 - abs(rng.normal(0, 0.001, limit))),
-            "close": prices,
-            "volume": rng.integers(1000, 10000, limit)
-        })
-        es_real = False
+    latest = chart_technicals["candles"].iloc[-1]
+    previous = chart_technicals["candles"].iloc[-2]
+    change_percent = (
+        (float(latest["close"]) - float(previous["close"]))
+        / float(previous["close"])
+        * 100
+        if float(previous["close"]) != 0
+        else 0
+    )
+    bias_1h = _bias(hourly_technicals, require_adx=True)
+    bias_4h = _four_hour_bias(four_hour_technicals)
+    _, _, long_discount, short_discount = _impulse_retracements(
+        evaluation_technicals["candles"]
+    )
+    selected_discount = (
+        short_discount
+        if bias_1h == "Bajista" or (bias_1h == "Neutral" and bias_4h == "Bajista")
+        else long_discount
+    )
+    notes = [
+        "POC, VAH, VAL y LVN se estiman con velas OHLCV; no son volumen negociado por nivel.",
+        "El CVD es un proxy por dirección de vela; no representa flujo bid/ask real.",
+        "Las reglas no están validadas con backtesting y no son recomendaciones de inversión.",
+    ]
+    if chart_technicals["volume_approximate"]:
+        notes.append(
+            "El proveedor reporta volumen cero o incompleto; los indicadores de volumen son aproximados."
+        )
+    if timeframe == "1h":
+        notes.append(
+            "La gráfica usa 1H y la evaluación de señal usa 15m, como en la configuración original."
+        )
+    if stale:
+        notes.append(
+            "La última vela está retrasada; no se presenta una señal con datos desactualizados."
+        )
 
-    if not df.empty and len(df) > 5:
-        df["vwap"] = calcular_vwap(df)
-        window_val = min(20, len(df))
-        df["soporte"] = df["low"].rolling(window=window_val).min()
-        df["resistencia"] = df["high"].rolling(window=window_val).max()
-        df["vol_ma"] = df["volume"].rolling(window=window_val).mean()
-        df["ema_fast"] = df["close"].ewm(span=9, adjust=False).mean()
-        df["ema_slow"] = df["close"].ewm(span=21, adjust=False).mean()
-        df["adx"] = calcular_adx(df)
-        df["cvd"] = calcular_cvd_proxy(df)
-
-    df.attrs["es_real"] = es_real
-
-    if es_real:
-        with CACHE_LOCK:
-            CACHE_DATOS_GLOBAL[cache_key] = {"ts": ahora, "df": df.copy(), "es_real": True}
-
-    return df
-
-# ==========================================
-# 🤖 MOTOR EN FONDO: FRACTALIDAD (4H/1H CONTEXTO -> 15M/5M GATILLO ÚNICO)
-# ==========================================
-def ejecutar_logica_autopiloto(es_hilo_fondo=False):
-    global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL, DIAGNOSTICO
-
-    if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = "Ejecutando barrido institucional (4h/1h contexto -> 15m/5m)..."
-
-    alertas_nuevas = 0
-    vistos_en_ciclo = set()
-    diag = {
-        "activos_con_mercado_cerrado": 0, "sin_datos_reales": 0, "datos_viejos": 0,
-        "evaluaciones": 0, "senales_detectadas": 0, "bloqueadas_por_riesgo": 0,
-        "en_cooldown": 0, "fallo_telegram": 0, "enviadas": 0,
+    return {
+        "symbol": symbol,
+        "instrument": INSTRUMENTS[symbol],
+        "timeframe": timeframe,
+        "evaluation_timeframe": evaluation_timeframe,
+        "source": INSTRUMENTS[symbol]["source"],
+        "chart_frame": chart_technicals["candles"],
+        "chart_technicals": chart_technicals,
+        "evaluation_technicals": evaluation_technicals,
+        "bias_1h": bias_1h,
+        "bias_4h": bias_4h,
+        "stale": stale,
+        "signal": signal,
+        "current_price": float(latest["close"]),
+        "change_percent": change_percent,
+        "as_of": chart_frame.index[-1],
+        "market_state": evaluation_technicals["profile"]["state"],
+        "adx": evaluation_technicals["adx"],
+        "discount_percent": round(selected_discount, 1),
+        "data_notes": notes,
     }
 
-    for symbol in ALL_TRACKED_SYMBOLS:
-        canon = canonizar_simbolo(symbol)
-        if canon in vistos_en_ciclo:
+
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_news(topic: str, limit: int = 12) -> list[dict[str, Any]]:
+    if topic not in NEWS_TOPICS:
+        raise ValueError("Tema de noticias no válido.")
+    params = {
+        "q": f"{NEWS_TOPICS[topic]} when:1d",
+        "hl": "es-419",
+        "gl": "CO",
+        "ceid": "CO:es-419",
+    }
+    response = requests.get(
+        "https://news.google.com/rss/search",
+        params=params,
+        headers={
+            "User-Agent": USER_AGENT,
+            "Accept": "application/rss+xml, application/xml, text/xml",
+        },
+        timeout=15,
+    )
+    response.raise_for_status()
+    root = ET.fromstring(response.content)
+    news_items: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    fallback_scope = (
+        ["mercados globales"]
+        if topic == "Todos los temas"
+        else ["cripto"]
+        if topic == "Cripto"
+        else ["energía", "materias primas", "divisas"]
+        if topic == "Energía y materias primas"
+        else ["oro", "energía", "divisas", "índices"]
+        if topic == "Geopolítica"
+        else ["divisas", "bonos", "índices", "oro"]
+    )
+
+    for item in root.findall("./channel/item"):
+        title = (item.findtext("title") or "").strip()
+        url = (item.findtext("link") or "").strip()
+        source = item.findtext("source") or "Fuente enlazada"
+        published_raw = item.findtext("pubDate") or ""
+        if not title or not url or not url.startswith("https://") or url in seen_urls:
             continue
-        vistos_en_ciclo.add(canon)
+        seen_urls.add(url)
 
-        # 🆕 Forex/oro cerrados (fin de semana): no se analiza ni se alerta
-        if not mercado_abierto(symbol):
-            diag["activos_con_mercado_cerrado"] += 1
-            continue
-
-        tipo = "CRIPTO" if symbol in CRYPTO_MARKETS else ("METAL (ORO)" if canon == "XAUUSD" else "FOREX")
-
-        try:
-            # Paso 1: Temporalidad Alta (4h y 1h) manda la dirección (no dispara alertas sueltas)
-            df_1h = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
-            if df_1h.empty or not df_1h.attrs.get("es_real", False):
-                diag["sin_datos_reales"] += 1
-                continue
-            if not datos_frescos(df_1h, "1h"):
-                diag["datos_viejos"] += 1
-                continue
-            ctx_1h = analizar_contexto_macro_1h(df_1h, symbol)
-
-            ctx_4h = None
-            if USAR_CONTEXTO_4H:
-                df_4h = obtener_datos(symbol, "4h", limit=90, ttl_segundos=300)
-                if not df_4h.empty and df_4h.attrs.get("es_real", False):
-                    ctx_4h = analizar_contexto_4h(df_4h)
-            sesgo_4h = ctx_4h["sesgo"] if ctx_4h else "N/D"
-
-            # Paso 2: Refinamiento en temporalidades bajas (prioriza 15m y luego 5m; máximo 1 alerta por activo)
-            for tf in ("15m", "5m"):
-                if not es_hilo_fondo:
-                    AUTOPILOTO_STATUS = f"Evaluando {canon} [4h:{sesgo_4h} 1h:{ctx_1h['sesgo']} -> {tf}]..."
-
-                df_tf = obtener_datos(symbol, tf, limit=90, ttl_segundos=60)
-                if df_tf.empty or not df_tf.attrs.get("es_real", False):
-                    diag["sin_datos_reales"] += 1
-                    continue
-                if not datos_frescos(df_tf, tf):
-                    diag["datos_viejos"] += 1
-                    continue
-
-                # Solo velas cerradas: la vela en formación puede cambiar y borrar la señal
-                df_eval = df_tf.iloc[:-1] if SOLO_VELA_CERRADA else df_tf
-
-                diag["evaluaciones"] += 1
-                resultado = evaluar_modelo_fabio_sensei(df_eval, symbol=symbol, timeframe=tf, ctx_1h=ctx_1h, ctx_4h=ctx_4h)
-                if resultado:
-                    diag["senales_detectadas"] += 1
-                    if FILTRAR_SOLO_RIESGO_APTO_TG and not resultado.get("apto_cuenta", True):
-                        diag["bloqueadas_por_riesgo"] += 1
-                        continue
-
-                    precio = float(df_eval.iloc[-1]["close"])
-                    r_usd = resultado["riesgo_usd"]
-                    r_pct = resultado["riesgo_pct"]
-
-                    calidad = resultado.get("calidad")
-                    calidad_txt = f"{calidad}/5" if calidad is not None else "n/a (reversión)"
-                    desc_txt = (
-                        f"📐 *Descuento Fibo:* `{resultado['descuento_pct']:.1f}%` (nivel `{resultado.get('nivel_fibo', 0)}%`)\n"
-                        if resultado.get("descuento_pct", 0) > 0 else ""
-                    )
-
-                    msg = (
-                        f"🏛️ *SEÑAL INSTITUCIONAL (AMT + ORDER BLOCK)*\n"
-                        f"🌐 *Mercado:* `{tipo}` | *Activo:* `{canon}` | *Entrada:* `{tf}` (4h: `{sesgo_4h}` | 1h: `{ctx_1h['sesgo']}`)\n"
-                        f"🧠 *Modelo:* {resultado['modelo']}\n"
-                        f"🧭 *Acción:* *{resultado['direccion']}*\n"
-                        f"⭐ *Calidad:* `{calidad_txt}`\n"
-                        f"{desc_txt}"
-                        f"💲 *Precio:* `${precio:,.4f}` | *POC:* `${resultado['poc']:,.4f}` (VAL `${resultado['val']:,.4f}` / VAH `${resultado['vah']:,.4f}`)\n"
-                        f"🛡️ *SL:* `${resultado['sl']:,.4f}` | *TP:* `${resultado['tp']:,.4f}` | *BE (+1R):* `${resultado['be']:,.4f}`\n"
-                        f"💵 *Riesgo 0.01 lot:* `~${r_usd:.2f} USD` (`{r_pct:.1f}%` de ${SALDO_CUENTA_USD:.0f}) ✅\n"
-                        f"📋 *Ejecución:*\n{resultado['plan']}"
-                    )
-
-                    # Cooldown de 20 minutos por activo y dirección (evita spam entre 15m y 5m)
-                    clave_alerta = f"{canon}_{resultado['id_senal']}"
-                    ahora = time.time()
-
-                    with ALERTAS_LOCK:  # evita duplicados entre el hilo de fondo y el botón manual
-                        if ahora - ALERTAS_ENVIADAS_GLOBAL.get(clave_alerta, 0) > 1200:
-                            if enviar_telegram(msg):
-                                ALERTAS_ENVIADAS_GLOBAL[clave_alerta] = ahora
-                                alertas_nuevas += 1
-                            else:
-                                diag["fallo_telegram"] += 1
-                        else:
-                            diag["en_cooldown"] += 1
-                    break  # Ya procesó la mejor oportunidad de este activo
-
-            time.sleep(0.12)
-        except Exception:
-            continue
-
-    diag["enviadas"] = alertas_nuevas
-    diag["hora_utc"] = datetime.now(timezone.utc).strftime("%H:%M:%S")
-    DIAGNOSTICO = diag
-
-    if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = f"✅ Barrido institucional listo. Alertas enviadas: {alertas_nuevas}"
-    else:
-        AUTOPILOTO_STATUS = "⚡ Motor AMT + Order Block activo (4h/1h contexto -> 15m/5m cada 30s)..."
-
-@st.cache_resource
-def iniciar_hilo_autopiloto():
-    def loop():
-        time.sleep(5)
-        while True:
+        published_at = None
+        if published_raw:
             try:
-                ejecutar_logica_autopiloto(es_hilo_fondo=True)
-            except Exception:
-                pass
-            time.sleep(30)
-    thread = threading.Thread(target=loop, daemon=True)
-    thread.start()
-    return thread
+                published_at = parsedate_to_datetime(published_raw)
+                if published_at.tzinfo is None:
+                    published_at = published_at.replace(tzinfo=timezone.utc)
+                published_at = published_at.astimezone(timezone.utc)
+            except (TypeError, ValueError, OverflowError):
+                published_at = None
 
-iniciar_hilo_autopiloto()
+        matches = [
+            (category, markets)
+            for category, pattern, markets in HEADLINE_RULES
+            if pattern.search(title)
+        ]
+        if matches:
+            category = matches[0][0]
+            market_scope = list(
+                dict.fromkeys(
+                    market
+                    for _, markets in matches
+                    for market in markets
+                )
+            )
+        else:
+            category = topic if topic != "Todos los temas" else "Mercados globales"
+            market_scope = fallback_scope
 
-# ==========================================
-# 📊 INTERFAZ GRÁFICA PRINCIPAL
-# ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — AMT & ORDER BLOCKS</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Teoría de Subasta (POC / VAH / VAL / LVN) + Fractalidad (4h/1h -> 15m/5m) + Order Blocks + Descuento Fibonacci ≥ 50%</p>", unsafe_allow_html=True)
-st.markdown("---")
+        news_items.append(
+            {
+                "title": title[:360],
+                "url": url,
+                "source": source[:120],
+                "published_at": published_at,
+                "category": category,
+                "market_scope": market_scope,
+            }
+        )
 
-st.sidebar.header("🌐 Configuración del Gráfico")
-symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_TRACKED_SYMBOLS)
-timeframe = st.sidebar.selectbox("Temporalidad", ["15m", "5m", "1h"])
+    news_items.sort(
+        key=lambda item: item["published_at"] or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return news_items[: min(max(limit, 5), 30)]
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("📡 Estado del Motor")
-st.sidebar.info(AUTOPILOTO_STATUS)
-if ULTIMO_ERROR_TG:
-    st.sidebar.caption(f"⚠️ Telegram: {ULTIMO_ERROR_TG}")
-st.sidebar.caption(
-    f"Filtro de sesiones: {'ON' if USAR_FILTRO_SESIONES else 'OFF'} | "
-    f"Calidad mínima: {CALIDAD_MINIMA}/5 | Vela cerrada: {'ON' if SOLO_VELA_CERRADA else 'OFF'}"
-)
 
-if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
-    with st.spinner("Analizando contexto 4h/1h, perfil de volumen y bloques..."):
-        ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        st.sidebar.success("¡Escaneo completado!")
+@st.cache_data(ttl=300, show_spinner=False)
+def fetch_watchlist() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for symbol in WATCHLIST:
+        instrument = INSTRUMENTS[symb **…**
 
-if st.sidebar.button("📨 Enviar mensaje de prueba"):
-    if enviar_telegram("🧪 Prueba de conexión Quant Terminal: Telegram operativo."):
-        st.sidebar.success("Mensaje de prueba enviado ✅")
-    else:
-        st.sidebar.error(f"No se pudo enviar: {ULTIMO_ERROR_TG}")
-
-with st.sidebar.expander("🔍 ¿Por qué no llegan alertas?"):
-    st.caption(f"Token: {'configurado ✅' if TELEGRAM_TOKEN else 'FALTA ❌'} | Chat ID: {'configurado ✅' if TELEGRAM_CHAT_ID else 'FALTA ❌'}")
-    st.caption(f"Forex/oro abierto: {'sí ✅' if mercado_abierto('EURUSD=X') else 'NO (cerrado) 🕒'} | Cripto: 24/7")
-    if DIAGNOSTICO:
-        st.caption("Último barrido (qué pasó con cada activo):")
-        st.json(DIAGNOSTICO)
-    else:
-        st.caption("Aún no hay un barrido completo.")
-
-@st.fragment(run_every="10s")
-def render_trading_panel(symbol, timeframe):
-    df = obtener_datos(symbol, timeframe, limit=120, ttl_segundos=30)
-    if df.empty:
-        st.error(f"No se pudieron cargar los datos para {symbol}.")
-        return
-
-    if not df.attrs.get("es_real", False):
-        st.warning("⚠️ Datos de respaldo activos por límite temporal de proveedor externo. No se enviarán alertas de Telegram con estos datos.")
-
-    if not mercado_abierto(symbol) or not datos_frescos(df, timeframe):
-        st.warning("🕒 Mercado cerrado o datos sin actualizar: el gráfico muestra la última sesión y no se enviarán alertas de este activo.")
-
-    perfil_panel = calcular_perfil_volumen_amt(df, lookback=36)
-    lvns_panel = calcular_lvns(df, lookback=18, bins=12)
-
-    col_grafico, col_paneles = st.columns([2.5, 1])
-    with col_grafico:
-        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_width=[0.2, 0.8])
-        fig.add_trace(go.Candlestick(
-            x=df["timestamp"], open=df["open"], high=df["high"], low=df["low"], close=df["close"],
-            increasing_line_color="#00FFAA", decreasing_line_color="#FF3333", name="Precio"
-        ), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["vwap"], line=dict(color="#FF00FF", width=2), name="VWAP"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["ema_fast"], line=dict(color="#FFFF00", width=1.2), name="EMA 9"), row=1, col=1)
-        fig.add_trace(go.Scatter(x=df["timestamp"], y=df["ema_slow"], line=dict(color="#00BFFF", width=1.2), name="EMA 21"), row=1, col=1)
-
-        # Niveles AMT (POC, VAH, VAL) dibujados directamente en el gráfico
-        fig.add_hline(y=perfil_panel["poc"], line_dash="solid", line_color="#FFA500", annotation_text="POC", row=1, col=1)
-        fig.add_hline(y=perfil_panel["vah"], line_dash="dash", line_color="#00FFAA", annotation_text="VAH", row=1, col=1)
-        fig.add_hline(y=perfil_panel["val"], line_dash="dash", line_color="#FF5555", annotation_text="VAL", row=1, col=1)
-
-        # 🆕 Nodos de Bajo Volumen (LVN) del impulso reciente
-        for lvn in lvns_panel:
-            fig.add_hline(y=lvn, line_dash="dot", line_color="#AAAAAA", annotation_text="LVN", row=1, col=1)
-
-        colors = ["#00FFAA" if r["close"] >= r["open"] else "#FF3333" for _, r in df.iterrows()]
-        fig.add_trace(go.Bar(x=df["timestamp"], y=df["volume"], marker_color=colors, name="Volumen"), row=2, col=1)
-        fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=600, margin=dict(l=10, r=10, t=10, b=10), showlegend=True)
-        st.plotly_chart(fig, use_container_width=True)
-
-    with col_paneles:
-        st.markdown("### 📊 Lectura AMT & Fractalidad")
-        ultima = df.iloc[-1]
-        anterior = df.iloc[-2]
-        precio_actual = float(ultima["close"])
-        st.metric(label=f"{canonizar_simbolo(symbol)} [{timeframe}]", value=f"${precio_actual:,.4f}", delta=f"{precio_actual - float(anterior['close']):,.4f}")
-
-        df_1h_panel = obtener_datos(symbol, "1h", limit=90, ttl_segundos=90)
-        ctx_1h_panel = analizar_contexto_macro_1h(df_1h_panel, symbol)
-
-        ctx_4h_panel = None
-        if USAR_CONTEXTO_4H:
-            df_4h_panel = obtener_datos(symbol, "4h", limit=90, ttl_segundos=300)
-            ctx_4h_panel = analizar_contexto_4h(df_4h_panel)
-        sesgo_4h_panel = ctx_4h_panel["sesgo"] if ctx_4h_panel else "N/D"
-
-        st.info(f"🧭 Contexto 4h: **{sesgo_4h_panel}** | 1h: **{ctx_1h_panel['sesgo']}** | Estado AMT: **{perfil_panel['estado']}**")
-        st.caption(f"POC: `${perfil_panel['poc']:,.4f}` | VAL: `${perfil_panel['val']:,.4f}` | VAH: `${perfil_panel['vah']:,.4f}`")
-
-        if ctx_4h_panel:
-            if ctx_4h_panel["ob"]:
-                ob4 = ctx_4h_panel["ob"]
-                st.caption(f"Bloque 4H: `{ob4['tipo']}` (`${ob4['low']:,.4f}` - `${ob4['high']:,.4f}`)")
-            for lado in ("LONG", "SHORT"):
-                z4 = zona_4h_activa(ctx_4h_panel, precio_actual, lado)
-                if z4:
-                    st.caption(f"📍 El precio está en {z4['nombre']}")
-
-        if lvns_panel:
-            st.caption("LVN: " + " | ".join(f"`${x:,.4f}`" for x in lvns_panel[:4]))
-
-        ob_panel = detectar_order_block_institucional(df)
-        if ob_panel:
-            st.caption(f"Bloque detectado: `{ob_panel['tipo']}` (`${ob_panel['low']:,.4f}` - `${ob_panel['high']:,.4f}`)")
-
-        fvg_panel = detectar_fvg_3_velas(df)
-        if fvg_panel:
-            st.caption(f"Imbalance FVG: `{fvg_panel['tipo']}` (`${fvg_panel['zona_low']:,.4f}` - `${fvg_panel['zona_high']:,.4f}`)")
-
-        st.markdown("---")
-        st.markdown("### 🎯 Gatillo Institucional")
-        tf_eval = "15m" if timeframe == "1h" else timeframe
-        df_eval = obtener_datos(symbol, tf_eval, limit=90, ttl_segundos=60) if tf_eval != timeframe else df
-        mercado_ok = mercado_abierto(symbol) and datos_frescos(df_eval, tf_eval)
-        senal = evaluar_modelo_fabio_sensei(df_eval, symbol=symbol, timeframe=tf_eval, ctx_1h=ctx_1h_panel, ctx_4h=ctx_4h_panel) if mercado_ok else None
-        if not mercado_ok:
-            st.caption("🕒 Mercado cerrado o sin datos nuevos: no se evalúan señales.")
-        if senal:
-            calidad = senal.get("calidad")
-            calidad_txt = f"{calidad}/5" if calidad is not None else "n/a"
-            st.success(f"**{senal['modelo']}**\n\n**Acción:** {senal['direccion']} | **Calidad:** {calidad_txt}\n\n{senal['plan']}")
-        elif mercado_ok:
-            st.caption("Esperando: (a) salida de balance + retroceso a LVN/OB/FVG, (b) fakeout en extremo de rango, o (c) OB/FVG 4H con nuevo OB en temporalidad baja. Descuento ≥50% en todos.")
-
-render_trading_panel(symbol, timeframe)
+_This response is too long to display in full._
