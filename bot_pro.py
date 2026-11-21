@@ -11,6 +11,7 @@ import json
 import xml.etree.ElementTree as ET
 import time
 import threading
+from datetime import datetime, timezone
 
 # ==========================================
 # ⚙️ CONFIGURACIÓN GLOBAL, BANK ($10 USD) & CREDENCIALES
@@ -22,7 +23,7 @@ RIESGO_POR_OPERACION = 0.02  # 2% = $0.20 USD por operación
 
 st.set_page_config(page_title="Institutional Quant Terminal — Bank $10", layout="wide", page_icon="🏦")
 
-CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
+CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "BNB/USDT"]
 FOREX_MARKETS = [
     "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
     "USDCAD=X", "NZDUSD=X", "EURJPY=X", "GBPJPY=X", "EURGBP=X"
@@ -45,6 +46,34 @@ CACHE_DATOS_GLOBAL = {}
 CACHE_NOTICIAS_GLOBAL = {"ts": 0, "items": []}
 CACHE_LOCK = threading.Lock()
 AUTOPILOTO_STATUS = "Motor Bank $10 activo: Escaneando cada 30s..."
+
+
+# ==========================================
+# 🕒 SESIONES DE BOLSAS DE VALORES (UTC)
+# ==========================================
+def obtener_sesion_actual():
+    ahora_utc = datetime.now(timezone.utc)
+    dia = ahora_utc.weekday()  # 0=Lunes ... 5=Sábado, 6=Domingo
+    hora = ahora_utc.hour
+
+    if dia == 5 or (dia == 6 and hora < 22) or (dia == 4 and hora >= 22):
+        return "FIN DE SEMANA (Forex/Oro cerrado • Cripto 24/7)", False
+
+    sesiones = []
+    if 0 <= hora < 9:
+        sesiones.append("Tokio")
+    if 8 <= hora < 17:
+        sesiones.append("Londres")
+    if 13 <= hora < 22:
+        sesiones.append("Nueva York")
+    if hora >= 22 or hora < 7:
+        sesiones.append("Sídney")
+
+    if 13 <= hora < 17:
+        return "🔥 SOLAPAMIENTO LONDRES + NY (Máxima Liquidez)", True
+
+    texto = " + ".join(sesiones) if sesiones else "Transición"
+    return f"Sesión Activa: {texto}", True
 
 
 # ==========================================
@@ -219,24 +248,7 @@ def detectar_exhaustacion(df):
     return (rango_actual > rangos_previos.max() * 1.25) and (abs(df["close"].iloc[-2] - df["close"].iloc[-10]) > rangos_previos.mean() * 3.0)
 
 
-def detectar_fvg_3_velas(df):
-    if len(df) < 4:
-        return None
-    for idx in (-1, -2):
-        pos = len(df) + idx
-        if pos < 2:
-            continue
-        v1_h, v1_l = float(df["high"].iloc[pos - 2]), float(df["low"].iloc[pos - 2])
-        v3_l, v3_h = float(df["low"].iloc[pos]), float(df["high"].iloc[pos])
-        if v3_l > v1_h:
-            return {"tipo": "FVG_ALCISTA", "zona_low": v1_h, "zona_high": v3_l}
-        if v3_h < v1_l:
-            return {"tipo": "FVG_BAJISTA", "zona_low": v3_h, "zona_high": v1_l}
-    return None
-
-
 def calcular_gestion_bank_10(precio, sl, mercado):
-    """Calcula el riesgo exacto para un bank de $10 USD (máx 2% = $0.20)."""
     riesgo_usd = BANK_USD * RIESGO_POR_OPERACION
     dist_sl = max(abs(precio - sl), 1e-9)
     if mercado == "CRIPTO":
@@ -437,8 +449,13 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     if not es_hilo_fondo:
         AUTOPILOTO_STATUS = "Ejecutando barrido (Bank $10)..."
 
+    sesion_txt, forex_abierto = obtener_sesion_actual()
     alertas_nuevas = 0
+
     for symbol in ALL_TRACKED_SYMBOLS:
+        if symbol not in CRYPTO_MARKETS and not forex_abierto:
+            continue
+
         sesgo_htf = obtener_sesgo_htf(symbol)
         for tf in ["5m", "15m", "1h"]:
             try:
@@ -449,6 +466,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     gestion_10 = calcular_gestion_bank_10(precio, res["sl"], mercado)
                     msg = (
                         f"🏦 *SEÑAL INSTITUCIONAL (BANK $10)*\n"
+                        f"🕒 *Bolsa:* {sesion_txt if mercado != 'CRIPTO' else 'Cripto 24/7'}\n"
                         f"🌐 *Mercado:* `{mercado}` | *Activo:* `{symbol}` | *TF:* `{tf}` (HTF: `{sesgo_htf}`)\n"
                         f"💲 *Precio:* `${precio:,.4f}` | *ADX:* `{float(u['adx']):.1f}`\n"
                         f"🎯 *{res['modelo']}*\n"
@@ -469,7 +487,7 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
 
     AUTOPILOTO_STATUS = (
         f"✅ Barrido listo. Alertas enviadas: {alertas_nuevas}"
-        if not es_hilo_fondo else "⚡ Motor Bank $10 activo (cada 30s)"
+        if not es_hilo_fondo else f"⚡ {sesion_txt}"
     )
 
 
@@ -494,8 +512,9 @@ iniciar_hilo_autopiloto()
 # ==========================================
 # 📊 INTERFAZ STREAMLIT
 # ==========================================
+sesion_ui, _ = obtener_sesion_actual()
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — BANK $10 USD</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align: center; color: gray;'>Cripto + Forex + Oro • Gestión 2% ($0.20) • Noticias en Vivo</p>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align: center; color: gray;'>{sesion_ui} • BTC, ETH, SOL, BNB, Forex & Oro • Noticias en Vivo</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración")
@@ -504,14 +523,14 @@ timeframe = st.sidebar.selectbox("Temporalidad:", ["5m", "15m", "1h"])
 st.sidebar.info(AUTOPILOTO_STATUS)
 
 if st.sidebar.button("🔔 Probar Telegram Ahora"):
-    ok = enviar_telegram("✅ *Prueba de conexión exitosa*\nTu bot para Bank de $10 USD está activo y enviando en UTF-8.")
+    ok = enviar_telegram("✅ *Prueba de conexión exitosa*\nTu bot (BTC, ETH, SOL, Forex y Oro) está activo.")
     if ok:
         st.sidebar.success("¡Mensaje de prueba enviado a Telegram!")
     else:
         st.sidebar.error("No se pudo enviar. Revisa conexión o token.")
 
 if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
-    with st.spinner("Escaneando Cripto, Forex y Oro..."):
+    with st.spinner("Escaneando Cripto (BTC, ETH, SOL, BNB), Forex y Oro..."):
         ejecutar_logica_autopiloto(es_hilo_fondo=False)
         st.sidebar.success("¡Escaneo completado!")
 
