@@ -256,13 +256,11 @@ def evaluar_estrategia_dual(df, adx_min=28.0, sesgo_htf="NEUTRO", vp_info=None, 
     cvd_bajista = float(ultima.get("cvd", 0.0)) <= float(anterior.get("cvd", 0.0))
 
     atr_ref = max(float((df["high"].iloc[-15:-1] - df["low"].iloc[-15:-1]).mean()), precio * 0.0015)
-    fvg = detectar_fvg_3_velas(df)
     ob_alcista = (anterior["close"] < anterior["open"]) and (ultima["close"] > ultima["open"]) and (precio > anterior["high"])
     ob_bajista = (anterior["close"] > anterior["open"]) and (ultima["close"] < ultima["open"]) and (precio < anterior["low"])
 
     poc, vah, val = vp_info["poc"], vp_info["vah"], vp_info["val"]
 
-    # MODELO A: TENDENCIA FUERA DE BALANCE
     if vp_info["estado"] == "OUT_OF_BALANCE" and adx_val >= adx_min:
         if precio > vah and precio >= vwap_val and ema_fast >= ema_slow and sesgo_htf != "BAJISTA" and cvd_alcista:
             sl = min(float(df["low"].iloc[-5:].min()), precio - atr_ref * 1.1)
@@ -298,7 +296,6 @@ def evaluar_estrategia_dual(df, adx_min=28.0, sesgo_htf="NEUTRO", vp_info=None, 
                 )
             }
 
-    # MODELO B: REVERSIÓN AL POC / FAKEOUT EN BALANCE
     if vp_info["estado"] == "BALANCE":
         if float(ultima["high"]) > vah and precio < vah and (cvd_bajista or ob_bajista):
             sl = float(ultima["high"]) + atr_ref * 0.4
@@ -567,4 +564,3 @@ def render_panel(symbol, timeframe):
 
 
 render_panel(symbol, timeframe)
-```
