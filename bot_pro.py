@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import streamlit as st
 import ccxt
 import yfinance as yf
@@ -6,20 +7,21 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import requests
+import json
 import xml.etree.ElementTree as ET
 import time
 import threading
 from datetime import datetime
 
 # ==========================================
-# âš™ï¸ CONFIGURACIÃ“N GLOBAL & LISTA CERRADA ESTRICTA ($10 USD: FOREX + CRIPTO)
+# ⚙️ CONFIGURACIÓN GLOBAL & LISTA CERRADA ESTRICTA ($10 USD: FOREX + CRIPTO)
 # ==========================================
 TELEGRAM_TOKEN = "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs"
 TELEGRAM_CHAT_ID = "1496321437"
 
-st.set_page_config(page_title="Institutional Quant Terminal - Forex & Crypto", layout="wide", page_icon="ðŸ¦")
+st.set_page_config(page_title="Institutional Quant Terminal - Forex & Crypto", layout="wide", page_icon="🏦")
 
-# ÃšNICOS MERCADOS HABILITADOS PARA ALERTAS Y ESCANEO
+# ÚNICOS MERCADOS HABILITADOS PARA ALERTAS Y ESCANEO
 CRYPTO_MARKETS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
 FOREX_MARKETS = [
     "EURUSD=X", "GBPUSD=X", "USDJPY=X", "USDCHF=X", "AUDUSD=X",
@@ -48,10 +50,10 @@ AUTOPILOTO_STATUS = "Motor Forex & Cripto activo: Escaneando cada 30s..."
 
 
 # ==========================================
-# ðŸ“° MÃ“DULO DE NOTICIAS DE MERCADO EN VIVO (RSS PÃšBLICOS)
+# 📰 MÓDULO DE NOTICIAS DE MERCADO EN VIVO (RSS PÚBLICOS)
 # ==========================================
 def obtener_noticias_en_vivo(ttl_segundos=180):
-    """Obtiene titulares recientes de mercados (Forex, Oro, Cripto, Macro) vÃ­a RSS sin API key."""
+    """Obtiene titulares recientes de mercados (Forex, Oro, Cripto, Macro) vía RSS sin API key."""
     ahora = time.time()
     with CACHE_LOCK:
         if CACHE_NOTICIAS_GLOBAL["items"] and (ahora - CACHE_NOTICIAS_GLOBAL["ts"] < ttl_segundos):
@@ -95,13 +97,15 @@ def obtener_noticias_en_vivo(ttl_segundos=180):
 
 
 # ==========================================
-# ðŸ§  FUNCIONES MATEMÃTICAS, AMT (VOLUME PROFILE) & SMART MONEY
+# 🧠 FUNCIONES MATEMÁTICAS, AMT (VOLUME PROFILE) & SMART MONEY
 # ==========================================
 def enviar_telegram(mensaje):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": mensaje, "parse_mode": "Markdown"}
+    headers = {"Content-Type": "application/json; charset=utf-8"}
     try:
-        requests.post(url, json=payload, timeout=5)
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        requests.post(url, data=data, headers=headers, timeout=5)
     except Exception:
         pass
 
@@ -163,7 +167,7 @@ def calcular_cvd_proxy(df):
 
 def calcular_volume_profile_amt(df, bins=24):
     """
-    Calcula POC, VAH, VAL y LVN (Low Volume Nodes) segÃºn Auction Market Theory (Fabio Valentino).
+    Calcula POC, VAH, VAL y LVN (Low Volume Nodes) según Auction Market Theory (Fabio Valentino).
     """
     if df.empty or len(df) < 10:
         return None
@@ -217,7 +221,7 @@ def calcular_volume_profile_amt(df, bins=24):
     ]
 
     precio_actual = float(df["close"].iloc[-1])
-    estado = "OUT OF BALANCE (Tendencia)" if (precio_actual > vah_price or precio_actual < val_price) else "BALANCE (ConsolidaciÃ³n)"
+    estado = "OUT OF BALANCE (Tendencia)" if (precio_actual > vah_price or precio_actual < val_price) else "BALANCE (Consolidación)"
 
     return {
         "poc": poc_price,
@@ -262,8 +266,8 @@ def evaluar_estrategia_unificada(df, symbol="", sesgo_htf="NEUTRO", vp_info=None
     """
     Motor integrado:
     - AMT / Fabio Valentino: Estado Balance vs Out of Balance, POC/VAH/VAL, CVD.
-    - El Sensei Trading: Order Block, FVG/Imbalance, Descuento Fibonacci >= 50%, ConfirmaciÃ³n Multitemporal (4H).
-    - Filtro de ExhaustaciÃ³n (Larry Williams) + ADX adaptativo.
+    - El Sensei Trading: Order Block, FVG/Imbalance, Descuento Fibonacci >= 50%, Confirmación Multitemporal (4H).
+    - Filtro de Exhaustación (Larry Williams) + ADX adaptativo.
     """
     if df.empty or len(df) < 25:
         return None
@@ -316,14 +320,14 @@ def evaluar_estrategia_unificada(df, symbol="", sesgo_htf="NEUTRO", vp_info=None
         sl_exh = float(swing_low_ref - atr_ref * 0.5) if precio >= ultima["open"] else float(swing_high_ref + atr_ref * 0.5)
         return {
             "id_senal": "EXHAUSTION_GUARD",
-            "estrategia": f"Freno ExhaustaciÃ³n (L. Williams) â€¢ ADX > {adx_min:.0f}",
-            "direccion": "NO ENTRAR EN EXTREMO / ESPERAR RETROCESO â¸ï¸",
+            "estrategia": f"Freno Exhaustación (L. Williams) • ADX > {adx_min:.0f}",
+            "direccion": "NO ENTRAR EN EXTREMO / ESPERAR RETROCESO ⏸️",
             "sl": sl_exh,
             "tp": vwap_val,
             "plan": (
-                f"1) ADX en {adx_val:.1f} (>{adx_min:.0f}) con vela de exhaustaciÃ³n detectada: evita comprar techo o vender suelo.\n"
+                f"1) ADX en {adx_val:.1f} (>{adx_min:.0f}) con vela de exhaustación detectada: evita comprar techo o vender suelo.\n"
                 f"2) Espera retroceso hacia VWAP (${vwap_val:,.4f}), POC o Order Block con descuento >=50%.\n"
-                f"3) MantÃ©n disciplina y protege tu capital sin perseguir el movimiento."
+                f"3) Mantén disciplina y protege tu capital sin perseguir el movimiento."
             )
         }
 
@@ -340,7 +344,7 @@ def evaluar_estrategia_unificada(df, symbol="", sesgo_htf="NEUTRO", vp_info=None
         motivos_long.append(f"OB/FVG/Descuento Fib ({descuento_compra:.0f}%)")
     if sesgo_htf == "ALCISTA" or out_of_balance:
         confluencias_long += 1
-        motivos_long.append("AlineaciÃ³n HTF/AMT Out-of-Balance")
+        motivos_long.append("Alineación HTF/AMT Out-of-Balance")
 
     if confluencias_long >= 2 and precio >= vwap_val:
         base_low = min(swing_low_ref, float(ultima["low"]))
@@ -350,8 +354,8 @@ def evaluar_estrategia_unificada(df, symbol="", sesgo_htf="NEUTRO", vp_info=None
         tp_sugerido = float(precio + riesgo * rr_mult)
         return {
             "id_senal": "CONFLUENCIA_LONG",
-            "estrategia": f"Confluencia Conjunta ({confluencias_long}/4) â€¢ ADX>{adx_min:.0f} + AMT + OB/FVG",
-            "direccion": "COMPRA (LONG) ðŸŸ¢",
+            "estrategia": f"Confluencia Conjunta ({confluencias_long}/4) • ADX>{adx_min:.0f} + AMT + OB/FVG",
+            "direccion": "COMPRA (LONG) 🟢",
             "sl": sl_sugerido,
             "tp": tp_sugerido,
             "plan": (
@@ -374,7 +378,7 @@ def evaluar_estrategia_unificada(df, symbol="", sesgo_htf="NEUTRO", vp_info=None
         motivos_short.append(f"OB/FVG/Descuento Fib ({descuento_venta:.0f}%)")
     if sesgo_htf == "BAJISTA" or out_of_balance:
         confluencias_short += 1
-        motivos_short.append("AlineaciÃ³n HTF/AMT Out-of-Balance")
+        motivos_short.append("Alineación HTF/AMT Out-of-Balance")
 
     if confluencias_short >= 2 and precio <= vwap_val:
         base_high = max(swing_high_ref, float(ultima["high"]))
@@ -384,8 +388,8 @@ def evaluar_estrategia_unificada(df, symbol="", sesgo_htf="NEUTRO", vp_info=None
         tp_sugerido = float(precio - riesgo * rr_mult)
         return {
             "id_senal": "CONFLUENCIA_SHORT",
-            "estrategia": f"Confluencia Conjunta ({confluencias_short}/4) â€¢ ADX>{adx_min:.0f} + AMT + OB/FVG",
-            "direccion": "VENTA (SHORT) ðŸ”´",
+            "estrategia": f"Confluencia Conjunta ({confluencias_short}/4) • ADX>{adx_min:.0f} + AMT + OB/FVG",
+            "direccion": "VENTA (SHORT) 🔴",
             "sl": sl_sugerido,
             "tp": tp_sugerido,
             "plan": (
@@ -399,7 +403,7 @@ def evaluar_estrategia_unificada(df, symbol="", sesgo_htf="NEUTRO", vp_info=None
 
 
 # ==========================================
-# ðŸ› ï¸ OBTENCIÃ“N DE DATOS CON CACHÃ‰ Y VALIDACIÃ“N REAL
+# 🛠️ OBTENCIÓN DE DATOS CON CACHÉ Y VALIDACIÓN REAL
 # ==========================================
 def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
     cache_key = f"{symbol}_{timeframe}_{limit}"
@@ -504,7 +508,7 @@ def obtener_datos(symbol, timeframe, limit=100, ttl_segundos=60):
 
 
 def obtener_sesgo_htf(symbol):
-    """DirecciÃ³n de temporalidad alta (4H/1H) segÃºn El Sensei Trading."""
+    """Dirección de temporalidad alta (4H/1H) según El Sensei Trading."""
     df_htf = obtener_datos(symbol, "4h", limit=60, ttl_segundos=180)
     if df_htf.empty or len(df_htf) < 20:
         return "NEUTRO"
@@ -517,7 +521,7 @@ def obtener_sesgo_htf(symbol):
 
 
 # ==========================================
-# ðŸ¤– MOTOR EN FONDO (SOLO FOREX/METAL Y CRIPTO)
+# 🤖 MOTOR EN FONDO (SOLO FOREX/METAL Y CRIPTO)
 # ==========================================
 def ejecutar_logica_autopiloto(es_hilo_fondo=False):
     global AUTOPILOTO_STATUS, ALERTAS_ENVIADAS_GLOBAL
@@ -549,13 +553,13 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     adx_val = float(ultima.get("adx", 0.0))
 
                     msg = (
-                        f"ðŸ¦ *SEÃ‘AL CONJUNTA UNIFICADA*\n"
-                        f"ðŸŒ *Mercado:* `{tipo}` | *Activo:* `{symbol}` | *TF:* `{tf}` (HTF: `{sesgo_htf}`)\n"
-                        f"ðŸ’² *Precio Real:* `${precio:,.4f}` | *ADX:* `{adx_val:.1f}`\n"
-                        f"ðŸŽ¯ *Estrategia:* {resultado['estrategia']}\n"
-                        f"ðŸ§­ *AcciÃ³n:* *{resultado['direccion']}*\n"
-                        f"ðŸ›¡ï¸ *SL Ref:* `${resultado['sl']:,.4f}` | *TP Ref:* `${resultado['tp']:,.4f}`\n"
-                        f"ðŸ“‹ *QuÃ© hacer:*\n{resultado['plan']}"
+                        f"🏦 *SEÑAL CONJUNTA UNIFICADA*\n"
+                        f"🌐 *Mercado:* `{tipo}` | *Activo:* `{symbol}` | *TF:* `{tf}` (HTF: `{sesgo_htf}`)\n"
+                        f"💲 *Precio Real:* `${precio:,.4f}` | *ADX:* `{adx_val:.1f}`\n"
+                        f"🎯 *Estrategia:* {resultado['estrategia']}\n"
+                        f"🧭 *Acción:* *{resultado['direccion']}*\n"
+                        f"🛡️ *SL Ref:* `${resultado['sl']:,.4f}` | *TP Ref:* `${resultado['tp']:,.4f}`\n"
+                        f"📋 *Qué hacer:*\n{resultado['plan']}"
                     )
 
                     clave_alerta = f"{symbol}_{tf}_{resultado['id_senal']}"
@@ -571,9 +575,9 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                 continue
 
     if not es_hilo_fondo:
-        AUTOPILOTO_STATUS = f"âœ… Barrido listo. Alertas reales enviadas: {alertas_nuevas}"
+        AUTOPILOTO_STATUS = f"✅ Barrido listo. Alertas reales enviadas: {alertas_nuevas}"
     else:
-        AUTOPILOTO_STATUS = "âš¡ Motor Forex & Cripto activo (ciclo cada 30s) con datos reales..."
+        AUTOPILOTO_STATUS = "⚡ Motor Forex & Cripto activo (ciclo cada 30s) con datos reales..."
 
 
 @st.cache_resource
@@ -595,29 +599,29 @@ iniciar_hilo_autopiloto()
 
 
 # ==========================================
-# ðŸ“Š INTERFAZ GRÃFICA PRINCIPAL
+# 📊 INTERFAZ GRÁFICA PRINCIPAL
 # ==========================================
-st.markdown("<h1 style='text-align: center; color: #00FFAA;'>ðŸ¦ INSTITUTIONAL QUANT TERMINAL â€” FOREX & CRYPTO</h1>", unsafe_allow_html=True)
+st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — FOREX & CRYPTO</h1>", unsafe_allow_html=True)
 st.markdown("<p style='text-align: center; color: gray;'>AMT (POC/VAH/VAL/LVN) + Order Blocks/FVG/Fib + Multitemporalidad 4H + Noticias en Vivo</p>", unsafe_allow_html=True)
 st.markdown("---")
 
-st.sidebar.header("ðŸŒ ConfiguraciÃ³n del GrÃ¡fico")
-symbol = st.sidebar.selectbox("Ver GrÃ¡fico de:", ALL_TRACKED_SYMBOLS)
+st.sidebar.header("🌐 Configuración del Gráfico")
+symbol = st.sidebar.selectbox("Ver Gráfico de:", ALL_TRACKED_SYMBOLS)
 timeframe = st.sidebar.selectbox("Temporalidad", ["5m", "15m", "1h"])
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("ðŸ“¡ Estado del Motor")
+st.sidebar.subheader("📡 Estado del Motor")
 st.sidebar.info(AUTOPILOTO_STATUS)
 
-if st.sidebar.button("âš¡ Forzar Escaneo Ahora"):
+if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
     with st.spinner("Ejecutando motor en Forex/Oro y Cripto..."):
         ejecutar_logica_autopiloto(es_hilo_fondo=False)
-        st.sidebar.success("Â¡Escaneo completado!")
+        st.sidebar.success("¡Escaneo completado!")
 
-with st.sidebar.expander("ðŸ” DiagnÃ³stico Cripto / Oro"):
+with st.sidebar.expander("🔍 Diagnóstico Cripto / Oro"):
     for sym_diag in ["BTC/USDT", "ETH/USDT", "BNB/USDT", "XAUUSD=X"]:
         df_d = obtener_datos(sym_diag, timeframe, limit=85, ttl_segundos=60)
-        real_txt = "REAL âœ…" if df_d.attrs.get("es_real", False) else "SIN DATO REAL âŒ"
+        real_txt = "REAL ✅" if df_d.attrs.get("es_real", False) else "SIN DATO REAL ❌"
         adx_d = float(df_d["adx"].iloc[-1]) if not df_d.empty and "adx" in df_d.columns else 0.0
         umbral_d = obtener_umbral_adx(sym_diag)
         st.caption(f"{sym_diag}: {real_txt} | ADX: {adx_d:.1f} (min >{umbral_d:.0f})")
@@ -631,7 +635,7 @@ def render_trading_panel(symbol, timeframe):
         return
 
     if not df.attrs.get("es_real", False):
-        st.warning("âš ï¸ Datos de respaldo activos por lÃ­mite temporal de proveedor externo. No se enviarÃ¡n alertas de Telegram con estos datos.")
+        st.warning("⚠️ Datos de respaldo activos por límite temporal de proveedor externo. No se enviarán alertas de Telegram con estos datos.")
 
     vp_info = calcular_volume_profile_amt(df)
     sesgo_htf = obtener_sesgo_htf(symbol)
@@ -658,49 +662,49 @@ def render_trading_panel(symbol, timeframe):
         st.plotly_chart(fig, use_container_width=True)
 
     with col_paneles:
-        st.markdown("### âš™ï¸ Lectura AMT & Smart Money")
+        st.markdown("### ⚙️ Lectura AMT & Smart Money")
         ultima = df.iloc[-1]
         anterior = df.iloc[-2]
         precio_actual = float(ultima["close"])
         st.metric(label=f"{symbol} [{timeframe}]", value=f"${precio_actual:,.4f}", delta=f"{precio_actual - float(anterior['close']):,.4f}")
 
-        st.caption(f"ðŸ§­ **Sesgo HTF (4H):** `{sesgo_htf}`")
+        st.caption(f"🧭 **Sesgo HTF (4H):** `{sesgo_htf}`")
         if vp_info:
-            st.caption(f"ðŸ“Š **Estado AMT:** `{vp_info['estado']}`")
-            st.caption(f"ðŸŽ¯ **POC:** `${vp_info['poc']:,.4f}` | **VA:** `${vp_info['val']:,.4f}` - `${vp_info['vah']:,.4f}`")
+            st.caption(f"📊 **Estado AMT:** `{vp_info['estado']}`")
+            st.caption(f"🎯 **POC:** `${vp_info['poc']:,.4f}` | **VA:** `${vp_info['val']:,.4f}` - `${vp_info['vah']:,.4f}`")
 
         if precio_actual < float(ultima["vwap"]):
-            st.error("ðŸ”´ SESGO VS VWAP: BAJISTA")
+            st.error("🔴 SESGO VS VWAP: BAJISTA")
         else:
-            st.success("ðŸŸ¢ SESGO VS VWAP: ALCISTA")
+            st.success("🟢 SESGO VS VWAP: ALCISTA")
 
         adx_val = float(ultima.get("adx", 25.0))
         adx_min = obtener_umbral_adx(symbol)
         if adx_val > adx_min:
-            st.success(f"ðŸ”¥ ADX: {adx_val:.1f} (>{adx_min:.0f} Fuerza Extrema)")
+            st.success(f"🔥 ADX: {adx_val:.1f} (>{adx_min:.0f} Fuerza Extrema)")
         elif adx_val > 25:
-            st.warning(f"ðŸ“ˆ ADX: {adx_val:.1f} (Tendencia activa / min >{adx_min:.0f})")
+            st.warning(f"📈 ADX: {adx_val:.1f} (Tendencia activa / min >{adx_min:.0f})")
         else:
-            st.info(f"âš–ï¸ ADX: {adx_val:.1f} (Rango / ConsolidaciÃ³n)")
+            st.info(f"⚖️ ADX: {adx_val:.1f} (Rango / Consolidación)")
 
         cvd_actual = float(ultima.get("cvd", 0.0))
         cvd_prev = float(anterior.get("cvd", 0.0))
-        st.caption(f"CVD Delta: {'ðŸŸ¢ PresiÃ³n compradora' if cvd_actual >= cvd_prev else 'ðŸ”´ PresiÃ³n vendedora'}")
+        st.caption(f"CVD Delta: {'🟢 Presión compradora' if cvd_actual >= cvd_prev else '🔴 Presión vendedora'}")
 
         fvg_info = detectar_fvg_3_velas(df)
         if fvg_info:
             st.caption(f"FVG / Imbalance: `{fvg_info['tipo']}` ({fvg_info['zona_low']:,.4f} - {fvg_info['zona_high']:,.4f})")
 
         st.markdown("---")
-        st.markdown("### ðŸŽ¯ Plan Sugerido por Motor")
+        st.markdown("### 🎯 Plan Sugerido por Motor")
         senal = evaluar_estrategia_unificada(df, symbol=symbol, sesgo_htf=sesgo_htf, vp_info=vp_info)
         if senal:
-            st.info(f"**{senal['estrategia']}**\n\n**AcciÃ³n:** {senal['direccion']}\n\n{senal['plan']}")
+            st.info(f"**{senal['estrategia']}**\n\n**Acción:** {senal['direccion']}\n\n{senal['plan']}")
         else:
-            st.caption("Sin seÃ±al conjunta activa bajo el filtro unificado en esta vela.")
+            st.caption("Sin señal conjunta activa bajo el filtro unificado en esta vela.")
 
     st.markdown("---")
-    st.markdown("### ðŸ“° Noticias de Mercados en Vivo (Forex, Oro & Cripto)")
+    st.markdown("### 📰 Noticias de Mercados en Vivo (Forex, Oro & Cripto)")
     noticias = obtener_noticias_en_vivo()
     if noticias:
         cols_news = st.columns(2)
