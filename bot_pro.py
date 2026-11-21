@@ -175,8 +175,11 @@ def calcular_volume_profile_amt(df, bins=24):
     edges = np.linspace(p_min, p_max, bins + 1)
     vol_bin = np.zeros(bins)
     tp = ((df["high"] + df["low"] + df["close"]) / 3.0).values
+    vols = df["volume"].values
+    if float(np.sum(vols)) <= 0:
+        vols = np.maximum((df["high"] - df["low"]).values, 1e-6)
     indices = np.clip(np.digitize(tp, edges) - 1, 0, bins - 1)
-    for idx, v in zip(indices, df["volume"].values):
+    for idx, v in zip(indices, vols):
         vol_bin[idx] += float(v)
 
     total_vol = vol_bin.sum()
