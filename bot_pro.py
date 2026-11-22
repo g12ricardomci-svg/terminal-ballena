@@ -1,6 +1,7 @@
+# -*- coding: utf-8 -*-
 """
 INSTITUTIONAL QUANT TERMINAL - AMT & Order Blocks
-Contexto 1H -> entrada 15m/5m.  Cripto 24/7, Forex/Oro lunes-viernes.
+Contexto 1H -> entrada 15m/5m. Cripto 24/7, Forex/Oro lunes-viernes.
 Confluencias: sesgo 1H, BOS, Order Block, descuento Fibonacci >=50%, FVG, POC/VAH/VAL.
 Filtros: ADX por mercado, exhaustacion (Williams %R), mercado cerrado, killzone NY.
 """
@@ -26,6 +27,11 @@ except Exception:
 
 st.set_page_config(page_title="Institutional Quant Terminal", page_icon="🏛️", layout="wide")
 NY = ZoneInfo("America/New_York")
+
+DEFAULT_SECRETS = {
+    "TELEGRAM_TOKEN": "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs",
+    "TELEGRAM_CHAT_IDS": "1496321437,5880373359",
+}
 
 # ----------------------------------------------------------------- ACTIVOS
 CRIPTO = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
@@ -56,7 +62,7 @@ def _secret(name):
             return ",".join(str(x) for x in v)
         return str(v).strip()
     except Exception:
-        return os.environ.get(name, "").strip()
+        return os.environ.get(name, DEFAULT_SECRETS.get(name, "")).strip()
 
 
 def enviar_telegram(texto):
