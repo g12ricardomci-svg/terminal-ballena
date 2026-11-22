@@ -270,11 +270,6 @@ def calcular_gestion_bank_10(precio, sl, mercado):
 
 
 def evaluar_estrategia_intradia_1h(df, adx_min=25.0, sesgo_1h="NEUTRO", vp_info=None, rr_mult=2.0):
-    """
-    Estrategia Intradía Máximo 1H (1H dirección -> 5m/15m/1h entrada):
-    1) Seguimiento de Tendencia + Ruptura (ADX >= adx_min): solo a favor del sesgo 1H.
-    2) Operativa en Rangos (ADX < adx_min): RSI + Bandas de Bollinger / VAH-VAL hacia POC.
-    """
     if df.empty or len(df) < 25 or not vp_info:
         return None
 
@@ -330,7 +325,7 @@ def evaluar_estrategia_intradia_1h(df, adx_min=25.0, sesgo_1h="NEUTRO", vp_info=
 
     # 2) OPERATIVA EN RANGOS (ADX BAJO: RSI + BOLLINGER + POC)
     if adx_val < adx_min:
-        if (precio <= bb_low or precio <= val) and rsi_val <= 40.0 and cvd_alcista:
+        if (precio <= bb_low or precio <= val) and rsi_val <= 40.0:
             sl = float(u["low"]) - atr_ref * 0.5
             riesgo = max(precio - sl, atr_ref * 0.6)
             tp = max(poc, precio + riesgo * 1.5)
@@ -343,7 +338,7 @@ def evaluar_estrategia_intradia_1h(df, adx_min=25.0, sesgo_1h="NEUTRO", vp_info=
                 "plan": f"1) Rango lateral (ADX {adx_val:.1f}) en sobreventa (RSI {rsi_val:.1f}).\n2) Objetivo hacia POC (${poc:,.4f})."
             }
 
-        if (precio >= bb_up or precio >= vah) and rsi_val >= 60.0 and cvd_bajista:
+        if (precio >= bb_up or precio >= vah) and rsi_val >= 60.0:
             sl = float(u["high"]) + atr_ref * 0.5
             riesgo = max(sl - precio, atr_ref * 0.6)
             tp = min(poc, precio - riesgo * 1.5)
@@ -389,7 +384,7 @@ def obtener_datos_mercado(symbol, timeframe, limit=100, ttl_segundos=60):
             except Exception:
                 continue
     else:
-        interval_map = {"5m": "5m", "15m": "15m", "1h": "60m"}
+        interval_map = {"5m": "5m", "15m": "15m", "1h": "60m", "4h": "60m", "1d": "1d"}
         yf_interval = interval_map.get(timeframe, "60m")
         periodos = ["5d", "1mo"] if timeframe == "5m" else ["1mo", "3mo"]
         simbolos_yf = ["XAUUSD=X", "GC=F"] if symbol in ORO_MARKETS else [symbol]
@@ -426,7 +421,6 @@ def obtener_datos_mercado(symbol, timeframe, limit=100, ttl_segundos=60):
 
 
 def obtener_sesgo_tf(symbol, tf="1h"):
-    """Dirección de tendencia en un marco temporal específico (1h, 4h, 1d)."""
     df_tf = obtener_datos_mercado(symbol, tf, limit=60, ttl_segundos=180)
     if df_tf.empty or len(df_tf) < 20:
         return "NEUTRO"
@@ -445,7 +439,6 @@ def analizar_por_mercado(symbol, timeframe, sesgo_1h="NEUTRO", sesgo_4h="NEUTRO"
 
     vp_info = calcular_volume_profile_amt(df)
 
-    # Clasificación profesional: Impulso (a favor de 4H/1D) vs Retroceso Corto (contra 4H/1D)
     es_contra_macro = (
         (sesgo_1h == "ALCISTA" and (sesgo_4h == "BAJISTA" or sesgo_1d == "BAJISTA")) or
         (sesgo_1h == "BAJISTA" and (sesgo_4h == "ALCISTA" or sesgo_1d == "ALCISTA"))
@@ -550,7 +543,7 @@ iniciar_hilo_autopiloto()
 # ==========================================
 sesion_ui, _ = obtener_sesion_actual()
 st.markdown("<h1 style='text-align: center; color: #00FFAA;'>🏦 INSTITUTIONAL QUANT TERMINAL — INTRADÍA 1H</h1>", unsafe_allow_html=True)
-st.markdown(f"<p style='text-align: center; color: gray;'>{sesion_ui} • 9 Top Criptos + Forex + Oro • Estrategia 1H (5m/15m/1h)</p>", unsafe_allow_html=True)
+st.markdown(f"<p style='text-align: center; color: gray;'>{sesion_ui} • 9 Top Criptos + Forex + Oro • Impulso vs Retroceso</p>", unsafe_allow_html=True)
 st.markdown("---")
 
 st.sidebar.header("🌐 Configuración")
