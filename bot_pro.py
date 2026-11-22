@@ -425,12 +425,12 @@ def obtener_datos_mercado(symbol, timeframe, limit=100, ttl_segundos=60):
     return df
 
 
-def obtener_sesgo_1h(symbol):
-    """Dirección principal en gráfico de 1H (máximo 1 hora)."""
-    df_1h = obtener_datos_mercado(symbol, "1h", limit=60, ttl_segundos=120)
-    if df_1h.empty or len(df_1h) < 20:
+def obtener_sesgo_tf(symbol, tf="1h"):
+    """Dirección de tendencia en un marco temporal específico (1h, 4h, 1d)."""
+    df_tf = obtener_datos_mercado(symbol, tf, limit=60, ttl_segundos=180)
+    if df_tf.empty or len(df_tf) < 20:
         return "NEUTRO"
-    u = df_1h.iloc[-1]
+    u = df_tf.iloc[-1]
     if float(u["close"]) > float(u["ema_slow"]) and float(u["ema_fast"]) > float(u["ema_slow"]):
         return "ALCISTA"
     if float(u["close"]) < float(u["ema_slow"]) and float(u["ema_fast"]) < float(u["ema_slow"]):
@@ -438,26 +438,40 @@ def obtener_sesgo_1h(symbol):
     return "NEUTRO"
 
 
-def analizar_por_mercado(symbol, timeframe, sesgo_1h="NEUTRO"):
+def analizar_por_mercado(symbol, timeframe, sesgo_1h="NEUTRO", sesgo_4h="NEUTRO", sesgo_1d="NEUTRO"):
     df = obtener_datos_mercado(symbol, timeframe, limit=85, ttl_segundos=60)
     if df.empty or not df.attrs.get("es_real", False):
         return "DESCONOCIDO", 25.0, df, None, None
 
     vp_info = calcular_volume_profile_amt(df)
 
+    # Clasificación profesional: Impulso (a favor de 4H/1D) vs Retroceso Corto (contra 4H/1D)
+    es_contra_macro = (
+        (sesgo_1h == "ALCISTA" and (sesgo_4h == "BAJISTA" or sesgo_1d == "BAJISTA")) or
+        (sesgo_1h == "BAJISTA" and (sesgo_4h == "ALCISTA" or sesgo_1d == "ALCISTA"))
+    )
+
     if symbol in CRYPTO_MARKETS:
         adx_min = 25.0
-        senal = evaluar_estrategia_intradia_1h(df, adx_min=adx_min, sesgo_1h=sesgo_1h, vp_info=vp_info, rr_mult=2.5)
-        return "CRIPTO", adx_min, df, vp_info, senal
-
-    if symbol in ORO_MARKETS:
+        rr = 1.2 if es_contra_macro else 2.0
+        mercado = "CRIPTO"
+    elif symbol in ORO_MARKETS:
         adx_min = 28.0
-        senal = evaluar_estrategia_intradia_1h(df, adx_min=adx_min, sesgo_1h=sesgo_1h, vp_info=vp_info, rr_mult=2.5)
-        return "ORO", adx_min, df, vp_info, senal
+        rr = 1.2 if es_contra_macro else 2.0
+        mercado = "ORO"
+    else:
+        adx_min = 25.0
+        rr = 1.2 if es_contra_macro else 1.8
+        mercado = "FOREX"
 
-    adx_min = 25.0
-    senal = evaluar_estrategia_intradia_1h(df, adx_min=adx_min, sesgo_1h=sesgo_1h, vp_info=vp_info, rr_mult=2.0)
-    return "FOREX", adx_min, df, vp_info, senal
+    senal = evaluar_estrategia_intradia_1h(df, adx_min=adx_min, sesgo_1h=sesgo_1h, vp_info=vp_info, rr_mult=rr)
+    if senal:
+        if es_contra_macro:
+            senal["modelo"] = f"⚠️ RETROCESO CORTO (Contra 4H/1D) • {senal['modelo']}"
+        else:
+            senal["modelo"] = f"🚀 IMPULSO PRINCIPAL (A favor 4H/1D) • {senal['modelo']}"
+
+    return mercado, adx_min, df, vp_info, senal
 
 
 # ==========================================
@@ -475,10 +489,12 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
         if symbol not in CRYPTO_MARKETS and not forex_abierto:
             continue
 
-        sesgo_1h = obtener_sesgo_1h(symbol)
+        sesgo_1h = obtener_sesgo_tf(symbol, "1h")
+        sesgo_4h = obtener_sesgo_tf(symbol, "4h")
+        sesgo_1d = obtener_sesgo_tf(symbol, "1d")
         for tf in ["5m", "15m", "1h"]:
             try:
-                mercado, _, df, _, res = analizar_por_mercado(symbol, tf, sesgo_1h=sesgo_1h)
+                mercado, _, df, _, res = analizar_por_mercado(symbol, tf, sesgo_1h=sesgo_1h, sesgo_4h=sesgo_4h, sesgo_1d=sesgo_1d)
                 if res and not df.empty:
                     u = df.iloc[-1]
                     precio = float(u["close"])
@@ -486,7 +502,8 @@ def ejecutar_logica_autopiloto(es_hilo_fondo=False):
                     msg = (
                         f"🏦 *SEÑAL INTRADÍA 1H (BANK $10)*\n"
                         f"🕒 *Bolsa:* {sesion_txt if mercado != 'CRIPTO' else 'Cripto 24/7'}\n"
-                        f"🌐 *Mercado:* `{mercado}` | *Activo:* `{symbol}` | *TF:* `{tf}` (1H: `{sesgo_1h}`)\n"
+                        f"🌐 *Mercado:* `{mercado}` | *Activo:* `{symbol}` | *TF:* `{tf}`\n"
+                        f"🧭 *Tendencia:* `1H: {sesgo_1h}` | `4H: {sesgo_4h}` | `1D: {sesgo_1d}`\n"
                         f"💲 *Precio:* `${precio:,.4f}` | *ADX:* `{float(u['adx']):.1f}` | *RSI:* `{float(u['rsi']):.1f}`\n"
                         f"🎯 *{res['modelo']}*\n"
                         f"🧭 *Acción:* *{res['direccion']}*\n"
@@ -556,8 +573,10 @@ if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
 
 @st.fragment(run_every="10s")
 def render_panel(symbol, timeframe):
-    sesgo_1h = obtener_sesgo_1h(symbol)
-    mercado, adx_min, df, vp_info, senal = analizar_por_mercado(symbol, timeframe, sesgo_1h=sesgo_1h)
+    sesgo_1h = obtener_sesgo_tf(symbol, "1h")
+    sesgo_4h = obtener_sesgo_tf(symbol, "4h")
+    sesgo_1d = obtener_sesgo_tf(symbol, "1d")
+    mercado, adx_min, df, vp_info, senal = analizar_por_mercado(symbol, timeframe, sesgo_1h=sesgo_1h, sesgo_4h=sesgo_4h, sesgo_1d=sesgo_1d)
 
     if df.empty:
         st.error(f"Sin datos reales disponibles para {symbol}.")
@@ -585,7 +604,7 @@ def render_panel(symbol, timeframe):
         u = df.iloc[-1]
         precio = float(u["close"])
         st.metric(f"{symbol} [{timeframe}]", f"${precio:,.4f}", f"{precio - float(df.iloc[-2]['close']):,.4f}")
-        st.caption(f"🧭 **Sesgo 1H:** `{sesgo_1h}` | **ADX:** `{float(u['adx']):.1f}` | **RSI:** `{float(u['rsi']):.1f}`")
+        st.caption(f"🧭 **1H:** `{sesgo_1h}` | **4H:** `{sesgo_4h}` | **1D:** `{sesgo_1d}` | **ADX:** `{float(u['adx']):.1f}` | **RSI:** `{float(u['rsi']):.1f}`")
         if vp_info:
             st.caption(f"📊 **Estado AMT:** `{vp_info['estado']}` | **POC:** `${vp_info['poc']:,.4f}`")
         if senal:
