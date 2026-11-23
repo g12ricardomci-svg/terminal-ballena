@@ -13,7 +13,7 @@ on:
         default: true
 
 concurrency:
-  group: bot-pro
+  group: bot-pro-v7               # grupo nuevo (23/11/2026): la v7 arranco sin esperar al bucle viejo
   cancel-in-progress: false
 
 permissions:
