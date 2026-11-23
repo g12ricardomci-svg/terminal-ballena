@@ -111,10 +111,11 @@ ESTRATEGIAS_ACTIVO = {
 #   ORB + Retest DAX 15m (guia de sesiones): 30 ops, +0,26 R, PF 1,53, 5/6 meses positivos -> ROBUSTA
 #   ORB apertura DAX 15m: 112 ops, +0,24 R, PF 1,34, 5/7 meses -> ROBUSTA
 #   ORB apertura S&P 500 15m: 116 ops, +0,18 R, PF 1,25, 5/7 meses -> ROBUSTA
+#   EMA 20/200 (Dr. Inversor) DAX 15m: 44 ops, +0,15 R, PF 1,26, 5/6 meses -> ROBUSTA
 GANADORAS = {
     ("XAU/USD (Oro)", "15m"): ["VWAP", "Tortugas"],
     ("BTC/USDT", "15m"): ["Tortugas"],
-    ("DAX 40", "15m"): ["ORBRetest", "ORB"],
+    ("DAX 40", "15m"): ["ORBRetest", "ORB", "DI_EMA"],
     ("S&P 500 (ES)", "15m"): ["ORB"],
 }
 
@@ -2309,8 +2310,8 @@ def proximas_noticias(horas=24, ahora=None):
     ev = sorted((e for e in calendario() if e["moneda"] in mon
                  and timedelta(0) <= e["t"] - ahora <= timedelta(hours=horas)), key=lambda e: e["t"])
     if not ev:
-        return "📰 Sin noticias de alto impacto en las próximas 24 h."
-    return "📰 Noticias de ALTO impacto (24 h):\n" + "\n".join(
+        return f"📰 Sin noticias de alto impacto en las próximas {horas} h."
+    return f"📰 Noticias de ALTO impacto ({horas} h):\n" + "\n".join(
         f"• {e['t'].tz_convert(NY):%a %H:%M} NY · {e['moneda']} · {e['titulo']}" for e in ev[:12])
 
 
