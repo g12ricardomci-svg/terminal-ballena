@@ -129,7 +129,18 @@ GANADORAS = {
     ("S&P 500 (ES)", "15m"): ["ORB", "DI_RSI", "DI_EMA"],
     ("DAX 40", "15m"): ["ORB"],
     ("DOW 30 (YM)", "15m"): ["ORBRetest"],
-    ("XAU/USD (Oro)", "15m"): ["VWAP", "Tortugas"],
+    ("XAU/USD (Oro)", "15m"): ["VWAP", "Tortugas", "MaxHist", "NocheOro"],
+}
+#   Maximos historicos (Hyenuk Chu) Oro: 46 ops, +0,63 R, PF 2,36, costes x2 +0,57 -> ROBUSTA (depende de que
+#     el oro siga en tendencia alcista: solo compra en maximos)
+#   Oro de noche (Blose et al.) + "solo_confirma": 162 ops, +0,14 R, PF 1,27 -> ROBUSTA
+
+# EXPERIMENTALES: positivas a 2 anos pero SIN pasar todas las pruebas (pocas ops o una mitad negativa).
+# Se envian marcadas con 🧪 para tener senales en forex y BTC; el diario y el apagado automatico las vigilan.
+EXPERIMENTALES = {
+    ("USD/JPY", "15m"): ["DI_RSI"],      # 36 ops, +0,20 R, PF 1,56 (1a mitad -0,09)
+    ("GBP/USD", "15m"): ["HolyGrail"],   # 15 ops, +0,32 R, PF 1,65 (pocas ops)
+    ("BTC/USDT", "15m"): ["Tortugas"],   # 31 ops, +0,15 R, PF 1,28 (1a mitad -0,35)
 }
 
 # Filtro de LECTURA DE ESTRUCTURA por combinacion (confirmado a 2 anos). Solo donde mejora.
@@ -138,6 +149,7 @@ FILTRO_LECTURA = {
     ("S&P 500 (ES)", "15m", "DI_EMA"): "solo_confirma",
     ("DAX 40", "15m", "ORB"): "sin_contradice",
     ("XAU/USD (Oro)", "15m", "VWAP"): "sin_contradice",
+    ("XAU/USD (Oro)", "15m", "NocheOro"): "solo_confirma",
 }
 
 ACTIVOS = {}
@@ -2628,7 +2640,7 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
     ahora = _ts_utc(ahora if ahora is not None else datetime.now(UTC))
     meta = ACTIVOS[nombre]
     if p.get("solo_ganadoras"):
-        p = dict(p, estrategias=GANADORAS.get((nombre, tf), []))
+        p = dict(p, estrategias=GANADORAS.get((nombre, tf), []) + EXPERIMENTALES.get((nombre, tf), []))
         if not p["estrategias"]:
             return {}, []
     if not mercado_abierto(meta["tipo"], ahora):
@@ -2638,6 +2650,8 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
     d1 = solo_cerradas(cargar(nombre, "1h"), "1h", ahora)
     dd = solo_cerradas(cargar(nombre, "1d"), "1d", ahora) if {"Tortugas", "MaxHist"} & set(estrategias_de(nombre, p)) else None
     diags, senales = evaluar(nombre, meta["tipo"], df, d1, p, ahora, dd)
+    for s in senales:
+        s["experimental"] = s.get("clave") in EXPERIMENTALES.get((nombre, tf), [])
     permitidos = {"sin_contradice": ("CONFIRMA", "NEUTRAL"), "solo_confirma": ("CONFIRMA",)}
     def _modo(s):
         return FILTRO_LECTURA.get((nombre, tf, s.get("clave")), CUENTA.get("filtro_estructura", "anotar"))
@@ -2679,7 +2693,9 @@ VERSION_BOT = "v3 · perfil 2 años"
 def texto_alerta(s, tf):
     ic = "🟢 LONG" if s["dir"] == "LONG" else "🔴 SHORT"
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[tf])
-    return (f"{ic} {s['activo']} ({tf}) · {s['estrategia']}\n"
+    return (("🧪 EXPERIMENTAL (positiva a 2 años, sin pasar todas las pruebas: tamaño mínimo)\n"
+             if s.get("experimental") else "")
+            + f"{ic} {s['activo']} ({tf}) · {s['estrategia']}\n"
             f"Entrada: {fmt(s['entrada'])}\nSL: {fmt(s['sl'])}\n"
             + (f"{s['salida_txt']}\n" if s.get("salida_txt") else
                f"TP1 ({s.get('r1', 2):g}R): {fmt(s['tp1'])}\n"
@@ -3218,7 +3234,9 @@ def texto_perfil(p):
     for (act, tf), ests in GANADORAS.items():
         nombres = [e + (" 🔮" if (act, tf, e) in FILTRO_LECTURA else "") for e in ests]
         lin.append(f"• {act} {tf}: {', '.join(nombres)}")
-    return "Vigilo (probadas 2 años):\n" + "\n".join(lin) + "\n🔮 = con filtro de lectura de estructura"
+    exp = [f"• {act} {tf}: {', '.join(ests)}" for (act, tf), ests in EXPERIMENTALES.items()]
+    return ("Vigilo (probadas 2 años):\n" + "\n".join(lin) + "\n🔮 = con filtro de lectura de estructura"
+            + ("\n🧪 Experimentales (vigiladas):\n" + "\n".join(exp) if exp else ""))
 
 
 def correr_bot(a, p):
