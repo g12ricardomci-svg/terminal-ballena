@@ -4119,6 +4119,24 @@ def texto_perfil(p):
             + ("\n🧪 Experimentales (vigiladas):\n" + "\n".join(exp) if exp else ""))
 
 
+_VERSION = {"ultima": 0.0}
+
+
+def hay_version_nueva(cada_min=10):
+    """En GitHub Actions: True si la rama tiene un commit mas nuevo que el que esta corriendo (se mira cada
+    'cada_min' minutos). Asi una mejora subida a main entra en vivo en <= 10 min sin esperar al fin del bucle."""
+    sha, repo, rama = os.environ.get("GITHUB_SHA"), os.environ.get("GITHUB_REPOSITORY"), os.environ.get("GITHUB_REF_NAME")
+    if not (sha and repo and rama) or time.time() - _VERSION["ultima"] < cada_min * 60:
+        return False
+    _VERSION["ultima"] = time.time()
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/commits/{rama}",
+                         headers={"Accept": "application/vnd.github.sha"}, timeout=10)
+        return r.ok and len(r.text.strip()) == 40 and r.text.strip() != sha
+    except Exception:
+        return False
+
+
 def correr_bot(a, p):
     estado = Estado(a.estado)
     estado.agrupar = bool(CUENTA.get("agrupar_alertas", True))
@@ -4178,6 +4196,9 @@ def correr_bot(a, p):
         seg = min(TF_MIN[t] for t in a.tf) * 60
         if getattr(a, "minutos", 0) and time.time() - t_ini + seg > a.minutos * 60:
             print(f"Fin del bucle de {a.minutos:g} min: me relanzo.", flush=True)
+            break
+        if getattr(a, "minutos", 0) and hay_version_nueva():
+            print("Hay una versión nueva del bot en GitHub: termino para relanzarme con ella.", flush=True)
             break
         fin = time.time() + seg - (time.time() % seg) + 20   # 20 s despues del cierre de la siguiente vela
         while True:                                # mientras espera, contesta el chat cada ~15 s
