@@ -1,0 +1,128 @@
+name: Backtest BOS a mercado (direccion tipo Aura)
+
+# Prueba el escenario que dibuja Aura (BOS -> limite en la zona -> stop bajo la zona -> TP liquidez) en los
+# mercados de Cisco: 1m (6 meses) y 5m/15m (2 anos), con costes normales y con costes bajos (cuenta Raw/ECN).
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/backtest-bos-mercado.yml"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        tf: ["1m", "5m", "15m"]
+        coste: ["normal", "bajo"]
+        mercado:
+          - { activo: "XAU/USD (Oro)", duka: "xauusd", tipo: "oro", bajo: "0.005" }
+          - { activo: "EUR/USD", duka: "eurusd", tipo: "forex", bajo: "0.003" }
+          - { activo: "GBP/USD", duka: "gbpusd", tipo: "forex", bajo: "0.003" }
+          - { activo: "USD/JPY", duka: "usdjpy", tipo: "forex", bajo: "0.003" }
+          - { activo: "USD/CAD", duka: "usdcad", tipo: "forex", bajo: "0.003" }
+          - { activo: "BTC/USDT", duka: "", tipo: "cripto", bajo: "0.04" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - name: Fechas
+        run: |
+          DIAS=$([ "${{ matrix.tf }}" = "1m" ] && echo 183 || echo 730)
+          echo "DESDE=$(date -u -d "$DIAS days ago" +%F)" >> "$GITHUB_ENV"
+          echo "HASTA=$(date -u +%F)" >> "$GITHUB_ENV"
+          echo "COSTE=$([ "${{ matrix.coste }}" = "bajo" ] && echo "--coste ${{ matrix.mercado.bajo }}" || echo "")" >> "$GITHUB_ENV"
+      - name: Descargar Dukascopy
+        if: matrix.mercado.duka != ''
+        run: |
+          T=m$(echo "${{ matrix.tf }}" | tr -d m)
+          npx --yes dukascopy-node -i ${{ matrix.mercado.duka }} -from "$DESDE" -to "$HASTA" -t $T -f csv -dir data
+      - name: Convertir CSV
+        if: matrix.mercado.duka != ''
+        shell: python
+        run: |
+          import glob, pandas as pd
+          f = sorted(glob.glob("data/*.csv"))[0]
+          d = pd.read_csv(f)
+          d.columns = [c.lower() for c in d.columns]
+          t = d["timestamp"]
+          d.index = pd.to_datetime(t, unit="ms", utc=True) if pd.api.types.is_numeric_dtype(t) else pd.to_datetime(t, utc=True)
+          if "volume" not in d:
+              d["volume"] = 0.0
+          if "${{ matrix.mercado.tipo }}" == "forex":
+              d["volume"] = 0.0
+          d = d[["open", "high", "low", "close", "volume"]].astype(float)
+          d = d[(d["high"] > d["low"]) | (d["volume"] > 0)]
+          d.to_csv("datos.csv")
+          print(f, len(d), d.index[0], d.index[-1])
+      - name: Backtest
+        run: |
+          if [ -n "${{ matrix.mercado.duka }}" ]; then
+            python bot_pro.py backtest --tf ${{ matrix.tf }} --csv datos.csv --nombre "${{ matrix.mercado.activo }}" --tipo ${{ matrix.mercado.tipo }} --salida res --estrategias BOSMercado $COSTE
+          else
+            python bot_pro.py backtest --tf ${{ matrix.tf }} --activos "${{ matrix.mercado.activo }}" --desde "$DESDE" --salida res --estrategias BOSMercado $COSTE
+          fi
+      - name: Nombre del artefacto
+        id: n
+        run: echo "n=$(echo '${{ matrix.mercado.activo }}-${{ matrix.tf }}-${{ matrix.coste }}' | tr -c 'A-Za-z0-9-' '_')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bosm-${{ steps.n.outputs.n }}
+          path: res/
+          if-no-files-found: ignore
+
+  resumen:
+    needs: backtest
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: todo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas tabulate
+      - name: Robustez
+        shell: python
+        run: |
+          import glob, os, numpy as np, pandas as pd
+          fs = glob.glob("todo/*/*/operaciones.csv")
+          if not fs:
+              print("Sin resultados"); raise SystemExit
+          partes = []
+          for f in fs:
+              art = f.split("/")[1]
+              coste = "bajo" if art.rstrip("_").endswith("bajo") else "normal"
+              partes.append(pd.read_csv(f).assign(TF=os.path.basename(os.path.dirname(f)), Coste=coste))
+          ops = pd.concat(partes)
+          ops["R_x2"] = ops["R_bruto"] - 2 * ops["coste_R"]
+          filas = []
+          for (a, tf, co), g in ops.groupby(["activo", "TF", "Coste"]):
+              g = g.sort_values("senal_NY"); R = g["R"].to_numpy(); mitad = len(g) // 2
+              gan, per = R[R > 0].sum(), -R[R < 0].sum()
+              rob = (len(g) >= 30 and R.mean() > 0 and g["R_x2"].mean() > 0 and
+                     g["R"].iloc[:mitad].mean() > 0 and g["R"].iloc[mitad:].mean() > 0)
+              filas.append({"Activo": a, "TF": tf, "Coste": co, "Ops": len(g), "Winrate%": round(100 * (R > 0).mean(), 1),
+                            "R bruto": round(g["R_bruto"].mean(), 3), "Coste R": round(g["coste_R"].mean(), 3),
+                            "R prom": round(R.mean(), 3), "PF": round(gan / per, 2) if per > 0 else np.inf,
+                            "R 1a mitad": round(g["R"].iloc[:mitad].mean(), 3) if mitad else np.nan,
+                            "R 2a mitad": round(g["R"].iloc[mitad:].mean(), 3), "ROBUSTA": "SI" if rob else ""})
+          r = pd.DataFrame(filas).sort_values(["ROBUSTA", "R prom"], ascending=[False, False])
+          pd.set_option("display.width", 250)
+          print(r.to_string(index=False))
+          if "lectura" in ops:
+              print("\n=== Con filtro de lectura (sin_contradice / solo_confirma) ===")
+              for nf, perm in {"sin_contradice": ("CONFIRMA", "NEUTRAL"), "solo_confirma": ("CONFIRMA",)}.items():
+                  g2 = ops[ops["lectura"].isin(perm)].groupby(["activo", "TF", "Coste"])["R"].agg(["size", "mean"]).round(3)
+                  print(f"\n{nf}:\n" + g2.to_string())
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write("## BOS a mercado\n\n" + r.to_markdown(index=False) + "\n")
