@@ -3003,7 +3003,7 @@ def _nota_noticias(nombre, horas=3):
     return ""
 
 
-VERSION_BOT = "v7 · comité + analista"
+VERSION_BOT = "v7.1 · analista con gráficos"
 
 
 def texto_alerta(s, tf):
@@ -4607,54 +4607,195 @@ AYUDA_CHAT = ("🤖 Puedo analizar cualquier mercado que vigilo. Escríbeme así
               "• /escenarios btc — principal y alternativo con niveles\n"
               "• /plan sp500 — plan por temporalidades con entrada, stop, objetivo y gestión\n"
               "• /posicion oro long 4050 4030 — ¿qué hago con mi operación? (stop opcional)\n"
+              "• /grafico oro 15m — solo el gráfico con zonas, figuras y niveles dibujados\n"
               "• /diario — radiografía del diario y contrato de la semana\n"
               "• /estado — operaciones abiertas y riesgo en juego\n"
               "También vale texto libre: «¿pa dónde va el oro?», «¿hay un doble techo en el euro?», "
-              "«dame los escenarios de btc».")
+              "«dame los escenarios de btc». Los análisis llegan con su gráfico 📈 "
+              "(añade «solo texto» si no lo quieres).")
 
 
-def responder_chat(texto, estado=None, cargar=obtener):
-    """Convierte un mensaje del chat en una respuesta del analista."""
+# ----------------------------------------------------------------- GRAFICO CON LOS NIVELES DIBUJADOS
+COLORES_GRAF = {"fondo": "#0f1419", "panel": "#151b23", "texto": "#c9d1d9", "rejilla": "#232b36",
+                "sube": "#26a69a", "baja": "#ef5350", "demanda": "#26a69a", "oferta": "#ef5350",
+                "fvg": "#8b949e", "ema20": "#f2cc60", "ema50": "#58a6ff", "ema200": "#bc8cff",
+                "entrada": "#58a6ff", "stop": "#ef5350", "objetivo": "#26a69a", "cuello": "#f2cc60"}
+
+
+def grafico_mercado(m, niveles=None, figuras=True, velas=120, titulo=None):
+    """PNG (bytes) con las ultimas velas, EMAs, zonas, FVG, figuras chartistas y los niveles del plan.
+    'niveles' = lista de (etiqueta, precio, clave_de_color). Devuelve None si matplotlib no esta instalado."""
+    try:
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
+        from matplotlib.patches import Rectangle
+    except Exception:
+        return None
+    import io
+    C = COLORES_GRAF
+    df = m["df"].tail(velas)
+    n = len(df)
+    o, h, l, c = (df[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    cierre = m["df"]["close"]
+    emas = {k: cierre.ewm(span=s, adjust=False).mean().tail(velas).to_numpy() for k, s in
+            (("ema20", 20), ("ema50", 50), ("ema200", 200))}
+    fig, ax = plt.subplots(figsize=(11, 6), dpi=110)
+    fig.patch.set_facecolor(C["fondo"])
+    ax.set_facecolor(C["panel"])
+    x = np.arange(n)
+    ancho = 0.6
+    for i in range(n):                                   # velas
+        col = C["sube"] if c[i] >= o[i] else C["baja"]
+        ax.vlines(i, l[i], h[i], color=col, linewidth=0.8)
+        ax.add_patch(Rectangle((i - ancho / 2, min(o[i], c[i])), ancho, max(abs(c[i] - o[i]), 1e-12),
+                               color=col, linewidth=0))
+    for k in ("ema20", "ema50", "ema200"):
+        ax.plot(x, emas[k], color=C[k], linewidth=1.1, label=k.upper())
+    y_min, y_max = float(l.min()), float(h.max())
+    margen = (y_max - y_min) * 0.06
+    xmax = n + 14                                        # espacio a la derecha para las etiquetas
+
+    def _zona(z):
+        a, b = sorted((z["prox"], z["dist"]))
+        ax.add_patch(Rectangle((max(n - 60, 0), a), xmax - max(n - 60, 0), b - a, color=C[z["tipo"]], alpha=0.16,
+                               linewidth=0))
+        ax.text(xmax - 0.5, (a + b) / 2, f"{z['tipo']} ({z['estado']})", color=C[z["tipo"]], fontsize=7.5,
+                ha="right", va="center")
+
+    for z in (m["dem"][:2] + m["ofe"][:2]):
+        if y_min - 4 * margen < z["prox"] < y_max + 4 * margen:
+            _zona(z)
+    for d, a, b in m["fvg"][-3:]:
+        ax.add_patch(Rectangle((n - 25, a), 25 + 6, b - a, color=C["fvg"], alpha=0.22, linewidth=0))
+    if figuras:
+        for f in m["figs"][:3]:
+            col = C["sube"] if f["dir"] > 0 else C["baja"]
+            ax.hlines(f["cuello"], n - 50, xmax, colors=C["cuello"], linestyles="--", linewidth=1)
+            ax.text(n - 50, f["cuello"], f"  {f['figura']} · cuello", color=C["cuello"], fontsize=7.5, va="bottom")
+            ax.annotate("", xy=(n + 6, f["objetivo"]), xytext=(n + 6, f["cuello"]),
+                        arrowprops=dict(arrowstyle="->", color=col, lw=1.4))
+            ax.text(n + 7, f["objetivo"], f"obj. {fmt(f['objetivo'])}", color=col, fontsize=7.5, va="center")
+    for etiqueta, precio, clave in (niveles or []):
+        if precio is None:
+            continue
+        ax.hlines(precio, 0, xmax, colors=C.get(clave, C["texto"]), linewidth=1.3)
+        ax.text(xmax - 0.5, precio, f"{etiqueta} {fmt(precio)}", color=C.get(clave, C["texto"]), fontsize=8.5,
+                ha="right", va="bottom", fontweight="bold")
+    todos = [y_min, y_max] + [p for _, p, _ in (niveles or []) if p is not None]
+    if figuras:
+        todos += [f["objetivo"] for f in m["figs"][:3]]
+    lo, hi = min(todos), max(todos)
+    rango = hi - lo
+    ax.set_ylim(lo - 0.05 * rango, hi + 0.05 * rango)
+    ax.set_xlim(-1, xmax)
+    px = m["px"]
+    ax.axhline(px, color=C["texto"], linewidth=0.6, linestyle=":")
+    ax.text(-0.5, px, f" {fmt(px)}", color=C["texto"], fontsize=8, va="bottom")
+    paso = max(n // 6, 1)
+    ax.set_xticks(x[::paso])
+    ax.set_xticklabels([t.tz_convert(NY).strftime("%d/%m %H:%M") for t in df.index[::paso]], fontsize=7.5)
+    ax.tick_params(colors=C["texto"], labelsize=7.5)
+    for s in ax.spines.values():
+        s.set_color(C["rejilla"])
+    ax.grid(color=C["rejilla"], linewidth=0.5)
+    ax.yaxis.tick_right()
+    ax.set_title(titulo or f"{m['activo']} · {m['tf']} · hora NY", color=C["texto"], fontsize=11, loc="left")
+    ax.legend(loc="upper left", fontsize=7.5, facecolor=C["panel"], edgecolor=C["rejilla"], labelcolor=C["texto"])
+    buf = io.BytesIO()
+    fig.tight_layout()
+    fig.savefig(buf, format="png", facecolor=fig.get_facecolor())
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def _niveles_escenario(m):
+    esc = escenarios_de(m)
+    return [("Entrada", esc["entrada"], "entrada"), ("Stop", esc["invalidacion"], "stop"),
+            ("Objetivo", esc["objetivo"], "objetivo")]
+
+
+def enviar_foto_telegram(token, chat_id, png, pie=""):
+    """Manda una imagen al chat (sendPhoto). El pie se limita a 1024 caracteres."""
+    espera = TG_PAUSA - (time.time() - _TG["ultimo"])
+    if espera > 0:
+        _dormir(espera)
+    r = requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={"chat_id": chat_id, "caption": pie[:1024]},
+                      files={"photo": ("grafico.png", png, "image/png")}, timeout=30)
+    _TG["ultimo"] = time.time()
+    return r
+
+
+def responder(texto, estado=None, cargar=obtener):
+    """Convierte un mensaje del chat en (texto, imagen PNG o None). Los analisis de mercado llevan su grafico."""
     t = _norm(texto).strip()
     if not t:
-        return None
+        return None, None
     if t.startswith(("/start", "/ayuda", "/help")) or t in ("hola", "ayuda", "que sabes hacer", "que sabes hacer?"):
-        return AYUDA_CHAT
+        return AYUDA_CHAT, None
     if t.startswith("/diario") or "informe del diario" in t or "como voy" in t:
-        return informe_diario_pro(estado) if estado else "Sin diario disponible."
+        return (informe_diario_pro(estado) if estado else "Sin diario disponible."), None
     if t.startswith("/estado"):
         ab = estado.d.get("abiertas", []) if estado else []
         en_juego = sum(float(o.get("riesgo_pct") or CUENTA["riesgo_pct"]) for o in ab)
         return (f"📊 {len(ab)} operaciones abiertas · riesgo en juego {en_juego:g}% de "
                 f"{CUENTA.get('riesgo_total_max_pct', 6):g}%\n"
-                + "\n".join(f"• {o['activo']} {o['dir']} · {o['estrategia']} · nivel {o.get('nivel') or '-'}" for o in ab))
+                + "\n".join(f"• {o['activo']} {o['dir']} · {o['estrategia']} · nivel {o.get('nivel') or '-'}"
+                            for o in ab)), None
     nombre = buscar_activo(t)
     if not nombre:
-        return "No reconozco el mercado. Prueba con: oro, btc, eurusd, gbpusd, usdjpy, usdcad, sp500, dax, dow.\n\n" + AYUDA_CHAT
+        return ("No reconozco el mercado. Prueba con: oro, btc, eurusd, gbpusd, usdjpy, usdcad, sp500, dax, dow.\n\n"
+                + AYUDA_CHAT), None
     tf = buscar_tf(t)
+    sin_foto = "sin grafico" in t or "solo texto" in t
+
+    def _foto(m, niveles=None, figuras=True, titulo=None):
+        if sin_foto:
+            return None
+        try:
+            return grafico_mercado(m, niveles, figuras, titulo=titulo)
+        except Exception as e:
+            print(f"  ! Grafico {nombre}: {e}", flush=True)
+            return None
+
     try:
         if t.startswith("/posicion") or "comprado" in t or "vendido" in t:
             import re
             limpio = re.sub(r"\b(\d+m|m\d+|\d+h|h\d+|sp500|us500|us100|us30|dj30|ger40|de40|nas100)\b", " ", t)
             nums = [float(x.replace(",", ".")) for x in re.findall(r"\d+(?:[.,]\d+)?", limpio)]
             if not nums:
-                return "Dime el precio de entrada, p. ej.: /posicion oro long 4050 4030"
+                return "Dime el precio de entrada, p. ej.: /posicion oro long 4050 4030", None
             lado = -1 if any(w in t for w in ("short", "vend", "corto")) else 1
-            return consejo_posicion(nombre, lado, nums[0], nums[1] if len(nums) > 1 else None, cargar)
+            txt = consejo_posicion(nombre, lado, nums[0], nums[1] if len(nums) > 1 else None, cargar)
+            m = analisis_mercado(nombre, "15m", cargar)
+            stop = nums[1] if len(nums) > 1 else None
+            niv = [("Tu entrada", nums[0], "entrada")] + ([("Tu stop", stop, "stop")] if stop else [])
+            return txt, _foto(m, niv, figuras=False, titulo=f"{nombre} · tu posición · 15m")
         if t.startswith("/plan") or any(w in t for w in ("plan", "entro", "compro", "vendo", "compara")):
-            return plan_operativo(nombre, cargar)
+            m = analisis_mercado(nombre, "15m", cargar)
+            return plan_operativo(nombre, cargar), _foto(m, _niveles_escenario(m), figuras=False,
+                                                         titulo=f"{nombre} · plan · 15m")
+        if t.startswith("/grafico") or "grafico" in t or "dibuja" in t or "traza" in t:
+            m = analisis_mercado(nombre, tf, cargar)
+            return f"📈 {nombre} ({tf}) · precio {fmt(m['px'])}", _foto(m, _niveles_escenario(m))
         m = analisis_mercado(nombre, tf, cargar)
-        if t.startswith("/figuras") or any(w in t for w in ("figura", "chartist", "doble", "hch", "hombro", "triangulo", "canal")):
-            return texto_figuras(m)
+        if t.startswith("/figuras") or any(w in t for w in ("figura", "chartist", "doble", "hch", "hombro",
+                                                            "triangulo", "canal")):
+            return texto_figuras(m), _foto(m, figuras=True)
         if t.startswith("/escenario") or any(w in t for w in ("escenario", "si rompe", "que pasa si")):
-            return texto_escenarios(m)
-        return texto_lectura_mercado(m)
+            return texto_escenarios(m), _foto(m, _niveles_escenario(m), figuras=False)
+        return texto_lectura_mercado(m), _foto(m, _niveles_escenario(m))
     except Exception as e:
-        return f"No pude analizar {nombre} ahora mismo ({e}). Inténtalo en unos minutos."
+        return f"No pude analizar {nombre} ahora mismo ({e}). Inténtalo en unos minutos.", None
+
+
+def responder_chat(texto, estado=None, cargar=obtener):
+    """Solo el texto de la respuesta (sin grafico)."""
+    return responder(texto, estado, cargar)[0]
 
 
 def atender_telegram(estado, cargar=obtener):
-    """Lee los mensajes nuevos del chat (getUpdates) y responde. Solo atiende a los chats autorizados."""
+    """Lee los mensajes nuevos del chat (getUpdates) y responde con texto y grafico. Solo chats autorizados."""
     token = secreto("TELEGRAM_TOKEN")
     permitidos = {i.strip() for i in secreto("TELEGRAM_CHAT_IDS").replace(";", ",").split(",") if i.strip()}
     if not token or not permitidos:
@@ -4671,9 +4812,14 @@ def atender_telegram(estado, cargar=obtener):
         chat = str((msg.get("chat") or {}).get("id", ""))
         if chat not in permitidos or not msg.get("text"):
             continue
-        resp = responder_chat(msg["text"], estado, cargar)
-        if resp:
-            for parte in trozos_telegram(resp):
+        txt, png = responder(msg["text"], estado, cargar)
+        if png:
+            try:
+                enviar_foto_telegram(token, chat, png)
+            except Exception as e:
+                print(f"  ! Foto al chat: {e}", flush=True)
+        if txt:
+            for parte in trozos_telegram(txt):
                 try:
                     _post_telegram(token, chat, parte)
                 except Exception:
