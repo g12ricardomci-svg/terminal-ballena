@@ -3436,6 +3436,7 @@ def texto_perfil(p):
 
 def correr_bot(a, p):
     estado = Estado(a.estado)
+    t_ini = time.time()
     ping = getattr(a, "ping", False)
     if ping:
         revisar_telegram()
@@ -3480,6 +3481,9 @@ def correr_bot(a, p):
         if a.una_vez:
             break
         seg = min(TF_MIN[t] for t in a.tf) * 60
+        if getattr(a, "minutos", 0) and time.time() - t_ini + seg > a.minutos * 60:
+            print(f"Fin del bucle de {a.minutos:g} min: me relanzo.", flush=True)
+            break
         time.sleep(seg - (time.time() % seg) + 20)   # 20 s despues del cierre de la siguiente vela
 
 
@@ -3673,19 +3677,30 @@ def panel():
 # ================================================================= GITHUB ACTIONS
 WORKFLOW_YML = """name: Bot Pro
 
+# El bot se queda encendido ~5,5 h revisando cada 5 min con precision (el horario de GitHub se retrasa en horas
+# de mucha carga) y al terminar se relanza solo. El horario de cada hora es solo un respaldo.
 on:
   schedule:
-    - cron: "1-59/5 * * * *"       # UTC, 1 min despues de cada cierre de vela de 5m (minimo de GitHub: 5 min)
-  workflow_dispatch: {}            # boton "Run workflow" para probarlo a mano
+    - cron: "23 * * * *"           # respaldo: si la cadena se corta, vuelve a arrancar en menos de 1 h
+  workflow_dispatch:
+    inputs:
+      ping:
+        description: "Enviar el mensaje de prueba (✅ y 📋) al arrancar"
+        type: boolean
+        default: true
 
 concurrency:
   group: bot-pro
   cancel-in-progress: false
 
+permissions:
+  contents: read
+  actions: write                   # para relanzarse solo al terminar
+
 jobs:
   escanear:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -3700,12 +3715,11 @@ jobs:
             noticias.json
           key: estado-${{ github.run_id }}
           restore-keys: estado-
-      - name: Escanear
+      - name: Escanear en bucle (~5,5 h)
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
-        # al pulsar "Run workflow" a mano tambien manda "✅ Bot activo" para comprobar Telegram
-        run: python bot_pro.py --una-vez --tf 5m 15m ${{ github.event_name == 'workflow_dispatch' && '--ping' || '' }}
+        run: python bot_pro.py --tf 5m 15m --minutos 330 ${{ (github.event_name == 'workflow_dispatch' && inputs.ping) && '--ping' || '' }}
       - name: Guardar memoria anti-spam
         if: always()
         uses: actions/cache/save@v4
@@ -3714,6 +3728,11 @@ jobs:
             estado.json
             noticias.json
           key: estado-${{ github.run_id }}
+      - name: Relanzarse
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bot.yml --ref ${{ github.ref_name }} -f ping=false
 """
 
 
@@ -3730,6 +3749,7 @@ def cli():
     ap = argparse.ArgumentParser(description="Bot Pro: escaner 24/7 + backtest (panel: streamlit run bot_pro.py)")
     ap.add_argument("modo", nargs="?", default="bot", choices=["bot", "backtest"])
     ap.add_argument("--una-vez", action="store_true", help="Una sola pasada (cron / GitHub Actions)")
+    ap.add_argument("--minutos", type=float, default=0, help="Bucle durante N minutos y salir (GitHub Actions)")
     ap.add_argument("--crear-github", action="store_true", help="Crea .github/workflows/bot.yml")
     ap.add_argument("--ping", action="store_true", help="Envia '✅ Bot activo' a Telegram al arrancar")
     ap.add_argument("--tf", nargs="+", default=list(CUENTA["tfs"]), choices=["1m", "5m", "15m", "1h"],
