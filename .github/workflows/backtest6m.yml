@@ -3,6 +3,7 @@ name: Backtest 6 meses
 # Backtest de ~6 meses en 5m y 15m con pruebas de robustez.
 # Forex y oro: velas de Dukascopy (Yahoo solo da 60 dias en 5m/15m). BTC: exchanges via ccxt.
 # Se lanza al subir cambios a este archivo, o a mano con "Run workflow".
+# Estrategias incluidas: todas las de bot_pro.py (incluye la guia de sesiones y Hyenuk Chu).
 on:
   workflow_dispatch: {}
   push:
