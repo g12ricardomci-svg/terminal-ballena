@@ -48,7 +48,12 @@ jobs:
       - name: Descargar Dukascopy (${{ matrix.mercado.duka }})
         if: matrix.mercado.duka != ''
         run: |
-          npx --yes dukascopy-node -i ${{ matrix.mercado.duka }} -from "$DESDE" -to "$HASTA" -t m15 -f csv -dir data
+          # 1.46.4 usa el servidor clasico datafeed.dukascopy.com (desde el 23/11/2026 el nuevo 'jetta' da 403 a GitHub)
+          for v in 1.46.4 latest; do
+            if npx --yes dukascopy-node@$v -i ${{ matrix.mercado.duka }} -from "$DESDE" -to "$HASTA" -t m15 -f csv -dir data --retries 3; then
+              echo "Descargado con dukascopy-node@$v"; break
+            fi
+          done
           ls -la data
       - name: Convertir CSV
         if: matrix.mercado.duka != ''
