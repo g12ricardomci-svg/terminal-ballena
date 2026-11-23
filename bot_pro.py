@@ -4231,6 +4231,10 @@ ALIAS_ACTIVOS = {
     "us100": "NASDAQ 100 (NQ)", "dow": "DOW 30 (YM)", "us30": "DOW 30 (YM)", "dj30": "DOW 30 (YM)",
     "ym": "DOW 30 (YM)", "dax": "DAX 40", "ger40": "DAX 40", "de40": "DAX 40", "plata": "XAG/USD (Plata)",
     "xag": "XAG/USD (Plata)", "wti": "WTI (Petróleo)", "petroleo": "WTI (Petróleo)", "brent": "BRENT (Petróleo)",
+    "usoil": "WTI (Petróleo)", "ukoil": "BRENT (Petróleo)", "xagusd": "XAG/USD (Plata)", "silver": "XAG/USD (Plata)",
+    "ftse": "FTSE 100", "uk100": "FTSE 100", "nikkei": "NIKKEI 225", "jp225": "NIKKEI 225", "nk225": "NIKKEI 225",
+    "eurostoxx": "EURO STOXX 50", "stoxx": "EURO STOXX 50", "eu50": "EURO STOXX 50", "sx5e": "EURO STOXX 50",
+    "cac": "CAC 40", "fra40": "CAC 40", "f40": "CAC 40",
 }
 
 
@@ -4744,7 +4748,8 @@ def responder(texto, estado=None, cargar=obtener):
                             for o in ab)), None
     nombre = buscar_activo(t)
     if not nombre:
-        return ("No reconozco el mercado. Prueba con: oro, btc, eurusd, gbpusd, usdjpy, usdcad, sp500, dax, dow.\n\n"
+        return ("No reconozco el mercado. Prueba con: oro, plata, btc, eurusd, gbpusd, usdjpy, usdcad, sp500, nasdaq, "
+                "dow, dax, ftse, nikkei, eurostoxx, cac, wti, brent.\n\n"
                 + AYUDA_CHAT), None
     tf = buscar_tf(t)
     sin_foto = "sin grafico" in t or "solo texto" in t
