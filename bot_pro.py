@@ -146,6 +146,10 @@ EXPERIMENTALES = {
     ("USD/JPY", "15m"): ["DI_RSI", "AuraPlus"],   # DI_RSI: 36 ops, +0,20 R, PF 1,56 (1a mitad -0,09)
     ("GBP/USD", "15m"): ["HolyGrail", "AuraPlus"],  # HolyGrail: 15 ops, +0,32 R, PF 1,65 (pocas ops)
     ("BTC/USDT", "15m"): ["Tortugas"],   # 31 ops, +0,15 R, PF 1,28 (1a mitad -0,35)
+    # Capital Trading (bloque M15), backtest 23/11/2026 con ~2 meses (Dukascopy bloqueado): positiva en las dos
+    # mitades y con costes x2. Dow: 32 ops +0,32R PF 1,37 · S&P: 29 ops +0,61R PF 1,66. Forex, oro y BTC: negativa.
+    ("DOW 30 (YM)", "15m"): ["CT_Bloque"],
+    ("S&P 500 (ES)", "15m"): ["CT_Bloque"],
 }
 
 # Filtro de LECTURA DE ESTRUCTURA por combinacion (confirmado a 2 anos). Solo donde mejora.
@@ -171,6 +175,11 @@ for _k, _v in INDICES.items():
     ACTIVOS[_k] = {"tipo": "indice", "yf": _v}
 for _k, _v in METALES.items():
     ACTIVOS[_k] = {"tipo": "oro", "yf": _v}
+
+def mercados_vivos():
+    """Mercados que escanea el bot: los 17 en modo 'todas'; si no, MIS_MERCADOS."""
+    return list(ACTIVOS) if CUENTA.get("modo") == "todas" else [x for x in ACTIVOS if x in MIS_MERCADOS]
+
 
 ADX_MIN = {"cripto": 18, "forex": 20, "oro": 20, "indice": 20}
 EXCHANGES = ["kucoin", "okx", "bybit", "binance"]   # binance al final: bloquea IPs de EE.UU.
@@ -212,7 +221,8 @@ CUENTA = {
     "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
     "filtro_noticias": True,    # no avisar 30 min antes ni 15 min despues de una noticia de ALTO impacto
     "reactivar": [],            # nombres de estrategias apagadas por el freno que quieres volver a activar
-    "modo": "ganadoras",        # "ganadoras" = solo las robustas a 2 anos · "comite" = todas votan
+    "modo": "todas",            # "todas" = TODAS las estrategias, los 17 mercados, 24 h (cada alerta dice si esta
+                                #   probada) · "ganadoras" = solo las robustas a 2 anos · "comite" = votan y filtran
                                 # (backtest del comite 23/11/2026: a 2 anos en DAX y Dow TODOS los niveles pierden
                                 #  y A+ ~ C; el comite no crea ventaja -> se usan solo las GANADORAS)
     "max_abiertas": 15,         # cartera: maximo de operaciones abiertas a la vez (5 por nivel x 3 niveles)
@@ -228,6 +238,7 @@ CUENTA = {
     "max_por_exposicion": 2,      # maximo de abiertas apostando lo mismo (p. ej. 2 contra el USD, 2 indices USA)
     "rr_min": 1.5,                # ratio minimo beneficio:riesgo del TP1 (menos = solo observacion)
     "agrupar_alertas": True,      # True = UN mensaje por escaneo con todas las senales nuevas
+    "imagen_alertas": True,       # True = cada alerta operable llega con su grafico (entrada, stop y objetivo)
 }
 
 LOTE = {"forex": CUENTA["contrato_forex"], "oro": CUENTA["contrato_oro"]}
@@ -476,7 +487,23 @@ def historico_yf(ticker, tf, desde=None, hasta=None):
         return None
 
 
+_CACHE_DATOS = {}
+CACHE_SEG = 120
+
+
 def obtener(nombre, tf):
+    """Velas recientes con cache de 2 minutos (un escaneo de 17 mercados no descarga dos veces lo mismo)."""
+    k = (nombre, tf)
+    v = _CACHE_DATOS.get(k)
+    if v is not None and time.time() - v[0] < CACHE_SEG:
+        return v[1]
+    df = _obtener_red(nombre, tf)
+    if df is not None:
+        _CACHE_DATOS[k] = (time.time(), df)
+    return df
+
+
+def _obtener_red(nombre, tf):
     meta = ACTIVOS[nombre]
     sym = meta.get("ccxt") or (nombre if meta["tipo"] == "cripto" else None)
     df = ohlcv_ccxt(sym, tf) if sym else None
@@ -3186,7 +3213,23 @@ def _nota_noticias(nombre, horas=3):
     return ""
 
 
-VERSION_BOT = "v7.2 · + Capital Trading"
+VERSION_BOT = "v8 · todas las alertas con imagen"
+
+
+def etiqueta_prueba(s):
+    peso = s.get("peso")
+    if peso is None:
+        peso = peso_estrategia(s.get("clave"), s["activo"], s.get("tf"))
+    return {3: "✅ PROBADA a 2 años en este mercado", 2: "🧪 EXPERIMENTAL (positiva a 2 años, sin todas las pruebas)"} \
+        .get(peso, "⚠️ SIN VENTAJA PROBADA (en medición en vivo)")
+
+
+def texto_linea_obs(s, tf):
+    """Una linea compacta para las senales que solo son de observacion."""
+    etq = {3: "✅", 2: "🧪"}.get(s.get("peso"), "⚠️")
+    tp = fmt(s["tp1"]) if s.get("tp1") is not None else "salida propia"
+    return (f"{etq} {s['activo']} {tf} · {s['estrategia']} · {s['dir']} · entrada {fmt(s['entrada'])} · "
+            f"SL {fmt(s['sl'])} · TP {tp} · {s.get('motivo_obs') or '-'}")
 
 
 def texto_alerta(s, tf):
@@ -3195,8 +3238,8 @@ def texto_alerta(s, tf):
     if s.get("puntaje") is not None:
         niv, riesgo = nivel_comite(s["puntaje"])
         rr = ratio_rr(s)
-        votos_txt = f" ({s['puntaje']:+d} votos)" if CUENTA.get("modo") == "comite" else ""
-        nivel = (f"{niv}{votos_txt} · sugerido: {riesgo}"
+        votos_txt = f" ({s['puntaje']:+d} votos)" if CUENTA.get("modo") in ("comite", "todas") else ""
+        nivel = (f"{etiqueta_prueba(s)}\n{niv}{votos_txt} · sugerido: {riesgo}"
                  + (f" · ratio 1:{rr:.1f}" if rr else "")
                  + "\n🗳️ " + " · ".join(s.get("votos", [])[:6]) + "\n")
     else:
@@ -3292,34 +3335,65 @@ class Estado:
         return ok
 
     def vaciar_cola(self, cabecera=None):
-        """Manda las alertas en cola en el MENOR numero de mensajes posible (cada uno < 4096 caracteres).
-        Si un mensaje falla, sus senales se borran del diario y podran volver a enviarse."""
+        """Manda la cola del escaneo:
+          - cada alerta OPERABLE: foto del grafico con entrada/stop/objetivo + su texto (si imagen_alertas)
+          - las de OBSERVACION (modo todas): una lista compacta en el menor numero de mensajes
+        Si un envio falla, esas senales se borran del diario y podran volver a enviarse."""
         cola, self.cola = getattr(self, "cola", []), []
         if not cola:
             return 0
-        cab = cabecera or (f"🚨 {len(cola)} señal{'es' if len(cola) > 1 else ''} nueva{'s' if len(cola) > 1 else ''}"
-                           f" · {datetime.now(NY):%a %H:%M} NY")
-        sep = "\n\n━━━━━━━━━━\n\n"
-        lotes, actual, largo = [], [], len(cab)
-        for x in cola:
-            x["txt"] = texto_alerta(x["s"], x["tf"])
-            if actual and largo + len(sep) + len(x["txt"]) > TG_MAX:
-                lotes.append(actual)
-                actual, largo = [], len(cab)
-            actual.append(x)
-            largo += len(sep) + len(x["txt"])
-        lotes.append(actual)
+        llenas = [x for x in cola if not x["s"].get("compacta")]
+        compactas = [x for x in cola if x["s"].get("compacta")]
         enviadas = 0
-        for i, lote in enumerate(lotes):
-            pie = f" ({i + 1}/{len(lotes)})" if len(lotes) > 1 else ""
-            ok, msg = enviar_telegram(cab + pie + sep + sep.join(x["txt"] for x in lote))
+
+        def _resultado(grupo, ok, msg):
             if not ok:
-                print(f"  ! Lote de {len(lote)} alertas NO enviado: {explicar_error_telegram(msg)}", flush=True)
-                ids = {x["s"]["id"] for x in lote if x["registrada"]}
+                print(f"  ! {len(grupo)} alertas NO enviadas: {explicar_error_telegram(msg)}", flush=True)
+                ids = {x["s"]["id"] for x in grupo if x["registrada"]}
                 self.d["abiertas"] = [o for o in self.d.get("abiertas", []) if o.get("id") not in ids]
-            for x in lote:
+            for x in grupo:
                 self._confirmar(x["s"], x["tf"], ok, msg)
-            enviadas += len(lote) if ok else 0
+            return len(grupo) if ok else 0
+
+        if llenas and CUENTA.get("imagen_alertas", True):
+            for x in llenas:                               # una foto + texto por alerta operable
+                txt = texto_alerta(x["s"], x["tf"])
+                png = imagen_alerta(x["s"], x["tf"])
+                ok, msg = (enviar_foto(png, txt) if png else enviar_telegram(txt))
+                enviadas += _resultado([x], ok, msg)
+        elif llenas:
+            cab = cabecera or (f"🚨 {len(llenas)} señal{'es' if len(llenas) > 1 else ''} nueva"
+                               f"{'s' if len(llenas) > 1 else ''} · {datetime.now(NY):%a %H:%M} NY")
+            sep = "\n\n━━━━━━━━━━\n\n"
+            lotes, actual, largo = [], [], len(cab)
+            for x in llenas:
+                x["txt"] = texto_alerta(x["s"], x["tf"])
+                if actual and largo + len(sep) + len(x["txt"]) > TG_MAX:
+                    lotes.append(actual)
+                    actual, largo = [], len(cab)
+                actual.append(x)
+                largo += len(sep) + len(x["txt"])
+            lotes.append(actual)
+            for i_, lote in enumerate(lotes):
+                pie = f" ({i_ + 1}/{len(lotes)})" if len(lotes) > 1 else ""
+                ok, msg = enviar_telegram(cab + pie + sep + sep.join(x["txt"] for x in lote))
+                enviadas += _resultado(lote, ok, msg)
+        if compactas:                                      # lista 👀 de observacion
+            cab = (f"👀 {len(compactas)} señales en observación · {datetime.now(NY):%a %H:%M} NY\n"
+                   f"(no operar: nivel C, ratio bajo o sin hueco en la cartera · ✅ probada · 🧪 experimental · "
+                   f"⚠️ sin ventaja probada)")
+            lotes, actual, largo = [], [], len(cab)
+            for x in compactas:
+                x["txt"] = texto_linea_obs(x["s"], x["tf"])
+                if actual and largo + len(x["txt"]) + 1 > TG_MAX:
+                    lotes.append(actual)
+                    actual, largo = [], len(cab)
+                actual.append(x)
+                largo += len(x["txt"]) + 1
+            lotes.append(actual)
+            for lote in lotes:
+                ok, msg = enviar_telegram(cab + "\n" + "\n".join(x["txt"] for x in lote))
+                enviadas += _resultado(lote, ok, msg)
         self.guardar()
         return enviadas
 
@@ -3684,6 +3758,7 @@ def registrar_senal(estado, s, tf):
     op["nivel"] = s.get("nivel")
     op["riesgo_pct"] = s.get("riesgo_pct")
     op["exposicion"] = list(exposicion(s["activo"], int(s["bias"])) or []) or None
+    op["operable"] = bool(s.get("operable", True))
     estado.d.setdefault("abiertas", []).append(op)
 
 
@@ -3752,7 +3827,7 @@ def seguir_abiertas(estado, cargar=obtener, enviar=True, ahora=None):
         res = res or {"R": None, "motivo": "Caducada", "salida": ""}
         estado.d.setdefault("diario", []).append({**{k: op.get(k) for k in ("estrategia", "activo", "dir", "tf",
                                                                              "enviada", "lectura", "maquina",
-                                                                             "nivel")}, **res})
+                                                                             "nivel", "operable")}, **res})
         cerradas += 1
         if res["R"] is None:
             lineas.append(f"⚪ {op['activo']} ({op['tf']}) · {op['estrategia']}: {res['motivo']}.")
@@ -3773,7 +3848,8 @@ def _hoy_ny():
 
 def revisar_freno(estado, enviar=True):
     """Activa el freno diario y apaga estrategias que pierden en vivo. Devuelve el motivo del freno o None."""
-    diario = [x for x in estado.d.get("diario", []) if x.get("R") is not None]
+    todo_diario = [x for x in estado.d.get("diario", []) if x.get("R") is not None]
+    diario = [x for x in todo_diario if x.get("operable", True)]   # el freno del dia mira solo las operables
     hoy = _hoy_ny()
     if estado.d.get("freno_hasta") and estado.d["freno_hasta"] < hoy:
         estado.d.pop("freno_hasta", None)
@@ -3802,8 +3878,8 @@ def revisar_freno(estado, enviar=True):
             estado.d["diario"] = [x for x in estado.d.get("diario", []) if x.get("estrategia") != est]
             if enviar:
                 enviar_telegram(f"♻️ Estrategia reactivada: {est} (su historial en vivo empieza de cero).")
-    for est in {x["estrategia"] for x in diario}:
-        rs = [x["R"] for x in diario if x["estrategia"] == est]
+    for est in {x["estrategia"] for x in todo_diario}:            # el apagado mide TODAS las senales
+        rs = [x["R"] for x in todo_diario if x["estrategia"] == est]
         if est not in apagadas and len(rs) >= FRENO["min_ops_apagado"] and np.mean(rs[-30:]) < FRENO["r_min_apagado"]:
             apagadas[est] = hoy
             if enviar:
@@ -3872,7 +3948,7 @@ def informe_semanal(estado):
 # ================================================================= ESCANER 24/7
 def escanear(tf, p, estado, verbose=True, cargar=obtener):
     nuevas, filas = 0, []
-    for nm in [x for x in ACTIVOS if x in MIS_MERCADOS]:
+    for nm in mercados_vivos():
         try:
             diags, senales = analizar(nm, tf, p, cargar=cargar)
         except Exception as e:
@@ -4124,7 +4200,7 @@ def exposicion(activo, bias):
 def guardas_cartera(estado, s):
     """Protecciones antes de operar. Devuelve la lista de motivos para NO operarla (vacia = adelante)."""
     avisos = []
-    abiertas = estado.d.get("abiertas", [])
+    abiertas = [o for o in estado.d.get("abiertas", []) if o.get("operable", True)]
     nivel = s.get("nivel")
     if estado.d.get("freno_hasta") == _hoy_ny():
         avisos.append(f"🛑 freno activo hoy ({estado.d.get('freno_motivo')})")
@@ -4174,7 +4250,7 @@ def escanear_comite(tfs, p, estado, verbose=True, cargar=obtener):
     pasa el umbral (con las protecciones de siempre: noticias, stops absurdos, freno, cartera, apagadas)."""
     p = dict(p, solo_ganadoras=False)
     nuevas, filas, n_senales = 0, [], 0
-    for nm in [x for x in ACTIVOS if x in MIS_MERCADOS]:
+    for nm in mercados_vivos():
         brutas = []
         for tf in tfs:
             try:
@@ -4200,24 +4276,34 @@ def escanear_comite(tfs, p, estado, verbose=True, cargar=obtener):
 
 
 def decidir_senal(s, tf, p, estado):
-    """Ruta de cada senal votada: 'enviar' (alerta operable), 'observar' (al resumen diario) o 'repetida'.
-    Solo se envian sueltas las de nivel A+/A/B con ratio suficiente y hueco en la cartera."""
+    """Ruta de cada senal votada: 'enviar', 'observar' (al resumen diario) o 'repetida'.
+    Modo normal: solo se envian A+/A/B con ratio suficiente y hueco en la cartera.
+    Modo 'todas': se envian TODAS; las que no cumplen van marcadas 👀 (solo observar) en una lista compacta."""
+    todas = CUENTA.get("modo") == "todas"
     s["nivel"] = letra_nivel(s["puntaje"])
     if not estado.es_nueva(s, tf):                    # ya enviada (o en cooldown): ni se envia ni se observa
         return "repetida"
     rr = ratio_rr(s)
     s["rr"] = rr
+    motivo = None
     if s["nivel"] == "C":
-        return "observar" if estado.observar(s, tf, "nivel C") else "repetida"
-    if rr is not None and rr < CUENTA.get("rr_min", 0) - 1e-9:
-        return "observar" if estado.observar(s, tf, f"ratio bajo (1:{rr:.2f})") else "repetida"
-    s["riesgo_pct"] = CUENTA["riesgo_nivel"][s["nivel"]]
-    s["riesgo_usd"] = p["banco"] * s["riesgo_pct"] / 100
-    viabilidad(s, p)                                  # recalcula el tamano con el riesgo de su nivel
-    avisos = guardas_cartera(estado, s)
-    if avisos:
-        return "observar" if estado.observar(s, tf, avisos[0]) else "repetida"
-    s["avisos"], s["registrar"] = [], True
+        motivo = "nivel C"
+    elif rr is not None and rr < CUENTA.get("rr_min", 0) - 1e-9:
+        motivo = f"ratio bajo (1:{rr:.2f})"
+    if motivo and not todas:
+        return "observar" if estado.observar(s, tf, motivo) else "repetida"
+    if not motivo:
+        s["riesgo_pct"] = CUENTA["riesgo_nivel"][s["nivel"]]
+        s["riesgo_usd"] = p["banco"] * s["riesgo_pct"] / 100
+        viabilidad(s, p)                              # recalcula el tamano con el riesgo de su nivel
+        avisos = guardas_cartera(estado, s)
+        if avisos and not todas:
+            return "observar" if estado.observar(s, tf, avisos[0]) else "repetida"
+        motivo = avisos[0] if avisos else None
+    s["operable"] = motivo is None
+    s["compacta"] = not s["operable"]
+    s["motivo_obs"] = motivo
+    s["avisos"], s["registrar"] = [], True            # el diario sigue TODAS para medirlas en vivo
     return "enviar" if estado.procesar(s, tf) else "repetida"
 
 
@@ -4282,6 +4368,12 @@ def resumen_estado(filas):
 
 def texto_perfil(p):
     """Que vigila el bot de verdad: el perfil ganador (o todas las estrategias con --todas)."""
+    if p.get("solo_ganadoras") and CUENTA.get("modo") == "todas":
+        n_est = len({e for m in ACTIVOS for e in ESTRATEGIAS_ACTIVO.get(m, [])})
+        return (f"📡 MODO TODAS: {n_est} estrategias en {len(ACTIVOS)} mercados, 24 h (5m y 15m).\n"
+                f"Cada alerta dice si está ✅ probada a 2 años, 🧪 experimental o ⚠️ sin ventaja probada.\n"
+                f"Las operables (A+/A/B, ratio ≥ 1:{CUENTA.get('rr_min', 0):g}, hueco en la cartera) llegan con su "
+                f"gráfico 📈; el resto en una lista 👀 de observación. El diario mide TODAS en vivo y apaga las que pierden.")
     if p.get("solo_ganadoras") and CUENTA.get("modo") == "comite":
         n_est = len({e for m in MIS_MERCADOS for e in ESTRATEGIAS_ACTIVO.get(m, [])})
         return (f"🗳️ MODO COMITÉ: {n_est} estrategias votan en {len(MIS_MERCADOS)} mercados (5m y 15m).\n"
@@ -4342,7 +4434,7 @@ def correr_bot(a, p):
         except Exception as e:
             print(f"  ! Diario/freno: {e}", flush=True)
         try:
-            if CUENTA.get("modo") == "comite" and p.get("solo_ganadoras"):
+            if CUENTA.get("modo") in ("comite", "todas") and p.get("solo_ganadoras"):
                 n, filas = escanear_comite(a.tf, p, estado)
             else:
                 n, filas = escanear_varios(a.tf, p, estado)
@@ -4351,7 +4443,7 @@ def correr_bot(a, p):
             print(f"  -> {n} alertas nuevas enviadas", flush=True)
             if ping:                                   # en la prueba manual: manda tambien el diagnostico
                 ok, msg = enviar_telegram(f"📋 Estado del escaner ({' + '.join(a.tf)}) · {n} señales nuevas\n"
-                                          + (resumen_comite(filas) if CUENTA.get("modo") == "comite"
+                                          + (resumen_comite(filas) if CUENTA.get("modo") in ("comite", "todas")
                                              else resumen_estado(filas))[:3000] + "\n\n" + proximas_noticias())
                 print(f"Resumen a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
                 ping = False
@@ -4925,6 +5017,52 @@ def _niveles_escenario(m):
             ("Objetivo", esc["objetivo"], "objetivo")]
 
 
+def imagen_alerta(s, tf):
+    """Grafico de la operacion de una alerta: velas, zonas y lineas de entrada, stop y objetivo(s)."""
+    try:
+        m = analisis_mercado(s["activo"], tf, obtener)
+    except Exception as e:
+        print(f"  ! Imagen de la alerta {s['activo']}: {e}", flush=True)
+        return None
+    niv = [("Entrada", float(s["entrada"]), "entrada"), ("Stop", float(s["sl"]), "stop")]
+    if s.get("tp1") is not None:
+        niv.append(("TP1", float(s["tp1"]), "objetivo"))
+    if s.get("tp2") is not None:
+        niv.append(("TP2", float(s["tp2"]), "objetivo"))
+    try:
+        return grafico_mercado(m, niv, figuras=False,
+                               titulo=f"{'🟢 LONG' if s['bias'] > 0 else '🔴 SHORT'} {s['activo']} · {tf} · "
+                                      f"{s['estrategia']}".replace("🟢 ", "").replace("🔴 ", ""))
+    except Exception as e:
+        print(f"  ! Grafico de la alerta {s['activo']}: {e}", flush=True)
+        return None
+
+
+def enviar_foto(png, texto):
+    """Foto + texto a todos los chats. Si el texto cabe en el pie (1024) va junto; si no, foto y luego el texto."""
+    token = secreto("TELEGRAM_TOKEN")
+    ids = [i.strip() for i in secreto("TELEGRAM_CHAT_IDS").replace(";", ",").split(",") if i.strip()]
+    if not token or not ids:
+        return False, "Faltan TELEGRAM_TOKEN / TELEGRAM_CHAT_IDS"
+    errores = []
+    for chat_id in ids:
+        try:
+            pie = texto if len(texto) <= 1024 else texto.split("\n")[0]
+            r = enviar_foto_telegram(token, chat_id, png, pie)
+            if not r.ok:
+                errores.append(f"{chat_id}: {r.status_code} {r.text[:120]}")
+                continue
+            if len(texto) > 1024:
+                for parte in trozos_telegram(texto):
+                    r2 = _post_telegram(token, chat_id, parte)
+                    if not r2.ok:
+                        errores.append(f"{chat_id}: {r2.status_code} {r2.text[:120]}")
+                        break
+        except Exception as e:
+            errores.append(f"{chat_id}: {e}")
+    return (not errores), ("; ".join(errores) or "Enviado")
+
+
 def enviar_foto_telegram(token, chat_id, png, pie=""):
     """Manda una imagen al chat (sendPhoto). El pie se limita a 1024 caracteres."""
     espera = TG_PAUSA - (time.time() - _TG["ultimo"])
@@ -5338,6 +5476,8 @@ def cli():
         kz = {k: [] for k in kz}
     if a.cripto_24h:
         kz["cripto"] = []
+    if CUENTA.get("modo") == "todas":                # alertas a cualquier hora (si el mercado esta abierto)
+        kz = {k: [] for k in kz}
     p = dict(PARAMS_DEFAULT, min_score=a.min_score, banco=a.banco, riesgo=a.riesgo, kz=kz,
              estrategias=a.estrategias, solo_ganadoras=(a.modo == "bot" and not a.todas))
     if a.modo == "backtest":
