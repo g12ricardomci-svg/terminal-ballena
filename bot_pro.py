@@ -9,7 +9,10 @@ Mercados: BTC/USDT · EUR/USD · GBP/USD · USD/JPY · XAU/USD (Oro)
   python bot_pro.py --una-vez       -> una sola pasada (es lo que usa GitHub Actions)
   python bot_pro.py --crear-github  -> crea .github/workflows/bot.yml para correrlo gratis en GitHub
   python bot_pro.py backtest --activos BTC/USDT "GBP/USD" -> backtest vela a vela
-  streamlit run bot_pro.py          -> panel visual (escaner + backtest)
+  streamlit run bot_pro.py          -> panel + MOTOR 24/7 en segundo plano (Streamlit Cloud): escanea cada
+                                       15 min y avisa por Telegram aunque nadie tenga la pagina abierta.
+                                       Streamlit Cloud duerme la app tras 12 h sin visitas: para 24/7 real
+                                       usa tambien GitHub Actions (python bot_pro.py --crear-github).
 
 Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
   SMC      (todos)        : sesgo 1H -> BOS -> Order Block + OTE + FVG + POC + OB fresco.
@@ -892,6 +895,9 @@ class Estado:
         if s["id"] in self.d["ids"] or time.time() - self.d["enviadas"].get(k, 0) < COOLDOWN_H * 3600:
             return False
         ok, msg = enviar_telegram(texto_alerta(s, tf)) if enviar else (False, "Envio desactivado")
+        if not ok and enviar:
+            print(f"  ! Alerta NO enviada ({s['activo']} {s['estrategia']}): {explicar_error_telegram(msg)}",
+                  flush=True)
         if ok:
             self.d["enviadas"][k] = time.time()
             self.d["ids"].append(s["id"])
@@ -1092,19 +1098,64 @@ def escanear(tf, p, estado, verbose=True, cargar=obtener):
     return nuevas, filas
 
 
+def explicar_error_telegram(msg):
+    """Traduce los errores tipicos de la API de Telegram a una causa y su solucion."""
+    m = msg.lower()
+    if "401" in m or "unauthorized" in m:
+        return "TOKEN invalido o revocado: crea uno nuevo con @BotFather y ponlo en TELEGRAM_TOKEN."
+    if "chat not found" in m:
+        return "Ese chat no existe para el bot: la persona debe abrir el bot en Telegram y pulsar Iniciar (/start)."
+    if "blocked" in m or "403" in m:
+        return "El usuario bloqueo el bot o no lo ha iniciado: abre el bot y pulsa Iniciar (/start)."
+    if "timed out" in m or "connection" in m:
+        return "Sin conexion con api.telegram.org desde este servidor."
+    return msg
+
+
+def revisar_telegram():
+    """Comprueba el token (getMe) y que cada chat reciba mensajes. Imprime la causa exacta si algo falla."""
+    token = secreto("TELEGRAM_TOKEN")
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/getMe", timeout=15).json()
+        if r.get("ok"):
+            print(f"Telegram: token OK, bot @{r['result'].get('username')}", flush=True)
+        else:
+            print(f"Telegram: TOKEN INVALIDO -> {r.get('description')}", flush=True)
+            return False
+    except Exception as e:
+        print(f"Telegram: sin conexion -> {e}", flush=True)
+        return False
+    return True
+
+
+def resumen_estado(filas):
+    """Texto corto para Telegram: que esta haciendo cada estrategia en cada mercado."""
+    lineas = []
+    for f in filas:
+        lineas.append(f"• {f.get('Activo')} · {f.get('Estrategia', '-')}: {f.get('Estado', '-')}")
+    return "\n".join(lineas)
+
+
 def correr_bot(a, p):
     estado = Estado(a.estado)
-    if getattr(a, "ping", False):
+    ping = getattr(a, "ping", False)
+    if ping:
+        revisar_telegram()
         ok, msg = enviar_telegram(f"✅ Bot Pro activo · {datetime.now(NY):%a %d/%m %H:%M} NY\n"
                                   f"Mercados: {', '.join(ACTIVOS)}\nTemporalidad: {a.tf}")
-        print(f"Ping a Telegram: {'OK' if ok else msg}", flush=True)
+        print(f"Ping a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
     print(f"🏛️ BOT PRO iniciado · estrategias: {', '.join(p['estrategias'])} · {a.tf} · "
           f"{'una pasada' if a.una_vez else 'bucle 24/7'}", flush=True)
     while True:
         print(f"\n[{datetime.now(NY):%Y-%m-%d %H:%M:%S} NY] Escaneando {len(ACTIVOS)} activos", flush=True)
         try:
-            n, _ = escanear(a.tf, p, estado)
+            n, filas = escanear(a.tf, p, estado)
             print(f"  -> {n} alertas nuevas enviadas", flush=True)
+            if ping:                                   # en la prueba manual: manda tambien el diagnostico
+                ok, msg = enviar_telegram(f"📋 Estado del escaner ({a.tf}) · {n} señales nuevas\n"
+                                          + resumen_estado(filas)[:3800])
+                print(f"Resumen a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
+                ping = False
         except Exception as e:                     # el bot nunca se cae por un error puntual
             print(f"  ! Error en el escaneo: {e}", flush=True)
         estado.guardar()
@@ -1140,6 +1191,36 @@ def panel():
     def memoria():
         return Estado("estado.json")
 
+    @st.cache_resource
+    def motor_fondo():
+        """Motor 24/7 dentro del servidor de Streamlit: arranca UNA vez y sigue escaneando aunque
+        nadie tenga la pagina abierta (mientras el servidor este despierto)."""
+        import threading
+        info = {"inicio": datetime.now(NY), "ultimo": None, "senales": 0, "error": ""}
+
+        def bucle():
+            mem = memoria()
+            ok, msg = enviar_telegram(f"✅ Bot Pro activo (motor 24/7 en Streamlit) · "
+                                      f"{datetime.now(NY):%a %d/%m %H:%M} NY\nMercados: {', '.join(ACTIVOS)}")
+            info["error"] = "" if ok else explicar_error_telegram(msg)
+            primera = True
+            while True:
+                try:
+                    n, filas = escanear("15m", dict(PARAMS_DEFAULT), mem, verbose=False)
+                    info["ultimo"], info["senales"] = datetime.now(NY), info["senales"] + n
+                    if primera:
+                        enviar_telegram("📋 Estado del escaner (15m)\n" + resumen_estado(filas)[:3800])
+                        primera = False
+                except Exception as e:
+                    info["error"] = str(e)
+                mem.guardar()
+                time.sleep(900 - (time.time() % 900) + 20)     # 20 s despues de cada cierre de 15m
+
+        threading.Thread(target=bucle, daemon=True, name="motor-24-7").start()
+        return info
+
+    fondo = motor_fondo()
+
     sb = st.sidebar
     sb.title("🌐 Configuración")
     estrategias = sb.multiselect("Estrategias", list(ESTRATEGIAS), list(ESTRATEGIAS),
@@ -1155,8 +1236,9 @@ def panel():
     kz = {t: sb.multiselect(t.capitalize(), list(KILLZONES), KZ_DEFAULT[t], key=f"kz_{t}") for t in KZ_DEFAULT}
     sb.caption(" · ".join(f"{k} {a:02.0f}-{b:02.0f}h" for k, (a, b) in KILLZONES.items()))
     auto = sb.checkbox("Auto-escaneo cada 5 min", True)
-    enviar = sb.checkbox("Enviar alertas a Telegram desde el panel", True,
-                         help="Desactívalo si el bot 24/7 ya está corriendo, para no duplicar")
+    enviar = sb.checkbox("Enviar también desde el panel (con tus ajustes)", False,
+                         help="El motor 24/7 ya envía las alertas con los ajustes por defecto. Actívalo solo si "
+                              "quieres alertas con los ajustes de esta barra lateral.")
     if sb.button("🔔 Probar Telegram ahora"):
         ok, msg = enviar_telegram("✅ Prueba de Bot Pro")
         (sb.success if ok else sb.error)(msg if ok else f"No se pudo enviar: {msg}")
@@ -1166,7 +1248,11 @@ def panel():
              estrategias=estrategias or list(ESTRATEGIAS))
 
     st.markdown("# 🏛️ BOT PRO · QUANT TERMINAL")
-    st.caption("SMC Order Blocks + Barrido de liquidez · contexto 1H → entrada 15m/5m · solo velas cerradas")
+    st.caption("SMC · Barrido · Tortugas · Ruptura de Londres · contexto 1H → entrada 15m · solo velas cerradas")
+    ult = f"{fondo['ultimo']:%H:%M}" if fondo["ultimo"] else "escaneando..."
+    (st.error if fondo["error"] else st.success)(
+        f"🟢 Motor 24/7 activo desde {fondo['inicio']:%d/%m %H:%M} NY · último escaneo {ult} · "
+        f"{fondo['senales']} señales enviadas" + (f" · ⚠️ Telegram: {fondo['error']}" if fondo["error"] else ""))
     t1, t2 = st.tabs(["📡 Escáner", "🧪 Backtest"])
 
     with t1:
