@@ -223,3 +223,36 @@ def test_maquina_del_tiempo_proporciones():
 
 def test_maquina_del_tiempo_sin_datos():
     assert b.maquina_del_tiempo(_velas(100), {"bias": 1, "entrada": 1, "sl": 0.9}) is None
+
+
+# ----------------------------------------------------------------- backtest del comite
+def _op(activo, t, salida, R=1.0, bias=1, est="Barrido", clave="Barrido", lectura="NEUTRAL", rr=2.0):
+    return {"estrategia": est, "clave": clave, "activo": activo, "bias": bias, "t_utc": t, "salida_utc": salida,
+            "R": R, "R_bruto": R + 0.05, "coste_R": 0.05, "lectura": lectura, "rr": rr}
+
+
+def test_puntuar_comite_aliados_y_conflicto():
+    t = pd.Timestamp("2026-01-05 10:00", tz="UTC")
+    ops = pd.DataFrame([_op("EUR/USD", t.isoformat(), "x")])
+    votos = [{"t": t, "estrategia": "Barrido", "bias": 1}, {"t": t, "estrategia": "SMC", "bias": 1},
+             {"t": t, "estrategia": "Judas", "bias": 1}]
+    r = b.puntuar_comite(ops, votos, "EUR/USD", "15m").iloc[0]
+    assert (r["peso"], r["aliados"], r["puntaje"], r["nivel"]) == (1, 2, 3, "A")
+    votos.append({"t": t, "estrategia": "RSI2", "bias": -1})                   # voto contrario: -2
+    r = b.puntuar_comite(ops, votos, "EUR/USD", "15m").iloc[0]
+    assert (r["puntaje"], r["nivel"], bool(r["contraria"])) == (1, "C", True)
+
+
+def test_simular_cartera_aplica_las_reglas(monkeypatch):
+    monkeypatch.setitem(b.CUENTA, "riesgo_total_max_pct", 3.0)
+    ops = pd.DataFrame([
+        {**_op("BTC/USDT", "2026-01-01T10:00", "2026-01-01T12:00", R=2.0), "nivel": "A+"},     # tomada: +4%
+        {**_op("XAU/USD (Oro)", "2026-01-01T10:30", "2026-01-01T11:00", R=-1.0), "nivel": "A+"},  # tope 3%
+        {**_op("EUR/USD", "2026-01-01T10:45", "2026-01-01T13:00", R=-1.0), "nivel": "A"},     # tomada: -1%
+        {**_op("GBP/USD", "2026-01-01T11:00", "2026-01-01T13:00", R=1.0), "nivel": "C"},      # nivel C
+        {**_op("USD/JPY", "2026-01-01T11:00", "2026-01-01T13:00", R=1.0, rr=1.0), "nivel": "A"},  # ratio bajo
+    ])
+    res, tm = b.simular_cartera(ops)
+    assert list(tm["activo"]) == ["BTC/USDT", "EUR/USD"]
+    assert res["Retorno % (suma)"] == pytest.approx(2 * 2.0 - 1 * 1.0)
+    assert res["Rechazadas"] == {"tope de riesgo total": 1, "nivel C": 1, "ratio bajo": 1}

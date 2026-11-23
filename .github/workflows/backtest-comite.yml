@@ -1,0 +1,135 @@
+name: Backtest del comite (v6)
+
+# ¿El comite funciona? Backtest de ~2 anos en 15m con TODAS las estrategias en los 9 mercados del bot en vivo.
+# Cada operacion recibe su puntaje de comite (mismas reglas que en vivo) y se mide:
+#   1) si un A+ gana mas que un A, un B y un C (todas las senales, sin limites)
+#   2) si los VOTOS ayudan por si solos (sin el peso propio, que sale de estos mismos backtests)
+#   3) la CARTERA v6 completa en los 9 mercados a la vez: cupos 5/5/5, riesgo 2/1/0,5 %, tope 6 %, exposicion,
+#      una por mercado y ratio minimo 1:1,5
+# Forex, oro e indices: velas de Dukascopy. BTC: exchanges via ccxt.
+# Se lanza al subir cambios a este archivo, o a mano con "Run workflow".
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/backtest-comite.yml"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        tf: ["15m"]
+        mercado:
+          - { activo: "EUR/USD", duka: "eurusd", tipo: "forex" }
+          - { activo: "GBP/USD", duka: "gbpusd", tipo: "forex" }
+          - { activo: "USD/JPY", duka: "usdjpy", tipo: "forex" }
+          - { activo: "USD/CAD", duka: "usdcad", tipo: "forex" }
+          - { activo: "XAU/USD (Oro)", duka: "xauusd", tipo: "oro" }
+          - { activo: "S&P 500 (ES)", duka: "usa500idxusd", tipo: "indice" }
+          - { activo: "DAX 40", duka: "deuidxeur", tipo: "indice" }
+          - { activo: "DOW 30 (YM)", duka: "usa30idxusd", tipo: "indice" }
+          - { activo: "BTC/USDT", duka: "", tipo: "cripto" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - name: Fechas
+        run: |
+          echo "DESDE=$(date -u -d '730 days ago' +%F)" >> "$GITHUB_ENV"
+          echo "HASTA=$(date -u +%F)" >> "$GITHUB_ENV"
+      - name: Descargar Dukascopy (${{ matrix.mercado.duka }})
+        if: matrix.mercado.duka != ''
+        run: |
+          npx --yes dukascopy-node -i ${{ matrix.mercado.duka }} -from "$DESDE" -to "$HASTA" -t m15 -f csv -dir data
+          ls -la data
+      - name: Convertir CSV
+        if: matrix.mercado.duka != ''
+        shell: python
+        run: |
+          import glob, pandas as pd
+          f = sorted(glob.glob("data/*.csv"))[0]
+          d = pd.read_csv(f)
+          d.columns = [c.lower() for c in d.columns]
+          t = d["timestamp"]
+          d.index = pd.to_datetime(t, unit="ms", utc=True) if pd.api.types.is_numeric_dtype(t) else pd.to_datetime(t, utc=True)
+          if "volume" not in d:
+              d["volume"] = 0.0
+          if "${{ matrix.mercado.tipo }}" == "forex":
+              d["volume"] = 0.0          # igual que en vivo: Yahoo no da volumen de forex
+          d = d[["open", "high", "low", "close", "volume"]].astype(float)
+          d = d[(d["high"] > d["low"]) | (d["volume"] > 0)]   # quita velas planas de mercado cerrado
+          d.to_csv("datos.csv")
+          print(f, len(d), d.index[0], d.index[-1])
+      - name: Backtest del comite
+        run: |
+          if [ -n "${{ matrix.mercado.duka }}" ]; then
+            python bot_pro.py backtest --comite --tf 15m --csv datos.csv --nombre "${{ matrix.mercado.activo }}" --tipo ${{ matrix.mercado.tipo }} --salida res
+          else
+            python bot_pro.py backtest --comite --tf 15m --activos "${{ matrix.mercado.activo }}" --desde "$DESDE" --salida res
+          fi
+      - name: Nombre del artefacto
+        id: n
+        run: echo "n=$(echo '${{ matrix.mercado.activo }}' | tr -c 'A-Za-z0-9-' '_')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: comite-${{ steps.n.outputs.n }}
+          path: res/
+          if-no-files-found: ignore
+
+  resumen:
+    needs: backtest
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: todo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests tabulate
+      - name: Comite y cartera v6 (todos los mercados juntos)
+        shell: python
+        run: |
+          import glob, os, pandas as pd
+          import bot_pro as b
+          fs = glob.glob("todo/*/*/operaciones.csv")
+          if not fs:
+              print("Sin resultados"); raise SystemExit
+          ops = pd.concat(pd.read_csv(f) for f in fs)
+          print(f"{len(fs)} mercados · {len(ops)} operaciones · {ops['t_utc'].min()} -> {ops['t_utc'].max()}")
+          txt, niv, sp, cart = b.informe_comite(ops)
+          print(txt)
+          por_mercado = []
+          for a, g in ops.groupby("activo"):
+              t = b.tabla_robustez(g, "nivel").assign(Activo=a)
+              por_mercado.append(t)
+          pm = pd.concat(por_mercado)[["Activo", "nivel", "Ops", "Aciertos%", "R prom", "PF", "Costes x2", "1a mitad", "2a mitad"]]
+          print("\n=== Por MERCADO y nivel ===\n" + pm.to_string(index=False))
+          res, tomadas = b.simular_cartera(ops)
+          print("\n=== CARTERA v6 · por mercado (operaciones tomadas) ===")
+          print(b.tabla_robustez(tomadas, "activo").to_string(index=False) if len(tomadas) else "-")
+          print("\n=== CARTERA v6 · por nivel (operaciones tomadas) ===")
+          print(b.tabla_robustez(tomadas, "nivel").to_string(index=False) if len(tomadas) else "-")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write("## Comite por nivel\n\n" + niv.to_markdown(index=False)
+                      + "\n\n## Solo los votos (sin peso propio)\n\n" + sp.to_markdown(index=False)
+                      + "\n\n## Cartera v6\n\n" + "\n".join(f"- **{k}**: {v}" for k, v in cart.items())
+                      + "\n\n## Por mercado y nivel\n\n" + pm.to_markdown(index=False) + "\n")
+          ops.to_csv("comite_operaciones.csv", index=False)
+          tomadas.to_csv("cartera_v6_tomadas.csv", index=False)
+          pm.to_csv("comite_por_mercado.csv", index=False)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resultados-comite
+          path: "*.csv"

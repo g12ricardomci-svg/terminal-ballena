@@ -3192,9 +3192,11 @@ def simular(o, h, l, c, k, d, sl, gestion, max_barras, s=None, canal_lo=None, ca
 
 
 def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", coste_pct=None,
-                    max_barras=None, progreso=None):
+                    max_barras=None, progreso=None, votos=None):
     """Recorre df vela a vela con la MISMA funcion evaluar() del modo en vivo.
-    El contexto se construye remuestreando df (solo velas de contexto ya cerradas)."""
+    El contexto se construye remuestreando df (solo velas de contexto ya cerradas).
+    Si se pasa la lista 'votos', guarda TODAS las senales de cada vela (aunque no se operen): son los votos
+    del comite para puntuar despues cada operacion (ver puntuar_comite)."""
     coste_pct = COSTE_DEFAULT[tipo] if coste_pct is None else coste_pct
     max_barras = max_barras or int(24 * 60 / TF_MIN[tf])
     df = df.sort_index()
@@ -3223,6 +3225,9 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
         nd = int(dia_cierre.searchsorted(ahora, side="right"))
         _, senales = evaluar(nombre, tipo, df.iloc[idx - VENTANA + 1: idx + 1],
                              ctx.iloc[max(0, nc - VENTANA_CTX): nc], p, ahora, dia.iloc[max(0, nd - 260): nd])
+        if votos is not None:
+            for s in senales:
+                votos.append({"t": ahora, "estrategia": s["estrategia"], "bias": int(s["bias"])})
         for s in senales:
             clave = f"{s['estrategia']}|{s['dir']}"
             if idx < libre.get(s["estrategia"], 0):          # una posicion a la vez por estrategia
@@ -3270,7 +3275,10 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
                         "motivo": motivo, "R_bruto": round(r_bruto, 3), "coste_R": round(r_coste, 3),
                         "R": round(r_bruto - r_coste, 3), "barras": salida - idx,
                         "lectura": (s.get("lectura") or {}).get("veredicto", "-"),
-                        "lectura_pts": (s.get("lectura") or {}).get("puntos", 0)})
+                        "lectura_pts": (s.get("lectura") or {}).get("puntos", 0),
+                        "clave": s.get("clave"), "bias": int(s["bias"]), "t_utc": ahora.isoformat(),
+                        "salida_utc": (df.index[salida] + paso).isoformat(),
+                        "rr": round(ratio_rr(s), 3) if ratio_rr(s) else None})
             libre[s["estrategia"]] = salida + 1
     if progreso:
         progreso(1.0)
@@ -3302,6 +3310,118 @@ def desglose(ops, col):
                          "R prom": g.mean().round(3), "R total": g.sum().round(2)})
 
 
+# ================================================================= BACKTEST DEL COMITE (v6)
+def puntuar_comite(ops, votos, activo, tf):
+    """Da a cada operacion del backtest su puntaje de comite con las MISMAS reglas que en vivo (votar):
+    peso propio + 1 por aliado en la misma vela y direccion + lectura (+1/-1) - 2 si hay voto contrario.
+    La maquina del tiempo no vota aqui (con deriva neutra su voto es ~0). 'puntaje_sin_peso' quita el peso
+    propio para ver si los votos ayudan por si solos (el peso sale de estos mismos backtests)."""
+    if ops is None or ops.empty:
+        return ops
+    por_t = {}
+    for v in votos:
+        por_t.setdefault(pd.Timestamp(v["t"]).isoformat(), []).append(v)
+    filas = []
+    for _, op in ops.iterrows():
+        vs = por_t.get(op["t_utc"], [])
+        aliados = sorted({v["estrategia"] for v in vs if v["bias"] == op["bias"] and v["estrategia"] != op["estrategia"]})
+        contraria = any(v["bias"] == -op["bias"] for v in vs)
+        peso = peso_estrategia(op.get("clave"), activo, tf)
+        lect = {"CONFIRMA": COMITE["lectura"], "CONTRADICE": -COMITE["lectura"]}.get(op.get("lectura"), 0)
+        sin_peso = COMITE["aliado"] * len(aliados) + lect + (COMITE["conflicto"] if contraria else 0)
+        filas.append({"peso": peso, "aliados": len(aliados), "contraria": contraria,
+                      "puntaje": peso + sin_peso, "puntaje_sin_peso": sin_peso,
+                      "nivel": letra_nivel(peso + sin_peso)})
+    return pd.concat([ops.reset_index(drop=True), pd.DataFrame(filas)], axis=1)
+
+
+def tabla_robustez(ops, col):
+    """Por cada valor de 'col': operaciones, aciertos, R medio, PF, con costes x2 y por mitades del periodo."""
+    filas = []
+    for k, g in ops.groupby(col):
+        g = g.sort_values("t_utc" if "t_utc" in g else "senal_NY")
+        R = g["R"].to_numpy(dtype=float)
+        gan, per = R[R > 0].sum(), -R[R < 0].sum()
+        mitad = len(g) // 2
+        x2 = (g["R_bruto"] - 2 * g["coste_R"]).mean() if {"R_bruto", "coste_R"} <= set(g) else np.nan
+        filas.append({col: k, "Ops": len(g), "Aciertos%": round(100 * (R > 0).mean(), 1),
+                      "R prom": round(R.mean(), 3), "R total": round(R.sum(), 1),
+                      "PF": round(gan / per, 2) if per > 0 else np.inf, "Costes x2": round(x2, 3),
+                      "1a mitad": round(R[:mitad].mean(), 3) if mitad else np.nan,
+                      "2a mitad": round(R[mitad:].mean(), 3)})
+    return pd.DataFrame(filas)
+
+
+def simular_cartera(ops):
+    """Reproduce la cartera v6 sobre las operaciones del backtest de TODOS los mercados juntos, en orden de
+    tiempo: nivel C fuera, ratio minimo, una por mercado, cupos por nivel, tope de riesgo total y exposicion.
+    Cada operacion aceptada gana/pierde R x riesgo% de su nivel. Devuelve (resumen, operaciones tomadas)."""
+    ops = ops.sort_values("t_utc").reset_index(drop=True)
+    abiertas, tomadas, rechazo = [], [], {}
+    for _, op in ops.iterrows():
+        t = op["t_utc"]
+        abiertas = [o for o in abiertas if o["salida_utc"] > t]
+        motivo = None
+        nivel = op["nivel"]
+        rr = op.get("rr")
+        riesgo = CUENTA["riesgo_nivel"].get(nivel, 0)
+        expo = exposicion(op["activo"], int(op["bias"]))
+        if nivel == "C":
+            motivo = "nivel C"
+        elif rr is not None and not pd.isna(rr) and rr < CUENTA.get("rr_min", 0) - 1e-9:
+            motivo = "ratio bajo"
+        elif len(abiertas) >= CUENTA.get("max_abiertas", 15):
+            motivo = "cartera llena"
+        elif CUENTA.get("una_por_mercado", True) and any(o["activo"] == op["activo"] for o in abiertas):
+            motivo = "ya abierta en el mercado"
+        elif sum(o["nivel"] == nivel for o in abiertas) >= CUENTA.get("cupos", {}).get(nivel, 99):
+            motivo = "cupo del nivel"
+        elif sum(o["riesgo"] for o in abiertas) + riesgo > CUENTA.get("riesgo_total_max_pct", 1e9) + 1e-9:
+            motivo = "tope de riesgo total"
+        elif CUENTA.get("max_por_exposicion") and any(
+                sum(e in o["expo"] for o in abiertas) >= CUENTA["max_por_exposicion"] for e in expo):
+            motivo = "exposicion repetida"
+        if motivo:
+            rechazo[motivo] = rechazo.get(motivo, 0) + 1
+            continue
+        abiertas.append({"activo": op["activo"], "nivel": nivel, "riesgo": riesgo, "expo": expo,
+                         "salida_utc": op["salida_utc"]})
+        tomadas.append({**op.to_dict(), "riesgo_pct": riesgo, "pnl_pct": op["R"] * riesgo})
+    tm = pd.DataFrame(tomadas)
+    if tm.empty:
+        return {"Operaciones": 0, "Rechazadas": rechazo}, tm
+    tm = tm.sort_values("salida_utc").reset_index(drop=True)
+    eq = np.r_[0, np.cumsum(tm["pnl_pct"].to_numpy())]
+    dd = float((eq - np.maximum.accumulate(eq)).min())
+    comp = np.r_[1, np.cumprod(1 + tm["pnl_pct"].to_numpy() / 100)]
+    dd_comp = float(((comp - np.maximum.accumulate(comp)) / np.maximum.accumulate(comp)).min() * 100)
+    mes = tm["salida_utc"].str[:7]
+    por_mes = tm.groupby(mes)["pnl_pct"].sum()
+    mitad = len(tm) // 2
+    res = {"Operaciones": len(tm), "Aciertos%": round(100 * (tm["R"] > 0).mean(), 1),
+           "R prom": round(tm["R"].mean(), 3), "Retorno % (suma)": round(eq[-1], 1),
+           "Retorno % (compuesto)": round(100 * (comp[-1] - 1), 1), "Max DD % (suma)": round(dd, 1),
+           "Max DD % (compuesto)": round(dd_comp, 1), "Meses +": f"{(por_mes > 0).sum()}/{len(por_mes)}",
+           "Peor mes %": round(por_mes.min(), 1), "Mejor mes %": round(por_mes.max(), 1),
+           "Retorno 1a mitad %": round(tm["pnl_pct"].iloc[:mitad].sum(), 1),
+           "Retorno 2a mitad %": round(tm["pnl_pct"].iloc[mitad:].sum(), 1), "Rechazadas": rechazo}
+    return res, tm
+
+
+def informe_comite(ops):
+    """Texto del backtest del comite: ¿un A+ gana mas que un B? ¿y la cartera v6 completa?"""
+    orden = {"A+": 0, "A": 1, "B": 2, "C": 3}
+    niv = tabla_robustez(ops, "nivel")
+    niv = niv.sort_values("nivel", key=lambda s: s.map(orden))
+    sp = ops.assign(votos=ops["puntaje_sin_peso"].clip(-2, 3)).pipe(tabla_robustez, "votos")
+    cart, _ = simular_cartera(ops)
+    lin = ["=== COMITE · resultado por NIVEL (todas las senales, sin limites de cartera) ===", niv.to_string(index=False),
+           "\n=== Solo los VOTOS (sin el peso propio, que sale de estos mismos backtests) ===", sp.to_string(index=False),
+           "\n=== CARTERA v6 (cupos, tope de riesgo, exposicion, ratio minimo) ==="]
+    lin += [f"{k}: {v}" for k, v in cart.items()]
+    return "\n".join(lin), niv, sp, cart
+
+
 def correr_backtest(a, p):
     os.makedirs(a.salida, exist_ok=True)
     trabajos = []
@@ -3331,10 +3451,14 @@ def correr_backtest(a, p):
         t0 = time.time()
         print(f"\n=== {nm} ({tipo}) {a.tf}/{a.ctx} · {len(d)} velas · "
               f"{d.index[0]:%Y-%m-%d} -> {d.index[-1]:%Y-%m-%d}", flush=True)
-        ops = backtest_activo(nm, tipo, d, a.tf, p, a.ctx, a.gestion, a.coste)
+        votos = [] if getattr(a, "comite", False) else None
+        ops = backtest_activo(nm, tipo, d, a.tf, p, a.ctx, a.gestion, a.coste, votos=votos)
         if ops.empty:
             print("Sin operaciones.")
             continue
+        if votos is not None:
+            ops = puntuar_comite(ops, votos, nm, a.tf)
+            print(f"  🗳️ {len(votos)} votos en {ops['t_utc'].nunique()} velas con operacion", flush=True)
         todas.append(ops)
         for est, g in ops.groupby("estrategia"):
             m = metricas(g, p["riesgo"])
@@ -3347,6 +3471,9 @@ def correr_backtest(a, p):
         allops = pd.concat(todas, ignore_index=True)
         allops.to_csv(os.path.join(a.salida, "operaciones.csv"), index=False)
         pd.DataFrame(resumen).to_csv(os.path.join(a.salida, "resumen.csv"), index=False)
+        if getattr(a, "comite", False):
+            txt, *_ = informe_comite(allops)
+            print("\n" + txt)
         print("\n=== RESUMEN ===\n" + pd.DataFrame(resumen).to_string(index=False))
         print(f"\nCSV guardados en {a.salida}/")
 
@@ -4344,6 +4471,7 @@ def cli():
     ap.add_argument("--gestion", default="parcial", choices=["parcial", "tp1", "tp2"])
     ap.add_argument("--coste", type=float, default=None)
     ap.add_argument("--salida", default="resultados_backtest")
+    ap.add_argument("--comite", action="store_true", help="Backtest del comite: puntua cada operacion y simula la cartera v6")
     a = ap.parse_args()
     if a.crear_github:
         return crear_github()
