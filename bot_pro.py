@@ -168,6 +168,7 @@ CUENTA = {
     "apalancamiento_max": 20,   # BTC: si la posicion necesita mas apalancamiento que esto, NO OPERABLE
     "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
     "filtro_noticias": True,    # no avisar 30 min antes ni 15 min despues de una noticia de ALTO impacto
+    "reactivar": [],            # nombres de estrategias apagadas por el freno que quieres volver a activar
     "tfs": ["5m", "15m"],       # temporalidades de entrada que escanea el bot (alertas de 5m y de 15m)
 }
 
@@ -2438,6 +2439,10 @@ class Estado:
         if ok:
             self.d["enviadas"][k] = time.time()
             self.d["ids"].append(s["id"])
+            try:
+                registrar_senal(self, s, tf)              # el diario en vivo la seguira hasta su cierre
+            except Exception as e:
+                print(f"  ! No se pudo registrar en el diario: {e}", flush=True)
         self.d["log"].append({"Hora NY": f"{datetime.now(NY):%d/%m %H:%M}", "TF": tf, "Estrategia": s["estrategia"],
                               "Activo": s["activo"], "Dir": s["dir"], "Entrada": fmt(s["entrada"]),
                               "SL": fmt(s["sl"]), "TP1": fmt(s["tp1"]) if s.get("tp1") else "canal",
@@ -2645,6 +2650,175 @@ def correr_backtest(a, p):
         print(f"\nCSV guardados en {a.salida}/")
 
 
+# ================================================================= DIARIO EN VIVO + FRENO DE RIESGO
+# El bot sigue cada senal que envia (como si se hubiera tomado) con las MISMAS reglas del backtest,
+# registra el resultado en R y aplica dos protecciones:
+#   - Freno diario: si el dia acumula <= -3R o hay 4 perdidas seguidas, pausa las alertas hasta manana (NY).
+#   - Apagado de estrategias: con 20+ operaciones en vivo y promedio < -0,2R, la estrategia se desactiva sola.
+FRENO = {"max_perdida_dia_R": -3.0, "max_racha_perdidas": 4, "min_ops_apagado": 20, "r_min_apagado": -0.2}
+_CAMPOS_SEG = ("estrategia", "activo", "tipo", "dir", "bias", "entrada", "sl", "tp1", "tp_r", "orden", "espera",
+               "max_barras", "salida", "id")
+
+
+def registrar_senal(estado, s, tf):
+    """Guarda la senal enviada para seguirla hasta su cierre."""
+    op = {k: s.get(k) for k in _CAMPOS_SEG}
+    op["tf"], op["t"] = tf, str(pd.Timestamp(s["vela"]) + pd.Timedelta(minutes=TF_MIN[tf]))
+    op["enviada"] = f"{datetime.now(NY):%Y-%m-%d %H:%M}"
+    estado.d.setdefault("abiertas", []).append(op)
+
+
+def resultado_senal(op, cargar=obtener, ahora=None):
+    """Evalua una senal abierta con los simuladores del backtest. Devuelve None si aun no termina,
+    o {'R', 'motivo', 'salida'} (R=None si la orden pendiente no se activo)."""
+    ahora = _ts_utc(ahora if ahora is not None else datetime.now(UTC))
+    canal = op.get("salida") == "canal"
+    tf = "1d" if canal else op["tf"]
+    df = solo_cerradas(cargar(op["activo"], tf), tf, ahora)
+    if df is None or df.empty:
+        return None
+    t_ent = pd.Timestamp(op["t"])
+    t_ent = t_ent.tz_localize("UTC") if t_ent.tzinfo is None else t_ent.tz_convert("UTC")
+    k = int(df.index.searchsorted(t_ent))
+    n = len(df)
+    if k >= n:
+        return None
+    o, h, l, c = (df[x].to_numpy() for x in ("open", "high", "low", "close"))
+    d, sl, ent = int(op["bias"]), float(op["sl"]), float(op["entrada"])
+    mb = 60 if canal else int(op.get("max_barras") or 24 * 60 / TF_MIN[tf])
+    orden = op.get("orden")
+    r, e_px = None, None
+    if orden == "limite":
+        r = simular_limite(o, h, l, c, k, d, ent, sl, float(op["tp1"]), int(op.get("espera") or 12), mb)
+    elif orden == "stop_tp":
+        r = simular_stop(o, h, l, c, k, d, ent, sl, float(op["tp1"]), mb)
+    elif orden == "stop":
+        ema9 = df["close"].ewm(span=9, adjust=False).mean().to_numpy()
+        r = simular_91(o, h, l, c, ema9, k, d, ent, sl, mb)
+    elif orden == "ruido":
+        return {"R": None, "motivo": "Sin seguimiento automático", "salida": f"{datetime.now(NY):%Y-%m-%d %H:%M}"}
+    else:
+        lo10 = df["low"].rolling(10).min().shift(1).to_numpy() if canal else None
+        hi10 = df["high"].rolling(10).max().shift(1).to_numpy() if canal else None
+        r0 = simular(o, h, l, c, k, d, sl, "parcial", mb, op, lo10, hi10)
+        r = (r0[0], r0[1], r0[2], o[k]) if r0 else None
+    if r is None:
+        espera = int(op.get("espera") or (3 if orden == "stop_tp" else 10))
+        if orden in ("limite", "stop_tp", "stop") and k + espera <= n:
+            return {"R": None, "motivo": "No se activó", "salida": f"{df.index[-1].tz_convert(NY):%Y-%m-%d %H:%M}"}
+        return None
+    r_bruto, b, motivo, e_px = r
+    if motivo == "Tiempo" and k + mb > n:          # se acabaron los datos, no el tiempo de la operacion
+        return None
+    riesgo = abs(e_px - sl)
+    coste = 2 * COSTE_DEFAULT.get(op.get("tipo"), 0.02) / 100 * e_px / riesgo if riesgo > 0 else 0
+    paso = pd.Timedelta(days=1) if canal else pd.Timedelta(minutes=TF_MIN[tf])
+    return {"R": round(float(r_bruto - coste), 2), "motivo": motivo,
+            "salida": f"{(df.index[b] + paso).tz_convert(NY):%Y-%m-%d %H:%M}"}
+
+
+def seguir_abiertas(estado, cargar=obtener, enviar=True, ahora=None):
+    """Revisa las senales abiertas, cierra las terminadas en el diario y avisa por Telegram."""
+    abiertas, quedan, cerradas = estado.d.get("abiertas", []), [], 0
+    for op in abiertas:
+        try:
+            res = resultado_senal(op, cargar, ahora)
+        except Exception as e:
+            print(f"  ! Seguimiento {op.get('activo')} {op.get('estrategia')}: {e}", flush=True)
+            res = None
+        viejo = (pd.Timestamp.now("UTC") - pd.Timestamp(op["t"]).tz_convert("UTC")) > pd.Timedelta(days=75)
+        if res is None and not viejo:
+            quedan.append(op)
+            continue
+        res = res or {"R": None, "motivo": "Caducada", "salida": ""}
+        estado.d.setdefault("diario", []).append({**{k: op.get(k) for k in ("estrategia", "activo", "dir", "tf",
+                                                                             "enviada")}, **res})
+        cerradas += 1
+        if enviar:
+            if res["R"] is None:
+                txt = f"⚪ {op['activo']} ({op['tf']}) · {op['estrategia']}: {res['motivo']}."
+            else:
+                ic = "✅" if res["R"] > 0 else ("❌" if res["R"] < 0 else "➖")
+                txt = (f"📒 {ic} {op['activo']} ({op['tf']}) · {op['estrategia']} · {op['dir']}\n"
+                       f"Cierre: {res['motivo']} · {res['R']:+.2f}R · {res['salida']} NY")
+            enviar_telegram(txt)
+    estado.d["abiertas"] = quedan
+    estado.d["diario"] = estado.d.get("diario", [])[-1000:]
+    return cerradas
+
+
+def _hoy_ny():
+    return f"{datetime.now(NY):%Y-%m-%d}"
+
+
+def revisar_freno(estado, enviar=True):
+    """Activa el freno diario y apaga estrategias que pierden en vivo. Devuelve el motivo del freno o None."""
+    diario = [x for x in estado.d.get("diario", []) if x.get("R") is not None]
+    hoy = _hoy_ny()
+    if estado.d.get("freno_hasta") and estado.d["freno_hasta"] < hoy:
+        estado.d.pop("freno_hasta", None)
+        estado.d.pop("freno_motivo", None)
+    if not estado.d.get("freno_hasta"):
+        r_hoy = sum(x["R"] for x in diario if str(x.get("salida", "")).startswith(hoy))
+        racha = 0
+        for x in reversed(diario):
+            if x["R"] < 0:
+                racha += 1
+            else:
+                break
+        motivo = None
+        if r_hoy <= FRENO["max_perdida_dia_R"]:
+            motivo = f"el día va en {r_hoy:+.1f}R (límite {FRENO['max_perdida_dia_R']:+.0f}R)"
+        elif racha >= FRENO["max_racha_perdidas"] and diario and str(diario[-1].get("salida", "")).startswith(hoy):
+            motivo = f"{racha} pérdidas seguidas"
+        if motivo:
+            estado.d["freno_hasta"], estado.d["freno_motivo"] = hoy, motivo
+            if enviar:
+                enviar_telegram(f"🛑 FRENO ACTIVADO: {motivo}.\nNo envío más señales hoy. "
+                                f"Mañana empezamos de cero. Protege tu capital y tu cabeza 🧠")
+    apagadas = estado.d.setdefault("apagadas", {})
+    for est in CUENTA.get("reactivar", []):              # reactivacion manual desde el codigo
+        if apagadas.pop(est, None) is not None:
+            estado.d["diario"] = [x for x in estado.d.get("diario", []) if x.get("estrategia") != est]
+            if enviar:
+                enviar_telegram(f"♻️ Estrategia reactivada: {est} (su historial en vivo empieza de cero).")
+    for est in {x["estrategia"] for x in diario}:
+        rs = [x["R"] for x in diario if x["estrategia"] == est]
+        if est not in apagadas and len(rs) >= FRENO["min_ops_apagado"] and np.mean(rs[-30:]) < FRENO["r_min_apagado"]:
+            apagadas[est] = hoy
+            if enviar:
+                enviar_telegram(f"🧯 Estrategia APAGADA: {est}\nEn vivo lleva {len(rs)} operaciones con "
+                                f"{np.mean(rs[-30:]):+.2f}R de promedio (últimas 30). Ya no enviaré sus señales.\n"
+                                f"Para reactivarla: agrega \"{est}\" a CUENTA['reactivar'] en bot_pro.py.")
+    return estado.d.get("freno_motivo") if estado.d.get("freno_hasta") == hoy else None
+
+
+def informe_diario(estado, dias=None):
+    """Resumen del diario en vivo por estrategia (todo o los ultimos 'dias')."""
+    diario = [x for x in estado.d.get("diario", []) if x.get("R") is not None]
+    if dias:
+        desde = f"{datetime.now(NY) - timedelta(days=dias):%Y-%m-%d}"
+        diario = [x for x in diario if str(x.get("salida", "")) >= desde]
+    if not diario:
+        return "Sin operaciones cerradas todavía."
+    filas = []
+    for est in sorted({x["estrategia"] for x in diario}):
+        rs = np.array([x["R"] for x in diario if x["estrategia"] == est])
+        filas.append(f"• {est}: {len(rs)} ops · {100 * (rs > 0).mean():.0f}% aciertos · "
+                     f"{rs.mean():+.2f}R prom · {rs.sum():+.1f}R total")
+    todo = np.array([x["R"] for x in diario])
+    return "\n".join(filas) + f"\nTOTAL: {len(todo)} ops · {todo.sum():+.1f}R"
+
+
+def informe_semanal(estado):
+    ab = len(estado.d.get("abiertas", []))
+    ap = ", ".join(estado.d.get("apagadas", {})) or "ninguna"
+    return (f"📊 Informe semanal del bot · {datetime.now(NY):%d/%m}\n\n"
+            f"Últimos 7 días:\n{informe_diario(estado, 7)}\n\nDesde el inicio:\n{informe_diario(estado)}\n\n"
+            f"Abiertas ahora: {ab} · Estrategias apagadas: {ap}\n"
+            f"(Resultados si se hubieran tomado todas las señales, con costes estimados.)")
+
+
 # ================================================================= ESCANER 24/7
 def escanear(tf, p, estado, verbose=True, cargar=obtener):
     nuevas, filas = 0, []
@@ -2661,6 +2835,13 @@ def escanear(tf, p, estado, verbose=True, cargar=obtener):
                       f"score {d.get('Score', 0)}  {d['Estado']}")
         for s in senales:
             s["tf"] = tf
+            if estado is not None:
+                if estado.d.get("freno_hasta") == _hoy_ny():
+                    print(f"  🛑 {nm} {s['estrategia']}: freno activo ({estado.d.get('freno_motivo')})", flush=True)
+                    continue
+                if s["estrategia"] in estado.d.get("apagadas", {}):
+                    print(f"  🧯 {nm} {s['estrategia']}: estrategia apagada por resultados en vivo", flush=True)
+                    continue
             if estado is not None and estado.procesar(s, tf):
                 nuevas += 1
     return nuevas, filas
@@ -2728,6 +2909,13 @@ def correr_bot(a, p):
           f"{'una pasada' if a.una_vez else 'bucle 24/7'}", flush=True)
     while True:
         print(f"\n[{datetime.now(NY):%Y-%m-%d %H:%M:%S} NY] Escaneando {len(ACTIVOS)} activos", flush=True)
+        try:                                       # diario en vivo + freno de riesgo
+            c = seguir_abiertas(estado)
+            freno = revisar_freno(estado)
+            print(f"  📒 Diario: {c} cerradas · {len(estado.d.get('abiertas', []))} abiertas"
+                  + (f" · 🛑 freno: {freno}" if freno else ""), flush=True)
+        except Exception as e:
+            print(f"  ! Diario/freno: {e}", flush=True)
         try:
             n, filas = escanear_varios(a.tf, p, estado)
             print(f"  -> {n} alertas nuevas enviadas", flush=True)
@@ -2740,6 +2928,11 @@ def correr_bot(a, p):
             print(f"  ! Error en el escaneo: {e}", flush=True)
         try:                                       # resumen diario de noticias (una vez al dia, desde las 6:00 NY)
             hoy = f"{datetime.now(NY):%Y-%m-%d}"
+            semana = f"{datetime.now(NY):%G-%V}"
+            if datetime.now(NY).weekday() == 0 and datetime.now(NY).hour >= 6 and estado.d.get("informe_sem") != semana:
+                ok, _ = enviar_telegram(informe_semanal(estado))
+                if ok:
+                    estado.d["informe_sem"] = semana
             if datetime.now(NY).hour >= 6 and estado.d.get("noticias_dia") != hoy:
                 ok, _ = enviar_telegram(f"🗓️ Buenos días · {datetime.now(NY):%a %d/%m}\n" + proximas_noticias())
                 if ok:
@@ -2795,6 +2988,11 @@ def panel():
             primera = True
             while True:
                 try:
+                    try:
+                        seguir_abiertas(mem)
+                        revisar_freno(mem)
+                    except Exception as e:
+                        info["error"] = f"Diario: {e}"
                     n, filas = escanear_varios(CUENTA["tfs"], dict(PARAMS_DEFAULT), mem, verbose=False)
                     info["ultimo"], info["senales"] = datetime.now(NY), info["senales"] + n
                     if primera:
