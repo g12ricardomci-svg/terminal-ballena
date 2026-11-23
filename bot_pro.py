@@ -212,7 +212,8 @@ CUENTA = {
     "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
     "filtro_noticias": True,    # no avisar 30 min antes ni 15 min despues de una noticia de ALTO impacto
     "reactivar": [],            # nombres de estrategias apagadas por el freno que quieres volver a activar
-    "max_abiertas": 3,          # cartera: maximo de operaciones abiertas a la vez (segun el diario en vivo)
+    "modo": "comite",           # "comite" = todas las estrategias votan · "ganadoras" = solo las robustas
+    "max_abiertas": 4,          # cartera: maximo de operaciones abiertas a la vez (segun el diario en vivo)
     "una_por_mercado": True,    # cartera: no abrir otra senal en un mercado con una operacion abierta
     "motor_streamlit": False,   # True = el panel de Streamlit TAMBIEN envia alertas (duplica a GitHub Actions)
     "filtro_estructura": "anotar",  # lectura de estructura: "anotar" (solo informa), "sin_contradice" o "solo_confirma"
@@ -2887,15 +2888,19 @@ def _nota_noticias(nombre, horas=3):
     return ""
 
 
-VERSION_BOT = "v4 · cerebro único"
+VERSION_BOT = "v5 · comité"
 
 
 def texto_alerta(s, tf):
     ic = "🟢 LONG" if s["dir"] == "LONG" else "🔴 SHORT"
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[tf])
-    nivel = ("🧪 NIVEL B · experimental (positiva a 2 años, sin pasar todas las pruebas: tamaño mínimo)\n"
-             if s.get("experimental") else "🅰️ NIVEL A · robusta a 2 años\n")
-    conf = (f"⭐ CONFLUENCIA: {len(s['confluye']) + 1} estrategias de acuerdo "
+    if s.get("puntaje") is not None:
+        niv, riesgo = nivel_comite(s["puntaje"])
+        nivel = (f"{niv} ({s['puntaje']:+d} votos) · sugerido: {riesgo}\n🗳️ " + " · ".join(s.get("votos", [])[:6]) + "\n")
+    else:
+        nivel = ("🧪 NIVEL B · experimental (positiva a 2 años, sin pasar todas las pruebas: tamaño mínimo)\n"
+                 if s.get("experimental") else "🅰️ NIVEL A · robusta a 2 años\n")
+    conf = "" if s.get("puntaje") is not None else (f"⭐ CONFLUENCIA: {len(s['confluye']) + 1} estrategias de acuerdo "
             f"({', '.join([s['estrategia']] + s['confluye'])})\n" if s.get("confluye") else "")
     return (conf + nivel
             + f"{ic} {s['activo']} ({tf}) · {s['estrategia']}\n"
@@ -3408,6 +3413,137 @@ def escanear_varios(tfs, p, estado, verbose=True, cargar=obtener):
     return total, filas
 
 
+# ================================================================= COMITE DE ESTRATEGIAS (todas votan)
+# Todas las estrategias vigilan todos los mercados (5m y 15m), pero cada una vota con un PESO segun lo que
+# demostro en los backtests. Las debiles solo generan alerta si otras las respaldan.
+#   3 = robusta a 2 anos en ese mercado (GANADORAS)   2 = experimental (EXPERIMENTALES)
+#   1 = funciono en algun mercado/periodo (EVIDENCIA)  0 = nunca gano sola (solo apoya)
+EVIDENCIA = {"Londres", "Barrido", "DI_RSI", "HolyGrail", "Tortugas", "MaxHist", "BOSFVG", "AuraPlus", "Judas",
+             "VWAP", "ORB", "ORBRetest", "DI_EMA", "NocheOro"}
+COMITE = {"umbral": 2, "aliado": 1, "conflicto": -2, "lectura": 1}
+
+
+def peso_estrategia(clave, activo, tf):
+    if clave in GANADORAS.get((activo, tf), []):
+        return 3
+    if clave in EXPERIMENTALES.get((activo, tf), []):
+        return 2
+    return 1 if clave in EVIDENCIA else 0
+
+
+def votar(senales, activo):
+    """Agrupa las senales de un mercado (todas las temporalidades) y devuelve las que pasan el umbral, con su
+    puntaje, nivel y aliados. Una por direccion; si hay votos en ambas direcciones, se restan."""
+    por_dir = {}
+    for s in senales:
+        s["peso"] = peso_estrategia(s.get("clave"), activo, s.get("tf"))
+        por_dir.setdefault(s["bias"], []).append(s)
+    salida = []
+    for d, g in por_dir.items():
+        g.sort(key=lambda x: (-x["peso"], -(x.get("lectura") or {}).get("puntos", 0), x.get("tf") != "15m"))
+        lider = g[0]
+        puntos, motivos = lider["peso"], [f"{lider['estrategia']} ({lider['tf']}): {lider['peso']}"]
+        nombres = {lider["estrategia"]}
+        for x in g[1:]:
+            if x["estrategia"] not in nombres:
+                puntos += COMITE["aliado"]
+                nombres.add(x["estrategia"])
+                motivos.append(f"+1 aliado {x['estrategia']} ({x['tf']})")
+        ver = (lider.get("lectura") or {}).get("veredicto")
+        if ver == "CONFIRMA":
+            puntos += COMITE["lectura"]
+            motivos.append("+1 lectura 🔮 confirma")
+        elif ver == "CONTRADICE":
+            puntos -= COMITE["lectura"]
+            motivos.append("−1 lectura 🔮 contradice")
+        contrarias = por_dir.get(-d, [])
+        if contrarias:
+            puntos += COMITE["conflicto"]
+            motivos.append(f"−2 conflicto con {contrarias[0]['estrategia']} ({contrarias[0]['tf']})")
+        lider["puntaje"], lider["votos"] = puntos, motivos
+        lider["confluye"] = [x["estrategia"] + f" ({x['tf']})" for x in g[1:]]
+        lider["experimental"] = lider["peso"] < 3
+        if puntos >= COMITE["umbral"]:
+            salida.append(lider)
+    return salida
+
+
+def nivel_comite(puntos):
+    if puntos >= 5:
+        return "⭐ NIVEL A+ · muy fuerte", "riesgo normal (2%)"
+    if puntos >= 3:
+        return "🅰️ NIVEL A · fuerte", "riesgo normal (2%)"
+    return "🅱️ NIVEL B · moderada", "la mitad del riesgo (1%) o solo demo"
+
+
+def escanear_comite(tfs, p, estado, verbose=True, cargar=obtener):
+    """Modo comite: corre TODAS las estrategias en todos los mercados y temporalidades, vota y envia solo lo que
+    pasa el umbral (con las protecciones de siempre: noticias, stops absurdos, freno, cartera, apagadas)."""
+    p = dict(p, solo_ganadoras=False)
+    nuevas, filas, n_senales = 0, [], 0
+    for nm in [x for x in ACTIVOS if x in MIS_MERCADOS]:
+        brutas = []
+        for tf in tfs:
+            try:
+                diags, senales = analizar(nm, tf, p, cargar=cargar)
+            except Exception as e:
+                diags, senales = {"-": {"Estrategia": "-", "Activo": nm, "Estado": f"Error: {e}"}}, []
+            for d in diags.values():
+                d["TF"] = tf
+                filas.append(d)
+            for s in senales:
+                s["tf"] = tf
+            brutas += senales
+        n_senales += len(brutas)
+        aprobadas = votar(brutas, nm)
+        if verbose and brutas:
+            print(f"  🗳️ {nm}: {len(brutas)} votos -> {len(aprobadas)} aprobadas "
+                  + "; ".join(f"{s['dir']} {s['puntaje']:+d}" for s in aprobadas), flush=True)
+        for s in aprobadas:
+            tf = s["tf"]
+            if estado is None:
+                continue
+            abiertas = estado.d.get("abiertas", [])
+            if len(abiertas) >= CUENTA.get("max_abiertas", 3):
+                print(f"  🛡️ {nm}: cartera llena ({len(abiertas)} abiertas)", flush=True)
+                continue
+            if CUENTA.get("una_por_mercado", True) and any(o.get("activo") == nm for o in abiertas):
+                print(f"  🛡️ {nm}: ya hay una operacion abierta", flush=True)
+                continue
+            if estado.d.get("freno_hasta") == _hoy_ny():
+                print(f"  🛑 {nm}: freno activo ({estado.d.get('freno_motivo')})", flush=True)
+                continue
+            if s["estrategia"] in estado.d.get("apagadas", {}):
+                print(f"  🧯 {nm} {s['estrategia']}: apagada por resultados en vivo", flush=True)
+                continue
+            if estado.procesar(s, tf):
+                nuevas += 1
+    if verbose:
+        print(f"  🗳️ Comite: {n_senales} votos en total, {nuevas} alertas enviadas", flush=True)
+    return nuevas, filas
+
+
+def resumen_comite(filas):
+    """📋 compacto: por mercado, cuantas estrategias vigilan y las que ya dieron voto."""
+    por = {}
+    for f in filas:
+        a = f.get("Activo", "-")
+        x = por.setdefault(a, {"n": 0, "votos": [], "cerrado": False})
+        x["n"] += 1
+        est = str(f.get("Estado", ""))
+        if "SEÑAL" in est:
+            x["votos"].append(f"{f.get('Estrategia')} {f.get('Dir', '')} ({f.get('TF')})")
+        if "Mercado cerrado" in est:
+            x["cerrado"] = True
+    lin = []
+    for a, x in por.items():
+        if x["cerrado"] and not x["votos"]:
+            lin.append(f"• {a}: mercado cerrado")
+        else:
+            lin.append(f"• {a}: {x['n']} vigilando · " + (", ".join(x["votos"]) if x["votos"] else "sin votos"))
+    return "\n".join(lin)
+
+
 def explicar_error_telegram(msg):
     """Traduce los errores tipicos de la API de Telegram a una causa y su solucion."""
     m = msg.lower()
@@ -3448,6 +3584,12 @@ def resumen_estado(filas):
 
 def texto_perfil(p):
     """Que vigila el bot de verdad: el perfil ganador (o todas las estrategias con --todas)."""
+    if p.get("solo_ganadoras") and CUENTA.get("modo") == "comite":
+        n_est = len({e for m in MIS_MERCADOS for e in ESTRATEGIAS_ACTIVO.get(m, [])})
+        return (f"🗳️ MODO COMITÉ: {n_est} estrategias votan en {len(MIS_MERCADOS)} mercados (5m y 15m).\n"
+                f"Peso: 3 = robusta 2 años · 2 = experimental · 1 = con evidencia · 0 = solo apoya.\n"
+                f"+1 por aliado · +1 si la lectura 🔮 confirma · −2 si hay señal contraria. Envío desde 2 votos.\n"
+                f"Mercados: {', '.join(sorted(MIS_MERCADOS))}")
     if not p.get("solo_ganadoras"):
         return f"Modo TODAS las estrategias · mercados: {', '.join(ACTIVOS)}"
     lin = []
@@ -3480,11 +3622,15 @@ def correr_bot(a, p):
         except Exception as e:
             print(f"  ! Diario/freno: {e}", flush=True)
         try:
-            n, filas = escanear_varios(a.tf, p, estado)
+            if CUENTA.get("modo") == "comite" and p.get("solo_ganadoras"):
+                n, filas = escanear_comite(a.tf, p, estado)
+            else:
+                n, filas = escanear_varios(a.tf, p, estado)
             print(f"  -> {n} alertas nuevas enviadas", flush=True)
             if ping:                                   # en la prueba manual: manda tambien el diagnostico
                 ok, msg = enviar_telegram(f"📋 Estado del escaner ({' + '.join(a.tf)}) · {n} señales nuevas\n"
-                                          + resumen_estado(filas)[:3000] + "\n\n" + proximas_noticias())
+                                          + (resumen_comite(filas) if CUENTA.get("modo") == "comite"
+                                             else resumen_estado(filas))[:3000] + "\n\n" + proximas_noticias())
                 print(f"Resumen a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
                 ping = False
         except Exception as e:                     # el bot nunca se cae por un error puntual
