@@ -24,6 +24,10 @@ Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
   Setup91  (todos)        : Setup 9.1 de Larry Williams, el mas difundido en Brasil (Palex; Wolwacz 2010):
                             giro de la media exponencial de 9, orden stop en el extremo de la vela
                             senal, stop en el otro extremo, salida cuando la MME9 gira en contra.
+  ORB      (todos)        : Opening Range Breakout de Zarattini y Aziz (2023/2024): direccion de la 1a vela
+                            de la apertura (Londres, Tokio o Wall Street), stop en su otro extremo, 10R o fin de sesion.
+  HolyGrail(todos)        : Holy Grail de Linda Raschke: ADX>30 subiendo + retroceso a la EMA 20, orden stop.
+  Gotobi   (USD/JPY)      : dias de pago en Japon (5, 10, 15...): compra 8:00 JST, cierre en el fixing 9:55 JST.
 
 Horario de alertas: BTC 24/7 · Oro 24h (dom 18:00 a vie 17:00 NY, pausa 17-18) ·
 Forex en killzones Londres (2-5 NY) y Nueva York (7-10 NY). Se cambia en KZ_DEFAULT.
@@ -67,11 +71,11 @@ INDICES = {}                       # ej.: {"NASDAQ 100 (NQ)": "NQ=F"}  (futuro C
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91"],
-    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91"],
-    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail"],
     "NASDAQ 100 (NQ)": ["SMC", "Barrido"],
 }
 
@@ -136,7 +140,7 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
 }
 
@@ -974,8 +978,203 @@ def simular_91(o, h, l, c, ema, k0, d, gatillo, sl, max_barras):
     return (c[b] - e) * d / riesgo, b, "Tiempo", e
 
 
+# ================================================================= ESTRATEGIA 6: ORB (Zarattini, Barbon y Aziz)
+# Apertura de cada mercado (hora local de su sesion) y duracion de la sesion en horas.
+SESION_ORB = {
+    "EUR/USD": ("Europe/London", 8, 0, 8.0),        # apertura de Londres
+    "GBP/USD": ("Europe/London", 8, 0, 8.0),
+    "USD/JPY": ("Asia/Tokyo", 9, 0, 6.0),           # apertura de Tokio
+    "XAU/USD (Oro)": ("America/New_York", 9, 30, 6.5),   # apertura de Wall Street
+    "BTC/USDT": ("America/New_York", 9, 30, 6.5),
+    "NASDAQ 100 (NQ)": ("America/New_York", 9, 30, 6.5),
+}
+
+
+def evaluar_orb(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Opening Range Breakout de 5 minutos (Zarattini y Aziz 2023, "Can Day Trading Really Be Profitable?";
+    Zarattini, Barbon y Aziz 2024). Reglas publicadas:
+      - La PRIMERA vela de la sesion define la direccion: alcista -> LONG, bajista -> SHORT, doji -> nada.
+      - Entrada a mercado al cierre de esa primera vela (apertura de la segunda).
+      - Stop en el extremo contrario de la primera vela.
+      - Objetivo 10R; si no llega, se cierra al final de la sesion.
+    En 15m usa la primera vela de 15 minutos (el paper tambien compara rangos de 15/30/60 min).
+    """
+    diag = {"Estrategia": "ORB", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    ses = SESION_ORB.get(nombre)
+    if ses is None or not mercado_abierto(tipo, ahora) or df is None or len(df) < 20:
+        diag["Estado"] = "Mercado cerrado" if ses else "Sin sesion definida"
+        return diag, None
+    zona, hh, mm, dur = ses
+    v_t = df.index[-1]
+    loc = v_t.tz_convert(ZoneInfo(zona))
+    if loc.weekday() >= 5 or (loc.hour, loc.minute) != (hh, mm):
+        diag["Estado"] = f"Esperando la apertura {hh:02d}:{mm:02d} ({zona.split('/')[-1]})"
+        return diag, None
+    v = df.iloc[-1]
+    cuerpo, rango = float(v["close"] - v["open"]), float(v["high"] - v["low"])
+    if rango <= 0 or abs(cuerpo) < 0.1 * rango:
+        diag["Estado"] = "Primera vela doji: sin operar"
+        return diag, None
+    bias = 1 if cuerpo > 0 else -1
+    diag["Dir"] = "LONG" if bias == 1 else "SHORT"
+    px = float(v["close"])
+    sl = float(v["low"]) if bias == 1 else float(v["high"])
+    riesgo_px = abs(px - sl)
+    if riesgo_px <= 0:
+        diag["Estado"] = "SL invalido"
+        return diag, None
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, riesgo_px, px)
+    tf_min = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+    fin = (v_t + pd.Timedelta(hours=dur)).tz_convert(NY)
+    diag["Estado"] = "🚨 SEÑAL"
+    return diag, {"estrategia": "ORB apertura (Zarattini/Aziz)", "activo": nombre, "tipo": tipo,
+                  "dir": diag["Dir"], "bias": bias, "entrada": px, "sl": sl,
+                  "tp1": px + bias * 10 * riesgo_px, "tp2": None, "tp_r": 10, "r1": 10,
+                  "max_barras": int(dur * 60 / tf_min),
+                  "salida_txt": f"TP (10R): {fmt(px + bias * 10 * riesgo_px)}\n"
+                                f"Si no llega, cierra a las {fin:%H:%M} NY (fin de sesion).",
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": f"1a vela {'alcista' if bias == 1 else 'bajista'} de la apertura",
+                  "kz": killzone_actual(ahora) or "-", "vela": v_t,
+                  "id": f"ORB|{nombre}|{v_t:%Y-%m-%d}"}
+
+
+# ================================================================= ESTRATEGIA 7: HOLY GRAIL (Linda Raschke)
+def evaluar_holygrail(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Holy Grail de Linda Raschke (Street Smarts, Raschke y Connors). Reglas publicas:
+      - ADX(14) > 30 y subiendo: tendencia fuerte. Direccion por +DI / -DI.
+      - El precio retrocede y TOCA la EMA 20.
+      - Orden stop por encima del maximo (LONG) / bajo el minimo (SHORT) de la vela que toco la EMA.
+      - Stop en el otro extremo de esa vela. Objetivo: el ultimo maximo/minimo de la tendencia (min 1,5R).
+    """
+    diag = {"Estrategia": "HolyGrail", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 60:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    d = df.tail(VENTANA)
+    hi, lo, cl = d["high"], d["low"], d["close"]
+    up, dn = hi.diff(), -lo.diff()
+    a = atr(d, 14)
+    pdi = 100 * pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=d.index).ewm(alpha=1 / 14, adjust=False).mean() / a
+    mdi = 100 * pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=d.index).ewm(alpha=1 / 14, adjust=False).mean() / a
+    ax = adx(d, 14)
+    ema = cl.ewm(span=20, adjust=False).mean()
+    ax1, ax2 = float(ax.iloc[-1]), float(ax.iloc[-2])
+    if not (ax1 > 30 and ax1 >= ax2):
+        diag["Estado"] = f"ADX {ax1:.0f}: sin tendencia fuerte"
+        return diag, None
+    bias = 1 if pdi.iloc[-1] > mdi.iloc[-1] else -1
+    diag["Dir"] = "LONG" if bias == 1 else "SHORT"
+    v = d.iloc[-1]
+    e = float(ema.iloc[-1])
+    toca = (v["low"] <= e < v["high"]) if bias == 1 else (v["low"] < e <= v["high"])
+    previas_lejos = (lo.iloc[-6:-1] > ema.iloc[-6:-1]).all() if bias == 1 else (hi.iloc[-6:-1] < ema.iloc[-6:-1]).all()
+    if not (toca and previas_lejos):
+        diag["Estado"] = "Tendencia fuerte, esperando retroceso a la EMA 20"
+        return diag, None
+    tick = _pip(nombre) if tipo == "forex" else 0.0
+    gatillo = float(v["high"]) + tick if bias == 1 else float(v["low"]) - tick
+    sl = float(v["low"]) - tick if bias == 1 else float(v["high"]) + tick
+    riesgo_px = abs(gatillo - sl)
+    extremo = float(hi.tail(20).max()) if bias == 1 else float(lo.tail(20).min())
+    tp = extremo if (extremo - gatillo) * bias >= 1.5 * riesgo_px else gatillo + bias * 1.5 * riesgo_px
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, riesgo_px, gatillo)
+    lado = "COMPRA" if bias == 1 else "VENTA"
+    diag["Estado"] = "🚨 SEÑAL"
+    return diag, {"estrategia": "Holy Grail (Raschke)", "activo": nombre, "tipo": tipo, "dir": diag["Dir"],
+                  "bias": bias, "entrada": gatillo, "sl": sl, "tp1": tp, "tp2": None, "orden": "stop_tp",
+                  "salida_txt": f"Orden: {lado} STOP en {fmt(gatillo)} (válida 3 velas).\n"
+                                f"TP: {fmt(tp)} ({abs(tp - gatillo) / riesgo_px:.1f}R)",
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": f"ADX {ax1:.0f} subiendo · retroceso a EMA20",
+                  "kz": killzone_actual(ahora) or "-", "vela": d.index[-1],
+                  "id": f"HG|{nombre}|{diag['Dir']}|{d.index[-1]}"}
+
+
+# ================================================================= ESTRATEGIA 8: GOTOBI (fixing de Tokio, USD/JPY)
+JST = ZoneInfo("Asia/Tokyo")
+
+
+def es_gotobi(fecha):
+    """Dias 5, 10, 15, 20, 25 y ultimo del mes (hora de Japon). Si cae en fin de semana, se adelanta al viernes."""
+    import calendar
+    ult = calendar.monthrange(fecha.year, fecha.month)[1]
+    objetivos = []
+    for dia in (5, 10, 15, 20, 25, ult):
+        f = fecha.replace(day=dia)
+        while f.weekday() >= 5:
+            f -= timedelta(days=1)
+        objetivos.append(f)
+    return fecha in objetivos
+
+
+def evaluar_gotobi(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Efecto Gotobi: en los dias de pago de Japon (5, 10, 15...) los importadores compran dolares antes del
+    fixing de Tokio de las 9:55 JST, y USD/JPY tiende a subir de 8:00 a 9:55 JST (NBER w22820 sobre el
+    fixing de Tokio; flujos descritos por la prensa de mercado). Regla: COMPRA a las 8:00 JST, cierre
+    a las 9:55 JST. Stop = 1 ATR de 1H.
+    """
+    diag = {"Estrategia": "Gotobi", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if nombre != "USD/JPY" or df is None or d1 is None or len(d1) < 20:
+        diag["Estado"] = "Solo USD/JPY"
+        return diag, None
+    v_t = df.index[-1]
+    tf_min = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+    cierre = (v_t + pd.Timedelta(minutes=tf_min)).tz_convert(JST)
+    if (cierre.hour, cierre.minute) != (8, 0) or not es_gotobi(cierre.date()):
+        diag["Estado"] = "Esperando día Gotobi 8:00 JST"
+        return diag, None
+    px = float(df["close"].iloc[-1])
+    sl = px - float(atr(d1).iloc[-1])
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, px - sl, px)
+    diag["Dir"], diag["Estado"] = "LONG", "🚨 SEÑAL"
+    fin = cierre.replace(hour=9, minute=55).tz_convert(NY)
+    return diag, {"estrategia": "Gotobi (fixing Tokio)", "activo": nombre, "tipo": tipo, "dir": "LONG",
+                  "bias": 1, "entrada": px, "sl": sl, "tp1": None, "tp2": None, "tp_r": 50,
+                  "max_barras": max(int(115 / tf_min), 1),
+                  "salida_txt": f"Salida: a las 9:55 JST ({fin:%H:%M} NY), en el fixing de Tokio.",
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": f"día Gotobi {cierre:%d/%m}", "kz": killzone_actual(ahora) or "-",
+                  "vela": v_t, "id": f"GOTOBI|{cierre:%Y-%m-%d}"}
+
+
+def simular_stop(o, h, l, c, k0, d, gatillo, sl, tp, max_barras, validez=3):
+    """Orden stop pendiente 'validez' velas, luego SL / TP fijos. Devuelve (R, idx salida, motivo, entrada)."""
+    n = len(c)
+    k = None
+    for b in range(k0, min(k0 + validez, n)):
+        if (d == 1 and l[b] <= sl) or (d == -1 and h[b] >= sl):
+            return None                                  # invalidada antes de activarse
+        if (d == 1 and h[b] >= gatillo) or (d == -1 and l[b] <= gatillo):
+            k = b
+            break
+    if k is None:
+        return None
+    e = max(o[k], gatillo) if d == 1 else min(o[k], gatillo)
+    riesgo = (e - sl) * d
+    if riesgo <= 0:
+        return None
+    for b in range(k, min(k + max_barras, n)):
+        if (d == 1 and l[b] <= sl) or (d == -1 and h[b] >= sl):
+            return (sl - e) * d / riesgo, b, "SL", e
+        if (d == 1 and h[b] >= tp) or (d == -1 and l[b] <= tp):
+            return (tp - e) * d / riesgo, b, "TP", e
+    b = min(k + max_barras, n) - 1
+    return (c[b] - e) * d / riesgo, b, "Tiempo", e
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
-               "Londres": evaluar_londres, "Setup91": evaluar_setup91}
+               "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
+               "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi}
 
 
 def estrategias_de(nombre, p):
@@ -1152,7 +1351,13 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
                     pd.Timedelta(hours=COOLDOWN_H):
                 continue
             mb = max_barras * 60 if s.get("salida") == "canal" else max_barras   # Tortugas: hasta 60 dias
-            if s.get("orden") == "stop":                      # Setup 9.1: orden stop pendiente
+            mb = s.get("max_barras") or mb                    # ORB / Gotobi: salida por tiempo propia
+            if s.get("orden") == "stop_tp":                   # Holy Grail: orden stop con TP fijo
+                r = simular_stop(o, h, l, c, idx + 1, s["bias"], s["entrada"], s["sl"], s["tp1"], mb)
+                if r is None:
+                    continue
+                r_bruto, salida, motivo, e_px = r
+            elif s.get("orden") == "stop":                      # Setup 9.1: orden stop pendiente
                 r = simular_91(o, h, l, c, ema9, idx + 1, s["bias"], s["entrada"], s["sl"], mb)
                 if r is None:
                     continue
