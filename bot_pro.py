@@ -141,8 +141,10 @@ GANADORAS = {
 # EXPERIMENTALES: positivas a 2 anos pero SIN pasar todas las pruebas (pocas ops o una mitad negativa).
 # Se envian marcadas con 🧪 para tener senales en forex y BTC; el diario y el apagado automatico las vigilan.
 EXPERIMENTALES = {
-    ("USD/JPY", "15m"): ["DI_RSI"],      # 36 ops, +0,20 R, PF 1,56 (1a mitad -0,09)
-    ("GBP/USD", "15m"): ["HolyGrail"],   # 15 ops, +0,32 R, PF 1,65 (pocas ops)
+    # Aura+ (BOS + FVG/OTE + 1H + descuento), 2 anos con costes BAJOS (cuenta Raw/ECN):
+    #   USD/JPY 15m: 152 ops, +0,12 R, PF 1,17 (robusta solo con spread bajo); GBP/USD 15m: 152 ops, +0,09 R
+    ("USD/JPY", "15m"): ["DI_RSI", "AuraPlus"],   # DI_RSI: 36 ops, +0,20 R, PF 1,56 (1a mitad -0,09)
+    ("GBP/USD", "15m"): ["HolyGrail", "AuraPlus"],  # HolyGrail: 15 ops, +0,32 R, PF 1,65 (pocas ops)
     ("BTC/USDT", "15m"): ["Tortugas"],   # 31 ops, +0,15 R, PF 1,28 (1a mitad -0,35)
 }
 
@@ -2768,6 +2770,7 @@ def evaluar_aura_plus(nombre, tipo, df, d1, p, ahora, dd=None):
             return diag, None
         s["confluencias"] += f" · 1H {diag['Sesgo 1H'].lower()} · entrada al {100 * pos:.0f}% del rango"
     s["estrategia"] = "Aura+ (BOS + 1H + descuento)"
+    s["salida_txt"] = s.get("salida_txt", "") + "\n💡 Solo rentable con cuenta de spread bajo (Raw/ECN) según el backtest."
     s["id"] = "AURAP|" + s["id"]
     diag["Dir"], diag["Estado"] = s["dir"], "🚨 SEÑAL"
     return diag, s
