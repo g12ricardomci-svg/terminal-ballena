@@ -27,6 +27,7 @@ Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
   ORB      (todos)        : Opening Range Breakout de Zarattini y Aziz (2023/2024): direccion de la 1a vela
                             de la apertura (Londres, Tokio o Wall Street), stop en su otro extremo, 10R o fin de sesion.
   HolyGrail(todos)        : Holy Grail de Linda Raschke: ADX>30 subiendo + retroceso a la EMA 20, orden stop.
+  VWAP     (todos)        : Confluencia VWAP + ADX + EMA9/21 + CVD + OB/FVG del Quant Terminal, TP 2,5R.
   Gotobi   (USD/JPY)      : dias de pago en Japon (5, 10, 15...): compra 8:00 JST, cierre en el fixing 9:55 JST.
 
 Horario de alertas: BTC 24/7 · Oro 24h (dom 18:00 a vie 17:00 NY, pausa 17-18) ·
@@ -71,11 +72,11 @@ INDICES = {}                       # ej.: {"NASDAQ 100 (NQ)": "NQ=F"}  (futuro C
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail"],
-    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail"],
-    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP"],
     "NASDAQ 100 (NQ)": ["SMC", "Barrido"],
 }
 
@@ -140,7 +141,7 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
 }
 
@@ -1172,9 +1173,106 @@ def simular_stop(o, h, l, c, k0, d, gatillo, sl, tp, max_barras, validez=3):
     return (c[b] - e) * d / riesgo, b, "Tiempo", e
 
 
+# ================================================================= ESTRATEGIA 9: CONFLUENCIA VWAP (tu Quant Terminal)
+ADX_VWAP = {"oro": 40.0, "cripto": 38.0, "forex": 35.0, "indice": 35.0}
+
+
+def evaluar_vwap(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    'Senal Conjunta Unificada' del Institutional Quant Terminal, con sus reglas originales:
+      ADX (suavizado span 14) > 35 forex / 38 cripto / 40 oro.
+      Confluencias LONG (minimo 2 de 3, y precio >= VWAP):
+        1) precio >= VWAP y EMA9 >= EMA21
+        2) CVD subiendo o volumen > 1,35x su media de 20
+        3) Order Block alcista, FVG alcista o descuento >= 35% del rango de 20 velas
+      SHORT en espejo. Freno de exhaustacion: si la vela es enorme tras un tramo largo, no entra.
+      SL: swing de 6 velas -/+ 0,6 rango medio (minimo 0,9 rango medio). TP: 2,5R.
+    Correcciones: solo velas cerradas, VWAP que se reinicia cada dia (00:00 UTC) y, sin volumen
+    (forex en Yahoo), VWAP / CVD ponderados por tiempo en lugar de quedar anulados.
+    """
+    diag = {"Estrategia": "VWAP", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 85:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    d = df.tail(VENTANA).copy()
+    vol = d["volume"] if d["volume"].tail(85).sum() > 0 else pd.Series(1.0, index=d.index)
+    tp_ = (d["high"] + d["low"] + d["close"]) / 3
+    dia = d.index.floor("1D")
+    vwap = (tp_ * vol).groupby(dia).cumsum() / vol.groupby(dia).cumsum()
+    up, dn = d["high"].diff(), d["low"].shift() - d["low"]
+    pdm = pd.Series(np.where((up > dn) & (up > 0), up, 0.0), index=d.index)
+    mdm = pd.Series(np.where((dn > up) & (dn > 0), dn, 0.0), index=d.index)
+    tr = pd.concat([d["high"] - d["low"], (d["high"] - d["close"].shift()).abs(),
+                    (d["low"] - d["close"].shift()).abs()], axis=1).max(axis=1)
+    a_ = tr.ewm(span=14, adjust=False).mean().replace(0, np.nan)
+    pdi = 100 * pdm.ewm(span=14, adjust=False).mean() / a_
+    mdi = 100 * mdm.ewm(span=14, adjust=False).mean() / a_
+    adx_v = float((100 * (pdi - mdi).abs() / (pdi + mdi).replace(0, np.nan)).ewm(span=14, adjust=False).mean().iloc[-1])
+    umbral = ADX_VWAP[tipo]
+    if not adx_v > umbral:
+        diag["Estado"] = f"ADX {adx_v:.0f} (mínimo {umbral:.0f})"
+        return diag, None
+    w = d.tail(85)
+    o, h, l, c = (w[x].to_numpy() for x in ("open", "high", "low", "close"))
+    v = vol.tail(85).to_numpy()
+    rngo = np.where(h - l == 0, np.nan, h - l)
+    cvd = np.nancumsum(v * np.nan_to_num((c - o) / rngo))
+    ef = w["close"].ewm(span=9, adjust=False).mean().iloc[-1]
+    es = w["close"].ewm(span=21, adjust=False).mean().iloc[-1]
+    px, vw = float(c[-1]), float(vwap.iloc[-1])
+    rangos = h[-21:-1] - l[-21:-1]
+    atr_ref = float(rangos.mean()) if rangos.mean() > 0 else max(h[-1] - l[-1], px * 0.0025)
+    # freno de exhaustacion
+    if (h[-1] - l[-1]) > rangos.max() * 1.15 and abs(c[-2] - c[-10]) > rangos.mean() * 3:
+        diag["Estado"] = "Freno de exhaustación: esperar retroceso"
+        return diag, None
+    vol_ma = float(v[-20:].mean())
+    desbalance = vol_ma > 0 and v[-1] > vol_ma * 1.35
+    fvg = None
+    for k in (len(c) - 1, len(c) - 2):
+        if l[k] > h[k - 2]:
+            fvg = "up"
+            break
+        if h[k] < l[k - 2]:
+            fvg = "dn"
+            break
+    rmax, rmin = h[-20:].max(), l[-20:].min()
+    amp = max(rmax - rmin, 1e-12)
+    ob_up = c[-2] < o[-2] and c[-1] > o[-1] and px > h[-2]
+    ob_dn = c[-2] > o[-2] and c[-1] < o[-1] and px < l[-2]
+    sw_lo, sw_hi = float(l[-7:-1].min()), float(h[-7:-1].max())
+    bias, motivos = 0, []
+    m_l = [("VWAP/EMA alcista", px >= vw and ef >= es), ("CVD/volumen comprador", cvd[-1] > cvd[-2] or desbalance),
+           ("OB/FVG/descuento", ob_up or fvg == "up" or (rmax - px) / amp * 100 >= 35)]
+    m_s = [("VWAP/EMA bajista", px <= vw and ef <= es), ("CVD/volumen vendedor", cvd[-1] < cvd[-2] or desbalance),
+           ("OB/FVG/premium", ob_dn or fvg == "dn" or (px - rmin) / amp * 100 >= 35)]
+    if sum(x for _, x in m_l) >= 2 and px >= vw:
+        bias, motivos = 1, [n for n, x in m_l if x]
+        riesgo = max(px - (min(sw_lo, l[-1]) - atr_ref * 0.6), atr_ref * 0.9)
+    elif sum(x for _, x in m_s) >= 2 and px <= vw:
+        bias, motivos = -1, [n for n, x in m_s if x]
+        riesgo = max((max(sw_hi, h[-1]) + atr_ref * 0.6) - px, atr_ref * 0.9)
+    if bias == 0:
+        diag["Estado"] = "Sin confluencia 2/3"
+        return diag, None
+    diag["Dir"], diag["Score"] = ("LONG" if bias == 1 else "SHORT"), len(motivos)
+    sl = px - bias * riesgo
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, riesgo, px)
+    diag["Estado"] = "🚨 SEÑAL"
+    return diag, {"estrategia": "Confluencia VWAP (Quant Terminal)", "activo": nombre, "tipo": tipo,
+                  "dir": diag["Dir"], "bias": bias, "entrada": px, "sl": sl, "tp1": px + bias * 2.5 * riesgo,
+                  "tp2": None, "tp_r": 2.5, "r1": 2.5, "riesgo_usd": riesgo_usd, "tamano": tam,
+                  "tamano_txt": tam_txt, "score": len(motivos), "score_max": 3,
+                  "confluencias": f"ADX {adx_v:.0f} · " + " · ".join(motivos),
+                  "kz": killzone_actual(ahora) or "-", "vela": d.index[-1],
+                  "id": f"VWAP|{nombre}|{diag['Dir']}|{d.index[-1]}"}
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
                "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
-               "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi}
+               "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap}
 
 
 def estrategias_de(nombre, p):
