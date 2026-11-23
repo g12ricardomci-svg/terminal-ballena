@@ -39,6 +39,9 @@ Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
   Hyenuk Chu ("Hazlo simple"): ORB15 (rango 9:30-9:45 NY, ruptura con volumen, 2R) · MaxHist (rompe el maximo
                             del historial diario en tendencia, solo compras) · Medias (rebote en EMA8 5m / SMA20 15m
                             con SMA200 + martillo/envolvente) · Gap (cierre o continuacion del gap de apertura, indices).
+  Dr. Inversor (todos)    : DI_EMA (EMA200 de 15m da el sesgo, rebote en EMA20 con vela fuerte) · DI_Ruptura
+                            (rompe el max/min de ayer con volumen y entra en el pullback) · DI_RSI (divergencia
+                            RSI 15m + quiebre de estructura). Todas 2R y descartan si el objetivo esta bloqueado.
   Gotobi   (USD/JPY)      : dias de pago en Japon (5, 10, 15...): compra 8:00 JST, cierre en el fixing 9:55 JST.
 
 Horario de alertas: BTC 24/7 · Oro 24h (dom 18:00 a vie 17:00 NY, pausa 17-18) ·
@@ -85,15 +88,15 @@ PUNTO_MICRO = {"NASDAQ 100 (NQ)": 2.0, "S&P 500 (ES)": 5.0, "DOW 30 (YM)": 0.5, 
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias"],
-    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias"],
-    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias"],
-    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap"],
-    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap"],
-    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap"],
-    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "Medias"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
 }
 
 # ================================================================= PERFIL GANADOR
@@ -170,7 +173,7 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
     "solo_ganadoras": True,         # en vivo: solo las combinaciones de GANADORAS (python bot_pro.py --todas = todas)
 }
@@ -1899,12 +1902,192 @@ def evaluar_gap(nombre, tipo, df, d1, p, ahora, dd=None):
                   "vela": df.index[-1], "id": f"GAP|{nombre}|{t0:%Y-%m-%d}"}
 
 
+# ================================================================= ESTRATEGIAS 20-22: DR. INVERSOR
+def _tf_min(df):
+    return max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+
+
+def _bloqueado(d1, px, tp, bias):
+    """True si hay una resistencia (LONG) / soporte (SHORT) de las ultimas 24 velas 1H entre la entrada y el TP."""
+    if d1 is None or len(d1) < 24:
+        return False
+    w = d1.tail(24)
+    if bias == 1:
+        nivel = w["high"][w["high"] > px]
+        return bool(len(nivel)) and float(nivel.min()) < tp
+    nivel = w["low"][w["low"] < px]
+    return bool(len(nivel)) and float(nivel.max()) > tp
+
+
+def _senal_di(nombre, tipo, p, ahora, d, clave, titulo, bias, px, sl, conf, ident):
+    r = abs(px - sl)
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, r, px)
+    return {"estrategia": titulo, "activo": nombre, "tipo": tipo, "dir": "LONG" if bias == 1 else "SHORT",
+            "bias": bias, "entrada": px, "sl": sl, "tp1": px + bias * 2 * r, "tp2": None, "tp_r": 2, "r1": 2,
+            "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+            "confluencias": conf, "kz": killzone_actual(ahora) or "-", "vela": d.index[-1],
+            "id": f"{clave}|{nombre}|{ident}"}
+
+
+def evaluar_di_ema(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Tendencia con EMA 20 / EMA 200 (Dr. Inversor):
+      Sesgo   : precio sobre la EMA 200 de 15m -> solo compras (debajo -> solo ventas). La EMA 200 de 15m
+                se aproxima con la EMA 50 de 1H (mismo horizonte: 50 horas).
+      Gatillo : retroceso que toca la EMA 20 de la temporalidad de entrada y vela de confirmacion con
+                cuerpo fuerte (>= 60% del rango) a favor, cerrando sobre/bajo el maximo/minimo anterior.
+      Gestion : stop tras el minimo/maximo del retroceso (3 velas); TP 2R; no entra si una resistencia /
+                soporte de las ultimas 24 h bloquea el objetivo.
+    """
+    diag = {"Estrategia": "DI_EMA", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or d1 is None or len(df) < 40 or len(d1) < 60:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    d = df.tail(VENTANA)
+    e200 = float(d1["close"].ewm(span=50, adjust=False).mean().iloc[-1])
+    px = float(d["close"].iloc[-1])
+    bias = 1 if px > e200 else -1
+    diag["Sesgo 1H"] = "Alcista" if bias == 1 else "Bajista"
+    e20 = d["close"].ewm(span=20, adjust=False).mean()
+    o1, h1, l1 = (float(d[x].iloc[-1]) for x in ("open", "high", "low"))
+    h0, l0 = float(d["high"].iloc[-2]), float(d["low"].iloc[-2])
+    toca = ((d["low"].iloc[-3:] <= e20.iloc[-3:]) if bias == 1 else (d["high"].iloc[-3:] >= e20.iloc[-3:])).any()
+    fuerte = (h1 > l1) and abs(px - o1) >= 0.6 * (h1 - l1) and (px - o1) * bias > 0
+    rompe = px > h0 if bias == 1 else px < l0
+    lado = (px - float(e20.iloc[-1])) * bias > 0
+    if not (toca and fuerte and rompe and lado):
+        diag["Estado"] = "Esperando retroceso a la EMA 20 + vela fuerte"
+        return diag, None
+    buf = 0.1 * float(atr(d).iloc[-1])
+    sl = float(d["low"].tail(3).min()) - buf if bias == 1 else float(d["high"].tail(3).max()) + buf
+    if (px - sl) * bias <= 0:
+        diag["Estado"] = "SL invalido"
+        return diag, None
+    if _bloqueado(d1, px, px + bias * 2 * abs(px - sl), bias):
+        diag["Estado"] = "Objetivo bloqueado por resistencia/soporte cercano"
+        return diag, None
+    diag["Dir"], diag["Estado"] = ("LONG" if bias == 1 else "SHORT"), "🚨 SEÑAL"
+    return diag, _senal_di(nombre, tipo, p, ahora, d, "DIEMA", "EMA 20/200 (Dr. Inversor)", bias, px, sl,
+                           f"{'sobre' if bias == 1 else 'bajo'} EMA 200 (15m) · rebote en EMA 20 · vela fuerte",
+                           f"{diag['Dir']}|{d.index[-1]}")
+
+
+def evaluar_di_ruptura(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Soportes/resistencias + ruptura con volumen + pullback (Dr. Inversor):
+      Niveles : maximo y minimo de la sesion anterior (dia previo, velas 1H).
+      Ruptura : una vela cierra fuera del nivel con volumen > 1,5x su media de 20 (si el mercado tiene volumen).
+      Entrada : en el retroceso que vuelve a tocar el nivel roto y cierra a favor.
+      Gestion : stop tras el minimo/maximo del pullback; TP 2R; descarta si el objetivo esta bloqueado.
+    """
+    diag = {"Estrategia": "DI_Ruptura", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or d1 is None or len(df) < 40 or len(d1) < 30:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    niv = niveles_liquidez(d1, ahora)
+    if not niv:
+        diag["Estado"] = "Sin sesión anterior"
+        return diag, None
+    d = df.tail(VENTANA)
+    hoy = _ts_utc(ahora).tz_convert(NY).normalize().tz_convert("UTC")
+    s = d[d.index >= hoy]
+    if len(s) < 3:
+        diag["Estado"] = "Inicio de sesión"
+        return diag, None
+    c, o, h, l, v = (s[x].to_numpy() for x in ("close", "open", "high", "low", "volume"))
+    vm = d["volume"].rolling(20).mean().reindex(s.index).to_numpy()
+    con_vol = d["volume"].tail(40).sum() > 0
+    for bias, nivel, nombre_n in ((1, niv["PDH"], "máximo"), (-1, niv["PDL"], "mínimo")):
+        fuera = (c > nivel) if bias == 1 else (c < nivel)
+        if con_vol:
+            fuera = fuera & (v > 1.5 * np.nan_to_num(vm, nan=np.inf))
+        idx = np.where(fuera[:-1])[0]
+        if len(idx) == 0:
+            continue
+        b0 = int(idx[0])
+        tras = slice(b0 + 1, len(c))
+        dentro = (c[tras] < nivel) if bias == 1 else (c[tras] > nivel)
+        toca = (l[tras] <= nivel) if bias == 1 else (h[tras] >= nivel)
+        ok = toca & ~dentro & ((c[tras] > o[tras]) if bias == 1 else (c[tras] < o[tras]))
+        if dentro.any() and (not ok.any() or dentro.argmax() < ok.argmax()):
+            continue
+        if not ok.any() or ok.argmax() != len(ok) - 1:
+            continue
+        px = float(c[-1])
+        buf = 0.1 * float(atr(d).iloc[-1])
+        sl = float(l[b0 + 1:].min()) - buf if bias == 1 else float(h[b0 + 1:].max()) + buf
+        if (px - sl) * bias <= 0 or _bloqueado(d1, px, px + bias * 2 * abs(px - sl), bias):
+            continue
+        diag["Dir"], diag["Estado"] = ("LONG" if bias == 1 else "SHORT"), "🚨 SEÑAL"
+        return diag, _senal_di(nombre, tipo, p, ahora, d, "DIRUP", "Ruptura + pullback (Dr. Inversor)", bias, px,
+                               sl, f"rompió el {nombre_n} de ayer ({fmt(nivel)})" + (" con volumen" if con_vol else "")
+                               + " y re-testeó", f"{diag['Dir']}|{hoy:%Y-%m-%d}")
+    diag["Estado"] = "Esperando ruptura con volumen + pullback"
+    return diag, None
+
+
+def _rsi(c, n=14):
+    dlt = c.diff()
+    up = dlt.clip(lower=0).ewm(alpha=1 / n, adjust=False).mean()
+    dn = (-dlt.clip(upper=0)).ewm(alpha=1 / n, adjust=False).mean()
+    return 100 - 100 / (1 + up / dn.replace(0, np.nan))
+
+
+def evaluar_di_rsi(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Divergencia RSI(14) en 15m + quiebre de estructura (Dr. Inversor):
+      Bajista: en 15m el precio hace un maximo mas alto pero el RSI un maximo mas bajo (ultimos 2 swings);
+               gatillo: la vela de entrada cierra bajo el minimo de las 5 velas anteriores. Alcista en espejo.
+      Stop tras el extremo del swing; TP 2R; descarta si el objetivo esta bloqueado.
+    """
+    diag = {"Estrategia": "DI_RSI", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 120:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    d = df.tail(VENTANA)
+    m15 = d if _tf_min(d) >= 15 else remuestrear(d, "15m")
+    if len(m15) < 40:
+        diag["Estado"] = "Sin datos de 15m"
+        return diag, None
+    rsi = _rsi(m15["close"]).to_numpy()
+    sh, sl_ = swings(m15, 3)
+    hh, ll = m15["high"].to_numpy(), m15["low"].to_numpy()
+    n15 = len(m15)
+    c = d["close"].to_numpy()
+    px = float(c[-1])
+    previo_lo, previo_hi = float(d["low"].iloc[-6:-1].min()), float(d["high"].iloc[-6:-1].max())
+    buf = 0.1 * float(atr(d).iloc[-1])
+    cand = []
+    if len(sh) >= 2 and sh[-1] >= n15 - 12:
+        a, b = sh[-2], sh[-1]
+        if hh[b] > hh[a] and rsi[b] < rsi[a] and c[-1] < previo_lo and c[-2] >= float(d["low"].iloc[-7:-2].min()):
+            cand.append((-1, float(hh[b]) + buf, m15.index[b]))
+    if len(sl_) >= 2 and sl_[-1] >= n15 - 12:
+        a, b = sl_[-2], sl_[-1]
+        if ll[b] < ll[a] and rsi[b] > rsi[a] and c[-1] > previo_hi and c[-2] <= float(d["high"].iloc[-7:-2].max()):
+            cand.append((1, float(ll[b]) - buf, m15.index[b]))
+    for bias, sl, t_sw in cand:
+        if (px - sl) * bias <= 0 or _bloqueado(d1, px, px + bias * 2 * abs(px - sl), bias):
+            continue
+        diag["Dir"], diag["Estado"] = ("LONG" if bias == 1 else "SHORT"), "🚨 SEÑAL"
+        return diag, _senal_di(nombre, tipo, p, ahora, d, "DIRSI", "Divergencia RSI (Dr. Inversor)", bias, px, sl,
+                               f"divergencia {'alcista' if bias == 1 else 'bajista'} RSI 15m · quiebre de estructura",
+                               f"{diag['Dir']}|{t_sw}")
+    diag["Estado"] = "Sin divergencia RSI + quiebre"
+    return diag, None
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
                "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
                "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap,
                "Ruido": evaluar_ruido, "HoraBTC": evaluar_hora_btc, "NocheOro": evaluar_noche_oro,
                "ORBRetest": evaluar_orb_retest, "AsiaSweep": evaluar_asia_sweep, "EMAVWAP": evaluar_ema_vwap,
-               "ORB15": evaluar_orb15, "MaxHist": evaluar_max_hist, "Medias": evaluar_medias, "Gap": evaluar_gap}
+               "ORB15": evaluar_orb15, "MaxHist": evaluar_max_hist, "Medias": evaluar_medias, "Gap": evaluar_gap,
+               "DI_EMA": evaluar_di_ema, "DI_Ruptura": evaluar_di_ruptura, "DI_RSI": evaluar_di_rsi}
 
 
 def estrategias_de(nombre, p):
