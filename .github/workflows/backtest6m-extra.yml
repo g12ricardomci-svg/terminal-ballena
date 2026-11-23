@@ -1,6 +1,6 @@
 name: Backtest 6 meses (extra)
 
-# Igual que backtest6m.yml pero solo para los mercados nuevos de la lista (para no repetir los demas).
+# Igual que backtest6m.yml pero solo para lo nuevo (mercados o estrategias, campo 'est'), sin repetir lo demas.
 # Backtest de ~6 meses en 5m y 15m con pruebas de robustez.
 # Forex y oro: velas de Dukascopy (Yahoo solo da 60 dias en 5m/15m). BTC: exchanges via ccxt.
 # Se lanza al subir cambios a este archivo, o a mano con "Run workflow".
@@ -20,7 +20,12 @@ jobs:
       matrix:
         tf: ["5m", "15m"]
         mercado:
-          - { activo: "USD/CAD", duka: "usdcad", tipo: "forex" }
+          - { activo: "EUR/USD", duka: "eurusd", tipo: "forex", est: "Judas" }
+          - { activo: "GBP/USD", duka: "gbpusd", tipo: "forex", est: "Judas" }
+          - { activo: "USD/JPY", duka: "usdjpy", tipo: "forex", est: "Judas" }
+          - { activo: "USD/CAD", duka: "usdcad", tipo: "forex", est: "Judas" }
+          - { activo: "XAU/USD (Oro)", duka: "xauusd", tipo: "oro", est: "Judas" }
+          - { activo: "DAX 40", duka: "deuidxeur", tipo: "indice", est: "Judas" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -61,7 +66,7 @@ jobs:
       - name: Backtest
         run: |
           if [ -n "${{ matrix.mercado.duka }}" ]; then
-            python bot_pro.py backtest --tf ${{ matrix.tf }} --csv datos.csv --nombre "${{ matrix.mercado.activo }}" --tipo ${{ matrix.mercado.tipo }} --salida res
+            python bot_pro.py backtest --tf ${{ matrix.tf }} --csv datos.csv --nombre "${{ matrix.mercado.activo }}" --tipo ${{ matrix.mercado.tipo }} --salida res ${{ matrix.mercado.est && format('--estrategias {0}', matrix.mercado.est) || '' }}
           else
             python bot_pro.py backtest --tf ${{ matrix.tf }} --activos "${{ matrix.mercado.activo }}" --desde "$DESDE" --salida res
           fi

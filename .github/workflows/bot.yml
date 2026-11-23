@@ -22,7 +22,9 @@ jobs:
       - name: Restaurar memoria anti-spam
         uses: actions/cache/restore@v4
         with:
-          path: estado.json
+          path: |
+            estado.json
+            noticias.json
           key: estado-${{ github.run_id }}
           restore-keys: estado-
       - name: Escanear
@@ -35,5 +37,7 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: estado.json
+          path: |
+            estado.json
+            noticias.json
           key: estado-${{ github.run_id }}

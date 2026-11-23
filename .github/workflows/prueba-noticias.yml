@@ -1,0 +1,32 @@
+name: Prueba noticias
+
+# Comprueba que el bot puede leer el calendario economico (noticias de alto impacto) desde GitHub.
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/prueba-noticias.yml"
+
+jobs:
+  noticias:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests
+      - name: Leer calendario
+        run: |
+          python -c "
+          import bot_pro as b, pandas as pd
+          ev = b.calendario()
+          print('Eventos de alto impacto esta semana:', len(ev))
+          for e in ev[:40]:
+              print(e['t'].tz_convert(b.NY).strftime('%a %d %H:%M NY'), e['moneda'], e['titulo'])
+          print()
+          print(b.proximas_noticias(horas=24*7))
+          for nm in b.MONEDAS:
+              print(nm, '-> bloqueo ahora:', b.noticia_cercana(nm))
+          "

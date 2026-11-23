@@ -89,15 +89,15 @@ PUNTO_MICRO = {"NASDAQ 100 (NQ)": 2.0, "S&P 500 (ES)": 5.0, "DOW 30 (YM)": 0.5, 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
     "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "USD/CAD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
-    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
+    "USD/CAD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
+    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
+    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
+    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
+    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
 }
 
 # ================================================================= PERFIL GANADOR
@@ -166,6 +166,7 @@ CUENTA = {
     "contrato_oro": 100,
     "apalancamiento_max": 20,   # BTC: si la posicion necesita mas apalancamiento que esto, NO OPERABLE
     "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
+    "filtro_noticias": True,    # no avisar 30 min antes ni 15 min despues de una noticia de ALTO impacto
     "tfs": ["5m", "15m"],       # temporalidades de entrada que escanea el bot (alertas de 5m y de 15m)
 }
 
@@ -179,7 +180,7 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
     "solo_ganadoras": True,         # en vivo: solo las combinaciones de GANADORAS (python bot_pro.py --todas = todas)
 }
@@ -2088,13 +2089,239 @@ def evaluar_di_rsi(nombre, tipo, df, d1, p, ahora, dd=None):
     return diag, None
 
 
+# ================================================================= ESTRATEGIA 23: JUDAS SWING + FVG (modelo ICT)
+# Ventanas en hora de Colombia (UTC-5 fijo): Londres 2:00-4:30 COT = 07:00-09:30 UTC,
+# solapamiento Londres-NY 7:00-10:30 COT = 12:00-15:30 UTC.
+VENTANAS_JUDAS = (("Londres", 7.0, 9.5), ("Nueva York", 12.0, 15.5))
+
+
+def _redondos(px, nombre, tipo):
+    """Numeros redondos institucionales cercanos (cada 50 pips; JPY cada 0,50). Solo forex."""
+    if tipo != "forex":
+        return []
+    paso = 0.50 if "JPY" in nombre else 0.0050
+    base = np.floor(px / paso) * paso
+    return [float(base - paso), float(base), float(base + paso), float(base + 2 * paso)]
+
+
+def _judas_long(d, ini, lows, ref=5):
+    """LONG: barrido de un nivel inferior (mecha bajo el nivel y cierre de vuelta arriba), luego quiebre de
+    estructura con CUERPO por encima del ultimo maximo que impulso el barrido y un FVG alcista en el
+    desplazamiento. Dispara solo en la vela en que se completan ambas confirmaciones."""
+    o, h, l, c = (d[x].to_numpy() for x in ("open", "high", "low", "close"))
+    n = len(c)
+    if n - ini < 4 or not lows:
+        return None
+    j = ini + int(np.argmin(l[ini:n - 1]))                     # extremo del barrido en la sesion
+    if j < ref:
+        return None
+    barridos = [lv for lv in lows if l[j] < lv and max(c[j], c[min(j + 1, n - 1)]) > lv]
+    if not barridos:
+        return None
+    mss = float(h[j - ref:j].max())
+
+    def cond(t):
+        if t <= j + 1:
+            return None
+        rompe = [m for m in range(j + 1, t + 1) if min(o[m], c[m]) > mss or c[m] > mss]
+        if not rompe:
+            return None
+        fvgs = [q for q in range(j + 2, t + 1) if l[q] > h[q - 2]]
+        return (rompe[0], fvgs[-1]) if fvgs else None
+
+    ok = cond(n - 1)
+    if ok is None or cond(n - 2) is not None:
+        return None
+    q = ok[1]
+    entrada = (l[q] + h[q - 2]) / 2                            # 50% del FVG
+    if not c[-1] > entrada:
+        return None
+    return {"extremo": float(l[j]), "entrada": float(entrada), "fvg": (float(h[q - 2]), float(l[q])),
+            "nivel": float(max(barridos))}
+
+
+def evaluar_judas(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Judas Swing / Barrido de liquidez de sesion + FVG (modelo ICT):
+      Mapa     : maximo/minimo de Asia (00-07 UTC), maximo/minimo del dia anterior y numeros redondos.
+      Ventanas : apertura de Londres (2:00-4:30 COT) y solapamiento Londres-NY (7:00-10:30 COT).
+      Trampa   : el precio rompe un extremo y lo rechaza (cierra de vuelta).
+      Gatillo  : quiebre de estructura con cuerpo + Fair Value Gap en el desplazamiento.
+      Entrada  : orden LIMITE en el 50% del FVG. Stop tras el extremo del barrido.
+      Objetivo : extremo opuesto del rango asiatico si da 2R o mas (max 4R); si no, 2R.
+      Maximo 1 operacion por sesion (2 por dia).
+    """
+    diag = {"Estrategia": "Judas", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or d1 is None or len(df) < 40 or len(d1) < 30:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    tf_min = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+    cierre = df.index[-1] + pd.Timedelta(minutes=tf_min)
+    hoy = cierre.normalize()
+    hora = (cierre - hoy).total_seconds() / 3600
+    ses = next(((nm, a, b) for nm, a, b in VENTANAS_JUDAS if a < hora <= b), None)
+    if cierre.weekday() >= 5 or ses is None:
+        diag["Estado"] = "Fuera de Londres (2:00-4:30 COT) y NY (7:00-10:30 COT)"
+        return diag, None
+    t_s, t_fin = hoy + pd.Timedelta(hours=ses[1]), hoy + pd.Timedelta(hours=ses[2])
+    asia = df[(df.index >= hoy) & (df.index < hoy + pd.Timedelta(hours=7))]
+    niv = niveles_liquidez(d1, ahora) or {}
+    if len(asia) >= 6:
+        niv["Asia H"], niv["Asia L"] = float(asia["high"].max()), float(asia["low"].min())
+    if "Asia H" not in niv:
+        diag["Estado"] = "Sin rango asiático"
+        return diag, None
+    d = df[df.index >= t_s - pd.Timedelta(hours=2)]
+    ini = int(d.index.searchsorted(t_s))
+    px0 = float(d["open"].iloc[min(ini, len(d) - 1)])
+    red = _redondos(px0, nombre, tipo)
+    lows = [v for k, v in niv.items() if k in ("PDL", "Asia L")] + [x for x in red if x < px0]
+    highs = [v for k, v in niv.items() if k in ("PDH", "Asia H")] + [x for x in red if x > px0]
+    s, bias = _judas_long(d, ini, lows), 1
+    if s is None:
+        s = _judas_long(_flip(d), ini, [-x for x in highs])
+        if s is not None:
+            s = {"extremo": -s["extremo"], "entrada": -s["entrada"], "fvg": (-s["fvg"][1], -s["fvg"][0]),
+                 "nivel": -s["nivel"]}
+            bias = -1
+    diag["_niveles"] = {k: v for k, v in niv.items() if k in ("PDH", "PDL", "Asia H", "Asia L")}
+    if s is None:
+        diag["Estado"] = f"{ses[0]}: esperando barrido + quiebre + FVG"
+        return diag, None
+    pip = _pip(nombre) if tipo == "forex" else 0.1 * float(atr(df.tail(100)).iloc[-1])
+    entrada, sl = s["entrada"], s["extremo"] - bias * pip
+    r = abs(entrada - sl)
+    if (entrada - sl) * bias <= 0:
+        diag["Estado"] = "SL invalido"
+        return diag, None
+    opuesto = niv["Asia H"] if bias == 1 else niv["Asia L"]
+    dist = (opuesto - entrada) * bias
+    r_obj = min(dist / r, 4.0) if dist >= 2 * r else 2.0
+    tp = entrada + bias * r_obj * r
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, r, entrada)
+    espera = max(int(((t_fin - cierre).total_seconds() / 60 + 60) // tf_min), 2)
+    diag["Dir"], diag["Estado"] = ("LONG" if bias == 1 else "SHORT"), "🚨 SEÑAL"
+    lado = "COMPRA" if bias == 1 else "VENTA"
+    pips = f" ({r / _pip(nombre):.1f} pips)" if tipo == "forex" else ""
+    return diag, {"estrategia": "Judas Swing + FVG (ICT)", "activo": nombre, "tipo": tipo, "dir": diag["Dir"],
+                  "bias": bias, "entrada": entrada, "sl": sl, "tp1": tp, "tp2": None, "orden": "limite",
+                  "espera": espera, "max_barras": int(8 * 60 / tf_min),
+                  "salida_txt": f"Orden: {lado} LIMIT en {fmt(entrada)} (50% del FVG {fmt(s['fvg'][0])}-"
+                                f"{fmt(s['fvg'][1])}). Cancélala si no se llena antes de "
+                                f"{(t_fin + pd.Timedelta(hours=1)).tz_convert(NY):%H:%M} NY.\n"
+                                f"Stop{pips}: tras el barrido. TP ({r_obj:.1f}R): {fmt(tp)}",
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": f"{ses[0]}: barrió {fmt(s['nivel'])} · quiebre de estructura · FVG",
+                  "kz": ses[0], "vela": df.index[-1], "id": f"JUDAS|{nombre}|{hoy:%Y-%m-%d}|{ses[0]}"}
+
+
+def simular_limite(o, h, l, c, k0, d, entrada, sl, tp, espera, max_barras):
+    """Orden limite pendiente 'espera' velas: se llena si el precio vuelve a la entrada (si abre mas alla,
+    a la apertura). Se cancela si antes toca el TP. Luego SL/TP (SL primero si ambos en la misma vela)."""
+    n = len(c)
+    k = None
+    for b in range(k0, min(k0 + espera, n)):
+        if (d == 1 and l[b] <= entrada) or (d == -1 and h[b] >= entrada):
+            k = b
+            break
+        if (d == 1 and h[b] >= tp) or (d == -1 and l[b] <= tp):
+            return None
+    if k is None:
+        return None
+    e = min(o[k], entrada) if d == 1 else max(o[k], entrada)
+    riesgo = (e - sl) * d
+    if riesgo <= 0:
+        return None
+    for b in range(k, min(k + max_barras, n)):
+        if (d == 1 and l[b] <= sl) or (d == -1 and h[b] >= sl):
+            return (sl - e) * d / riesgo, b, "SL", e
+        if (d == 1 and h[b] >= tp) or (d == -1 and l[b] <= tp):
+            return (tp - e) * d / riesgo, b, "TP", e
+    b = min(k + max_barras, n) - 1
+    return (c[b] - e) * d / riesgo, b, "Tiempo", e
+
+
+# ================================================================= NOTICIAS (calendario economico)
+# Calendario semanal publico de Forex Factory (faireconomy). Se guarda en noticias.json y se renueva cada hora.
+CAL_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+MONEDAS = {"EUR/USD": ["EUR", "USD"], "GBP/USD": ["GBP", "USD"], "USD/JPY": ["USD", "JPY"],
+           "USD/CAD": ["USD", "CAD"], "XAU/USD (Oro)": ["USD"], "BTC/USDT": ["USD"],
+           "NASDAQ 100 (NQ)": ["USD"], "S&P 500 (ES)": ["USD"], "DOW 30 (YM)": ["USD"], "DAX 40": ["EUR"]}
+NOTICIAS_ANTES_MIN, NOTICIAS_DESPUES_MIN = 30, 15      # no avisar 30 min antes ni 15 min despues
+_CAL = {"t": 0.0, "eventos": []}
+
+
+def calendario(ruta="noticias.json"):
+    """Eventos de ALTO impacto de la semana: [{'t': Timestamp UTC, 'moneda', 'titulo'}]. Cache 1 h."""
+    if time.time() - _CAL["t"] < 3600 and _CAL["eventos"]:
+        return _CAL["eventos"]
+    datos = None
+    try:
+        with open(ruta, encoding="utf-8") as f:
+            c = json.load(f)
+        if time.time() - c.get("t", 0) < 3600:
+            datos = c["datos"]
+    except Exception:
+        pass
+    if datos is None:
+        try:
+            r = requests.get(CAL_URL, timeout=15, headers={"User-Agent": "bot-pro-calendario"})
+            r.raise_for_status()
+            datos = r.json()
+            with open(ruta, "w", encoding="utf-8") as f:
+                json.dump({"t": time.time(), "datos": datos}, f)
+        except Exception as e:
+            print(f"  ! Calendario de noticias no disponible: {e}", flush=True)
+            try:
+                with open(ruta, encoding="utf-8") as f:
+                    datos = json.load(f)["datos"]          # usa la copia vieja antes que nada
+            except Exception:
+                datos = []
+    ev = []
+    for x in datos or []:
+        if str(x.get("impact", "")).lower() != "high":
+            continue
+        try:
+            ev.append({"t": pd.Timestamp(x["date"]).tz_convert("UTC"), "moneda": x.get("country", ""),
+                       "titulo": x.get("title", "")})
+        except Exception:
+            continue
+    _CAL.update(t=time.time(), eventos=ev)
+    return ev
+
+
+def noticia_cercana(nombre, ahora=None):
+    """Evento de alto impacto de las monedas del activo entre 30 min antes y 15 min despues de 'ahora'."""
+    ahora = _ts_utc(ahora if ahora is not None else datetime.now(UTC))
+    mon = MONEDAS.get(nombre, ["USD"])
+    for e in calendario():
+        if e["moneda"] in mon and -NOTICIAS_DESPUES_MIN <= (e["t"] - ahora).total_seconds() / 60 <= NOTICIAS_ANTES_MIN:
+            return e
+    return None
+
+
+def proximas_noticias(horas=24, ahora=None):
+    """Texto con las noticias de alto impacto de las proximas 'horas' para las monedas que opera el bot."""
+    ahora = _ts_utc(ahora if ahora is not None else datetime.now(UTC))
+    mon = {m for v in MONEDAS.values() for m in v}
+    ev = sorted((e for e in calendario() if e["moneda"] in mon
+                 and timedelta(0) <= e["t"] - ahora <= timedelta(hours=horas)), key=lambda e: e["t"])
+    if not ev:
+        return "📰 Sin noticias de alto impacto en las próximas 24 h."
+    return "📰 Noticias de ALTO impacto (24 h):\n" + "\n".join(
+        f"• {e['t'].tz_convert(NY):%a %H:%M} NY · {e['moneda']} · {e['titulo']}" for e in ev[:12])
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
                "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
                "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap,
                "Ruido": evaluar_ruido, "HoraBTC": evaluar_hora_btc, "NocheOro": evaluar_noche_oro,
                "ORBRetest": evaluar_orb_retest, "AsiaSweep": evaluar_asia_sweep, "EMAVWAP": evaluar_ema_vwap,
                "ORB15": evaluar_orb15, "MaxHist": evaluar_max_hist, "Medias": evaluar_medias, "Gap": evaluar_gap,
-               "DI_EMA": evaluar_di_ema, "DI_Ruptura": evaluar_di_ruptura, "DI_RSI": evaluar_di_rsi}
+               "DI_EMA": evaluar_di_ema, "DI_Ruptura": evaluar_di_ruptura, "DI_RSI": evaluar_di_rsi,
+               "Judas": evaluar_judas}
 
 
 def estrategias_de(nombre, p):
@@ -2135,7 +2362,31 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
     df = solo_cerradas(cargar(nombre, tf), tf, ahora)
     d1 = solo_cerradas(cargar(nombre, "1h"), "1h", ahora)
     dd = solo_cerradas(cargar(nombre, "1d"), "1d", ahora) if {"Tortugas", "MaxHist"} & set(estrategias_de(nombre, p)) else None
-    return evaluar(nombre, meta["tipo"], df, d1, p, ahora, dd)
+    diags, senales = evaluar(nombre, meta["tipo"], df, d1, p, ahora, dd)
+    if senales and CUENTA.get("filtro_noticias"):
+        e = noticia_cercana(nombre, ahora)
+        if e is not None:
+            aviso = f"Bloqueada por noticia: {e['moneda']} {e['titulo']} ({e['t'].tz_convert(NY):%H:%M} NY)"
+            for s in senales:
+                for d in diags.values():
+                    if d.get("Estado") == "🚨 SEÑAL":
+                        d["Estado"] = aviso
+            print(f"  ! {nombre}: {aviso}", flush=True)
+            senales = []
+    return diags, senales
+
+
+def _nota_noticias(nombre, horas=3):
+    try:
+        ahora = pd.Timestamp.now("UTC")
+        ev = [e for e in calendario() if e["moneda"] in MONEDAS.get(nombre, ["USD"])
+              and timedelta(0) <= e["t"] - ahora <= timedelta(hours=horas)]
+        if ev:
+            e = min(ev, key=lambda x: x["t"])
+            return f"\n📰 Ojo: {e['moneda']} {e['titulo']} a las {e['t'].tz_convert(NY):%H:%M} NY. Cierra o protege antes."
+    except Exception:
+        pass
+    return ""
 
 
 def texto_alerta(s, tf):
@@ -2149,7 +2400,7 @@ def texto_alerta(s, tf):
             + f"Riesgo: ${s['riesgo_usd']:.2f} | Tamaño: {s['tamano_txt']}\n"
             f"Score: {s['score']}/{s['score_max']} ({s['confluencias']})\n"
             f"Killzone: {s['kz']} | Vela cerrada: {hora:%a %H:%M} NY"
-            + (f"\n{s['aviso']}" if s.get("aviso") else ""))
+            + (f"\n{s['aviso']}" if s.get("aviso") else "") + _nota_noticias(s["activo"]))
 
 
 # ================================================================= ESTADO / ANTI-SPAM
@@ -2278,6 +2529,12 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
             mb = s.get("max_barras") or mb                    # ORB / Gotobi: salida por tiempo propia
             if s.get("orden") == "ruido":                     # Noise Area: stop dinamico cada 30 min
                 r = simular_ruido(df, idx + 1, s, paso)
+                if r is None:
+                    continue
+                r_bruto, salida, motivo, e_px = r
+            elif s.get("orden") == "limite":                    # Judas: orden limite en el 50% del FVG
+                r = simular_limite(o, h, l, c, idx + 1, s["bias"], s["entrada"], s["sl"], s["tp1"],
+                                   s.get("espera", 12), mb)
                 if r is None:
                     continue
                 r_bruto, salida, motivo, e_px = r
@@ -2475,11 +2732,19 @@ def correr_bot(a, p):
             print(f"  -> {n} alertas nuevas enviadas", flush=True)
             if ping:                                   # en la prueba manual: manda tambien el diagnostico
                 ok, msg = enviar_telegram(f"📋 Estado del escaner ({' + '.join(a.tf)}) · {n} señales nuevas\n"
-                                          + resumen_estado(filas)[:3800])
+                                          + resumen_estado(filas)[:3000] + "\n\n" + proximas_noticias())
                 print(f"Resumen a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
                 ping = False
         except Exception as e:                     # el bot nunca se cae por un error puntual
             print(f"  ! Error en el escaneo: {e}", flush=True)
+        try:                                       # resumen diario de noticias (una vez al dia, desde las 6:00 NY)
+            hoy = f"{datetime.now(NY):%Y-%m-%d}"
+            if datetime.now(NY).hour >= 6 and estado.d.get("noticias_dia") != hoy:
+                ok, _ = enviar_telegram(f"🗓️ Buenos días · {datetime.now(NY):%a %d/%m}\n" + proximas_noticias())
+                if ok:
+                    estado.d["noticias_dia"] = hoy
+        except Exception as e:
+            print(f"  ! Resumen de noticias: {e}", flush=True)
         estado.guardar()
         if a.una_vez:
             break
@@ -2692,7 +2957,9 @@ jobs:
       - name: Restaurar memoria anti-spam
         uses: actions/cache/restore@v4
         with:
-          path: estado.json
+          path: |
+            estado.json
+            noticias.json
           key: estado-${{ github.run_id }}
           restore-keys: estado-
       - name: Escanear
@@ -2705,7 +2972,9 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: estado.json
+          path: |
+            estado.json
+            noticias.json
           key: estado-${{ github.run_id }}
 """
 
