@@ -1,0 +1,24 @@
+name: Prueba en vivo del bot
+
+# Una pasada REAL del bot nuevo (datos en vivo + Telegram con ✅ y 📋). Se lanza al cambiar este archivo o a mano.
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/prueba-bot.yml"
+
+jobs:
+  probar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - name: Una pasada con ping a Telegram
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+        run: python bot_pro.py --una-vez --tf 5m 15m --ping
