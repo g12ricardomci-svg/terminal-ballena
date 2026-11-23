@@ -30,6 +30,8 @@ Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
   VWAP     (todos)        : Confluencia VWAP + ADX + EMA9/21 + CVD + OB/FVG del Quant Terminal, TP 2,5R.
   Ruido    (todos)        : Noise Area de Zarattini, Aziz y Barbon ("Beat the Market"): fuera de la zona de ruido
                             de 14 dias y del lado del VWAP, control cada 30 min, stop dinamico, cierre fin de sesion.
+  HoraBTC  (BTC)          : estacionalidad de Bitcoin (Quantpedia): compra 21:00 UTC, vende 23:00 UTC.
+  NocheOro (Oro)          : efecto noche del oro (Blose et al. 2018): compra 19:00 NY, cierra 08:00 NY.
   Gotobi   (USD/JPY)      : dias de pago en Japon (5, 10, 15...): compra 8:00 JST, cierre en el fixing 9:55 JST.
 
 Horario de alertas: BTC 24/7 · Oro 24h (dom 18:00 a vie 17:00 NY, pausa 17-18) ·
@@ -74,12 +76,26 @@ INDICES = {}                       # ej.: {"NASDAQ 100 (NQ)": "NQ=F"}  (futuro C
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC"],
     "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
     "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
     "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro"],
     "NASDAQ 100 (NQ)": ["SMC", "Barrido"],
+}
+
+# ================================================================= PERFIL GANADOR
+# Combinaciones (mercado, temporalidad) -> estrategias que salieron POSITIVAS en el backtest con datos reales
+# (ultimos ~58 dias, costes incluidos). En vivo el bot solo avisa de estas. El backtest sigue probando todas.
+# Tortugas es un sistema diario: solo se evalua en 15m para no duplicar alertas.
+GANADORAS = {
+    ("XAU/USD (Oro)", "5m"): ["ORB"],
+    ("XAU/USD (Oro)", "15m"): ["VWAP", "ORB", "Tortugas"],
+    ("EUR/USD", "5m"): ["Londres"],
+    ("EUR/USD", "15m"): ["Londres"],
+    ("GBP/USD", "15m"): ["Londres", "VWAP"],
+    ("BTC/USDT", "15m"): ["Tortugas"],
+    ("USD/JPY", "15m"): ["Tortugas"],
 }
 
 ACTIVOS = {}
@@ -143,8 +159,9 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
+    "solo_ganadoras": True,         # en vivo: solo las combinaciones de GANADORAS (python bot_pro.py --todas = todas)
 }
 
 
@@ -1007,7 +1024,8 @@ def evaluar_orb(nombre, tipo, df, d1, p, ahora, dd=None):
             "Score": 0, "Confluencias": ""}
     ses = SESION_ORB.get(nombre)
     if ses is None or not mercado_abierto(tipo, ahora) or df is None or len(df) < 20:
-        diag["Estado"] = "Mercado cerrado" if ses else "Sin sesion definida"
+        diag["Estado"] = ("Sin sesion definida" if ses is None else
+                          "Mercado cerrado" if not mercado_abierto(tipo, ahora) else "Sin datos")
         return diag, None
     zona, hh, mm, dur = ses
     v_t = df.index[-1]
@@ -1411,10 +1429,59 @@ def simular_ruido(df, k, s, paso):
     return (c[b] - e) * d / riesgo, b, "Tiempo", e
 
 
+# ================================================================= ESTRATEGIAS 11-12: ESTACIONALIDAD HORARIA
+def _por_hora(nombre, tipo, df, d1, p, ahora, clave, titulo, zona, h_ent, h_sal, dir_, fuente):
+    """Compra (o vende) al cierre de la vela que termina a h_ent (hora 'zona') y cierra a h_sal.
+    Stop de emergencia: 1,5 ATR de 1H."""
+    diag = {"Estrategia": clave, "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or d1 is None or len(d1) < 20 or len(df) < 30:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    tf_min = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+    cierre = (df.index[-1] + pd.Timedelta(minutes=tf_min)).tz_convert(ZoneInfo(zona))
+    if (cierre.hour, cierre.minute) != (h_ent, 0) or (tipo != "cripto" and cierre.weekday() == 4 and h_sal < h_ent):
+        diag["Estado"] = f"Esperando las {h_ent:02d}:00 ({zona.split('/')[-1]})"
+        return diag, None
+    px = float(df["close"].iloc[-1])
+    sl = px - dir_ * 1.5 * float(atr(d1).iloc[-1])
+    horas = (h_sal - h_ent) % 24
+    salida = (cierre + pd.Timedelta(hours=horas)).tz_convert(NY)
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, abs(px - sl), px)
+    diag["Dir"], diag["Estado"] = ("LONG" if dir_ == 1 else "SHORT"), "🚨 SEÑAL"
+    return diag, {"estrategia": titulo, "activo": nombre, "tipo": tipo, "dir": diag["Dir"], "bias": dir_,
+                  "entrada": px, "sl": sl, "tp1": None, "tp2": None, "tp_r": 50,
+                  "max_barras": max(int(horas * 60 / tf_min), 1),
+                  "salida_txt": f"Salida: a las {salida:%H:%M} NY ({h_sal:02d}:00 {zona.split('/')[-1]}), gane o pierda.",
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": fuente, "kz": killzone_actual(ahora) or "-", "vela": df.index[-1],
+                  "id": f"{clave}|{nombre}|{cierre:%Y-%m-%d}"}
+
+
+def evaluar_hora_btc(nombre, tipo, df, d1, p, ahora, dd=None):
+    """Estacionalidad de Bitcoin (Quantpedia, 'The Seasonality of Bitcoin'): compra a las 21:00 UTC y vende
+    a las 23:00 UTC, las dos horas con mayor rendimiento medio (mercados tradicionales cerrados)."""
+    if tipo != "cripto":
+        return {"Estrategia": "HoraBTC", "Activo": nombre, "Estado": "Solo cripto"}, None
+    return _por_hora(nombre, tipo, df, d1, p, ahora, "HoraBTC", "BTC 21-23 UTC (Quantpedia)", "UTC",
+                     21, 23, 1, "estacionalidad horaria 21-23 UTC")
+
+
+def evaluar_noche_oro(nombre, tipo, df, d1, p, ahora, dd=None):
+    """Efecto noche del oro (Blose, Gondhalekar y Kort 2018, Journal of Economics and Finance): el rendimiento
+    del oro es positivo de noche y negativo de dia. Compra a las 19:00 NY (reapertura de Globex) y cierra a
+    las 08:00 NY, antes de la apertura de COMEX. No abre el viernes (fin de semana)."""
+    if tipo != "oro":
+        return {"Estrategia": "NocheOro", "Activo": nombre, "Estado": "Solo oro"}, None
+    return _por_hora(nombre, tipo, df, d1, p, ahora, "NocheOro", "Oro de noche (Blose et al.)",
+                     "America/New_York", 19, 8, 1, "efecto noche del oro")
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
                "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
                "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap,
-               "Ruido": evaluar_ruido}
+               "Ruido": evaluar_ruido, "HoraBTC": evaluar_hora_btc, "NocheOro": evaluar_noche_oro}
 
 
 def estrategias_de(nombre, p):
@@ -1445,6 +1512,10 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
     """Analisis en vivo: descarga, quita la vela en formacion y evalua todas las estrategias."""
     ahora = _ts_utc(ahora if ahora is not None else datetime.now(UTC))
     meta = ACTIVOS[nombre]
+    if p.get("solo_ganadoras"):
+        p = dict(p, estrategias=GANADORAS.get((nombre, tf), []))
+        if not p["estrategias"]:
+            return {}, []
     if not mercado_abierto(meta["tipo"], ahora):
         return {nm: {"Estrategia": nm, "Activo": nombre, "Estado": "Mercado cerrado"}
                 for nm in estrategias_de(nombre, p)}, []
@@ -2042,6 +2113,7 @@ def cli():
     ap.add_argument("--min-score", type=int, default=PARAMS_DEFAULT["min_score"])
     ap.add_argument("--banco", type=float, default=PARAMS_DEFAULT["banco"])
     ap.add_argument("--riesgo", type=float, default=PARAMS_DEFAULT["riesgo"])
+    ap.add_argument("--todas", action="store_true", help="Avisar de TODAS las estrategias, no solo las ganadoras")
     ap.add_argument("--sin-kz", action="store_true", help="Sin filtro de killzone")
     ap.add_argument("--cripto-24h", action="store_true", help="Cripto sin filtro de killzone")
     ap.add_argument("--estado", default="estado.json")
@@ -2067,7 +2139,7 @@ def cli():
     if a.cripto_24h:
         kz["cripto"] = []
     p = dict(PARAMS_DEFAULT, min_score=a.min_score, banco=a.banco, riesgo=a.riesgo, kz=kz,
-             estrategias=a.estrategias)
+             estrategias=a.estrategias, solo_ganadoras=(a.modo == "bot" and not a.todas))
     if a.modo == "backtest":
         base_salida = a.salida
         for tf in a.tf:
