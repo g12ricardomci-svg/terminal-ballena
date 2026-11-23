@@ -318,3 +318,21 @@ def test_modo_ganadoras_usa_niveles_y_cupos(telegram, estado, monkeypatch):
     assert n == 2
     niveles = {x["s"]["activo"]: (x["s"]["nivel"], x["s"]["riesgo_pct"]) for x in estado.cola}
     assert niveles == {"XAU/USD (Oro)": ("A", 1.0), "USD/JPY": ("B", 0.5)}
+
+
+def test_hay_version_nueva(monkeypatch):
+    monkeypatch.setenv("GITHUB_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "x/y")
+    monkeypatch.setenv("GITHUB_REF_NAME", "main")
+    resp = RespuestaFalsa()
+    resp.text = "b" * 40
+    monkeypatch.setattr(b.requests, "get", lambda *a, **k: resp)
+    b._VERSION["ultima"] = 0
+    assert b.hay_version_nueva() is True
+    assert b.hay_version_nueva() is False                 # no vuelve a mirar hasta pasados 10 min
+    b._VERSION["ultima"] = 0
+    resp.text = "a" * 40
+    assert b.hay_version_nueva() is False                 # misma version: sigue
+    monkeypatch.delenv("GITHUB_SHA")
+    b._VERSION["ultima"] = 0
+    assert b.hay_version_nueva() is False                 # fuera de GitHub Actions nunca corta
