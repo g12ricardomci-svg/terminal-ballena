@@ -107,9 +107,14 @@ ESTRATEGIAS_ACTIVO = {
 #   Tortugas Oro / BTC (15m): pocas operaciones pero positivas en 58 dias y en 6 meses (sistema diario clasico)
 # Descartadas a los 6 meses (habian salido bien en 58 dias): ORB Oro, Ruptura de Londres, VWAP GBP/USD,
 # Tortugas USD/JPY.
+#   ORB + Retest DAX 15m (guia de sesiones): 30 ops, +0,26 R, PF 1,53, 5/6 meses positivos -> ROBUSTA
+#   ORB apertura DAX 15m: 112 ops, +0,24 R, PF 1,34, 5/7 meses -> ROBUSTA
+#   ORB apertura S&P 500 15m: 116 ops, +0,18 R, PF 1,25, 5/7 meses -> ROBUSTA
 GANADORAS = {
     ("XAU/USD (Oro)", "15m"): ["VWAP", "Tortugas"],
     ("BTC/USDT", "15m"): ["Tortugas"],
+    ("DAX 40", "15m"): ["ORBRetest", "ORB"],
+    ("S&P 500 (ES)", "15m"): ["ORB"],
 }
 
 ACTIVOS = {}
