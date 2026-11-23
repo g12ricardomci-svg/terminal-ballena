@@ -85,7 +85,8 @@ DEFAULT_SECRETS = {
 # Los 5 mercados que vigila el bot. Para agregar otro, sumalo aqui y en ESTRATEGIAS_ACTIVO.
 CRIPTO = ["BTC/USDT"]
 FOREX = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X", "USD/CAD": "USDCAD=X"}
-ORO = {"XAU/USD (Oro)": "GC=F"}   # GC=F = futuro COMEX (100 oz), no spot
+ORO = {"XAU/USD (Oro)": "GC=F"}   # respaldo: futuro COMEX. En vivo se usa PAXG/USDT (spot, sin cambios de contrato)
+ORO_CCXT = {"XAU/USD (Oro)": "PAXG/USDT"}  # token 1:1 con oro fisico: sigue al spot y no tiene saltos de "roll"
 INDICES = {"NASDAQ 100 (NQ)": "NQ=F", "S&P 500 (ES)": "ES=F", "DOW 30 (YM)": "YM=F", "DAX 40": "^GDAXI",
            "FTSE 100": "^FTSE", "NIKKEI 225": "^N225", "EURO STOXX 50": "^STOXX50E", "CAC 40": "^FCHI"}
 # Metales y energia (futuros CME/ICE, horario Globex): se tratan como el oro
@@ -160,7 +161,7 @@ for _c in CRIPTO:
 for _k, _v in FOREX.items():
     ACTIVOS[_k] = {"tipo": "forex", "yf": _v}
 for _k, _v in ORO.items():
-    ACTIVOS[_k] = {"tipo": "oro", "yf": _v}
+    ACTIVOS[_k] = {"tipo": "oro", "yf": _v, "ccxt": ORO_CCXT.get(_k)}
 # Mercados que escanea el bot en vivo: los de Cisco (forex, oro, BTC) + los indices robustos a 2 anos.
 # FTSE, Nikkei, Euro Stoxx, CAC, plata y petroleo quedan definidos solo para investigar con el backtest.
 MIS_MERCADOS = set(CRIPTO) | set(FOREX) | set(ORO) | {"S&P 500 (ES)", "DAX 40", "DOW 30 (YM)"}
@@ -408,7 +409,8 @@ def historico_yf(ticker, tf, desde=None, hasta=None):
 
 def obtener(nombre, tf):
     meta = ACTIVOS[nombre]
-    df = ohlcv_ccxt(nombre, tf) if meta["tipo"] == "cripto" else None
+    sym = meta.get("ccxt") or (nombre if meta["tipo"] == "cripto" else None)
+    df = ohlcv_ccxt(sym, tf) if sym else None
     if df is None:
         df = ohlcv_yf(meta["yf"], tf)
     return df
@@ -2788,7 +2790,22 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
     df = solo_cerradas(cargar(nombre, tf), tf, ahora)
     d1 = solo_cerradas(cargar(nombre, "1h"), "1h", ahora)
     dd = solo_cerradas(cargar(nombre, "1d"), "1d", ahora) if {"Tortugas", "MaxHist"} & set(estrategias_de(nombre, p)) else None
+    if df is not None and len(df) > 60:                 # detector de saltos anormales (cambio de contrato, hueco)
+        tr = (df["high"] - df["low"]).tail(100)
+        salto = df["close"].diff().abs().tail(100).max()
+        if tr.median() > 0 and salto > 7 * tr.median():
+            msg = f"⚠️ Salto anormal en los datos ({fmt(salto)} en una vela): sin señales por precaución"
+            return {nm: {"Estrategia": nm, "Activo": nombre, "Estado": msg} for nm in estrategias_de(nombre, p)}, []
     diags, senales = evaluar(nombre, meta["tipo"], df, d1, p, ahora, dd)
+    if senales and df is not None and len(df) > 20:   # freno de stops absurdos (> 4 ATR)
+        rango = float((df["high"] - df["low"]).tail(100).median())   # mediana: no se infla con un salto
+        diarias = ("Tortugas", "MaxHist", "HoraBTC", "NocheOro")
+        malas = [s for s in senales if s.get("clave") not in diarias and rango > 0
+                 and abs(s["entrada"] - s["sl"]) > 5 * rango]
+        for s in malas:
+            print(f"  ! {nombre} {s['estrategia']}: stop a {abs(s['entrada'] - s['sl']) / rango:.1f} velas medias, "
+                  f"descartada", flush=True)
+        senales = [s for s in senales if s not in malas]
     for s in senales:
         s["experimental"] = s.get("clave") in EXPERIMENTALES.get((nombre, tf), [])
     permitidos = {"sin_contradice": ("CONFIRMA", "NEUTRAL"), "solo_confirma": ("CONFIRMA",)}
