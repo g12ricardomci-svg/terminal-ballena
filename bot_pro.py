@@ -212,7 +212,9 @@ CUENTA = {
     "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
     "filtro_noticias": True,    # no avisar 30 min antes ni 15 min despues de una noticia de ALTO impacto
     "reactivar": [],            # nombres de estrategias apagadas por el freno que quieres volver a activar
-    "modo": "comite",           # "comite" = todas las estrategias votan · "ganadoras" = solo las robustas
+    "modo": "ganadoras",        # "ganadoras" = solo las robustas a 2 anos · "comite" = todas votan
+                                # (backtest del comite 23/11/2026: a 2 anos en DAX y Dow TODOS los niveles pierden
+                                #  y A+ ~ C; el comite no crea ventaja -> se usan solo las GANADORAS)
     "max_abiertas": 15,         # cartera: maximo de operaciones abiertas a la vez (5 por nivel x 3 niveles)
     "una_por_mercado": True,    # cartera: no abrir otra senal en un mercado con una operacion abierta
     "motor_streamlit": False,   # True = el panel de Streamlit TAMBIEN envia alertas (duplica a GitHub Actions)
@@ -3010,7 +3012,8 @@ def texto_alerta(s, tf):
     if s.get("puntaje") is not None:
         niv, riesgo = nivel_comite(s["puntaje"])
         rr = ratio_rr(s)
-        nivel = (f"{niv} ({s['puntaje']:+d} votos) · sugerido: {riesgo}"
+        votos_txt = f" ({s['puntaje']:+d} votos)" if CUENTA.get("modo") == "comite" else ""
+        nivel = (f"{niv}{votos_txt} · sugerido: {riesgo}"
                  + (f" · ratio 1:{rr:.1f}" if rr else "")
                  + "\n🗳️ " + " · ".join(s.get("votos", [])[:6]) + "\n")
     else:
@@ -3709,21 +3712,16 @@ def escanear(tf, p, estado, verbose=True, cargar=obtener):
             senales.append(lider)
         for s in senales:
             s["tf"] = tf
-            if estado is not None:
-                abiertas = estado.d.get("abiertas", [])
-                if len(abiertas) >= CUENTA.get("max_abiertas", 3):
-                    print(f"  🛡️ {nm} {s['estrategia']}: cartera llena ({len(abiertas)} abiertas)", flush=True)
-                    continue
-                if CUENTA.get("una_por_mercado", True) and any(o.get("activo") == nm for o in abiertas):
-                    print(f"  🛡️ {nm} {s['estrategia']}: ya hay una operacion abierta en {nm}", flush=True)
-                    continue
-                if estado.d.get("freno_hasta") == _hoy_ny():
-                    print(f"  🛑 {nm} {s['estrategia']}: freno activo ({estado.d.get('freno_motivo')})", flush=True)
-                    continue
-                if s["estrategia"] in estado.d.get("apagadas", {}):
-                    print(f"  🧯 {nm} {s['estrategia']}: estrategia apagada por resultados en vivo", flush=True)
-                    continue
-            if estado is not None and estado.procesar(s, tf):
+            if estado is None:
+                continue
+            # Nivel de una GANADORA: robusta + otra que confirma = A+ · robusta sola = A · experimental = B.
+            # Pasa por las mismas protecciones de la v6 (ratio, cupos, tope de riesgo, exposicion, freno).
+            robusta = s.get("clave") in GANADORAS.get((nm, tf), [])
+            nivel = ("A+" if s.get("confluye") else "A") if robusta else "B"
+            s["puntaje"] = {"A+": 5, "A": 3, "B": 2}[nivel]
+            s["votos"] = ["robusta a 2 años" if robusta else "🧪 experimental (positiva a 2 años, sin todas las pruebas)"] \
+                + ([f"confirman: {', '.join(s['confluye'])}"] if s.get("confluye") else [])
+            if decidir_senal(s, tf, p, estado) == "enviar":
                 nuevas += 1
     return nuevas, filas
 

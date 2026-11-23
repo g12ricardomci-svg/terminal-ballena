@@ -303,3 +303,18 @@ def test_chat_ignora_chats_no_autorizados(monkeypatch, estado):
     enviados = []
     monkeypatch.setattr(b, "_post_telegram", lambda tok, chat, txt: enviados.append(chat))
     assert b.atender_telegram(estado) == 0 and enviados == [] and estado.d["tg_offset"] == 8
+
+
+def test_modo_ganadoras_usa_niveles_y_cupos(telegram, estado, monkeypatch):
+    """Una GANADORA robusta sale como nivel A (1%), con confirmacion A+ (2%); una experimental como B (0,5%)."""
+    df = _velas(800, semilla=3)
+    px = float(df["close"].iloc[-1])
+    rob = {**senal(activo="XAU/USD (Oro)", ent=px, sl=px * 0.995, tp=px * 1.01, est="VWAP"), "clave": "VWAP"}
+    exp = {**senal(activo="USD/JPY", ent=150.0, sl=149.7, tp=150.6, est="AuraPlus"), "clave": "AuraPlus"}
+    rob.pop("puntaje"), exp.pop("puntaje")
+    salidas = {"XAU/USD (Oro)": [rob], "USD/JPY": [exp]}
+    monkeypatch.setattr(b, "analizar", lambda nm, tf, p, cargar=None: ({}, [dict(x) for x in salidas.get(nm, [])]))
+    n, _ = b.escanear("15m", dict(b.PARAMS_DEFAULT), estado, verbose=False)
+    assert n == 2
+    niveles = {x["s"]["activo"]: (x["s"]["nivel"], x["s"]["riesgo_pct"]) for x in estado.cola}
+    assert niveles == {"XAU/USD (Oro)": ("A", 1.0), "USD/JPY": ("B", 0.5)}
