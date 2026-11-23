@@ -3,3 +3,4 @@ estado.json.tmp
 resultados_backtest/
 __pycache__/
 noticias.json
+.pytest_cache/
