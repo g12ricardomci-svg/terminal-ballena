@@ -2975,6 +2975,24 @@ def revisar_freno(estado, enviar=True):
     return estado.d.get("freno_motivo") if estado.d.get("freno_hasta") == hoy else None
 
 
+def ventaja_o_suerte(rs):
+    """¿Ventaja o suerte? (idea tipo 'Gemelo'): prueba t sobre el R medio. Devuelve una etiqueta corta."""
+    rs = np.asarray(rs, dtype=float)
+    n = len(rs)
+    if n < 10:
+        return f"🎲 muy pocas ops ({n}/20 para opinar)"
+    sd = rs.std(ddof=1)
+    t = rs.mean() / (sd / np.sqrt(n)) if sd > 0 else 0.0
+    if t >= 2:
+        return f"✅ ventaja probable (t={t:.1f})"
+    if t >= 1:
+        faltan = int(np.ceil((2 * sd / rs.mean()) ** 2)) - n if rs.mean() > 0 else 0
+        return f"🟡 posible ventaja (t={t:.1f}; ~{max(faltan, 1)} ops más para confirmar)"
+    if t > -1:
+        return f"🎲 parece suerte (t={t:.1f})"
+    return f"🔴 desventaja (t={t:.1f})"
+
+
 def informe_diario(estado, dias=None):
     """Resumen del diario en vivo por estrategia (todo o los ultimos 'dias')."""
     diario = [x for x in estado.d.get("diario", []) if x.get("R") is not None]
@@ -2987,7 +3005,7 @@ def informe_diario(estado, dias=None):
     for est in sorted({x["estrategia"] for x in diario}):
         rs = np.array([x["R"] for x in diario if x["estrategia"] == est])
         filas.append(f"• {est}: {len(rs)} ops · {100 * (rs > 0).mean():.0f}% aciertos · "
-                     f"{rs.mean():+.2f}R prom · {rs.sum():+.1f}R total")
+                     f"{rs.mean():+.2f}R prom · {rs.sum():+.1f}R total\n   ¿Ventaja o suerte? {ventaja_o_suerte(rs)}")
     todo = np.array([x["R"] for x in diario])
     lect = []
     for v in ("CONFIRMA", "NEUTRAL", "CONTRADICE"):
