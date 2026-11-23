@@ -176,7 +176,7 @@ ADX_MIN = {"cripto": 18, "forex": 20, "oro": 20, "indice": 20}
 EXCHANGES = ["kucoin", "okx", "bybit", "binance"]   # binance al final: bloquea IPs de EE.UU.
 TF_MIN = {"1m": 1, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
 # Yahoo: intervalos < 1h solo ultimos 60 dias; 1h solo ultimos 730 dias.
-YF_CFG = {"1m": ("1m", "5d"), "5m": ("5m", "5d"), "15m": ("15m", "10d"), "1h": ("1h", "60d"), "1d": ("1d", "2y")}
+YF_CFG = {"1m": ("1m", "5d"), "5m": ("5m", "15d"), "15m": ("15m", "30d"), "1h": ("1h", "60d"), "1d": ("1d", "2y")}
 YF_LIMITE_DIAS = {"1m": 7, "5m": 59, "15m": 59, "30m": 59, "1h": 729, "1d": 3650}
 COOLDOWN_H = 4
 VENTANA = 300          # velas de entrada que mira el motor (igual en vivo y en backtest)
@@ -336,16 +336,19 @@ def _df_ccxt(raw):
     return df.astype(float)
 
 
-def ohlcv_ccxt(simbolo, tf, limite=500):
+def ohlcv_ccxt(simbolo, tf, limite=None):
     if ccxt is None:
         return None
+    if limite is None:                       # mas historia en 5m/15m: la maquina del tiempo agrupa por hora del dia
+        limite = 1000 if tf in ("5m", "15m") else 500
     for nombre in EXCHANGES:
-        try:
-            raw = _exchange(nombre).fetch_ohlcv(simbolo, timeframe=tf, limit=limite)
-            if raw and len(raw) > 50:
-                return _df_ccxt(raw)
-        except Exception:
-            continue
+        for lim in dict.fromkeys((limite, 500, 300)):       # algunos exchanges topan en 300-500 velas
+            try:
+                raw = _exchange(nombre).fetch_ohlcv(simbolo, timeframe=tf, limit=lim)
+                if raw and len(raw) > 50:
+                    return _df_ccxt(raw)
+            except Exception:
+                continue
     return None
 
 
@@ -2901,6 +2904,10 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
         senales = [s for s in senales if s not in malas]
     for s in senales:
         s["experimental"] = s.get("clave") in EXPERIMENTALES.get((nombre, tf), [])
+        try:
+            s["tm"] = maquina_del_tiempo(df, s)
+        except Exception as e:
+            print(f"  ! Maquina del tiempo {nombre}: {e}", flush=True)
     permitidos = {"sin_contradice": ("CONFIRMA", "NEUTRAL"), "solo_confirma": ("CONFIRMA",)}
     def _modo(s):
         return FILTRO_LECTURA.get((nombre, tf, s.get("clave")), CUENTA.get("filtro_estructura", "anotar"))
@@ -2960,7 +2967,7 @@ def texto_alerta(s, tf):
             + f"Riesgo: ${s['riesgo_usd']:.2f} | Tamaño: {s['tamano_txt']}\n"
             f"Score: {s['score']}/{s['score_max']} ({s['confluencias']})\n"
             f"Killzone: {s['kz']} | Vela cerrada: {hora:%a %H:%M} NY"
-            + (f"\n{s['aviso']}" if s.get("aviso") else "") + texto_lectura(s.get("lectura"))
+            + (f"\n{s['aviso']}" if s.get("aviso") else "") + texto_lectura(s.get("lectura")) + texto_tm(s.get("tm"))
             + _nota_noticias(s["activo"]) + f"\n🤖 Bot Pro {VERSION_BOT}")
 
 
@@ -3228,6 +3235,7 @@ def registrar_senal(estado, s, tf):
     op["tf"], op["t"] = tf, str(pd.Timestamp(s["vela"]) + pd.Timedelta(minutes=TF_MIN[tf]))
     op["enviada"] = f"{datetime.now(NY):%Y-%m-%d %H:%M}"
     op["lectura"] = (s.get("lectura") or {}).get("veredicto", "-")
+    op["maquina"] = veredicto_tm(s.get("tm"))
     estado.d.setdefault("abiertas", []).append(op)
 
 
@@ -3295,7 +3303,7 @@ def seguir_abiertas(estado, cargar=obtener, enviar=True, ahora=None):
             continue
         res = res or {"R": None, "motivo": "Caducada", "salida": ""}
         estado.d.setdefault("diario", []).append({**{k: op.get(k) for k in ("estrategia", "activo", "dir", "tf",
-                                                                             "enviada", "lectura")}, **res})
+                                                                             "enviada", "lectura", "maquina")}, **res})
         cerradas += 1
         if enviar:
             if res["R"] is None:
@@ -3393,8 +3401,14 @@ def informe_diario(estado, dias=None):
         rs = np.array([x["R"] for x in diario if x.get("lectura") == v])
         if len(rs):
             lect.append(f"   🔮 {v}: {len(rs)} ops · {rs.mean():+.2f}R prom")
+    maq = []
+    for v, nombre_v in (("CON_VENTAJA", "✅ con ventaja"), ("MONEDA", "🎲 moneda"), ("EN_CONTRA", "🔴 en contra")):
+        rs = np.array([x["R"] for x in diario if x.get("maquina") == v])
+        if len(rs):
+            maq.append(f"   ⏳ {nombre_v}: {len(rs)} ops · {rs.mean():+.2f}R prom")
     return ("\n".join(filas) + f"\nTOTAL: {len(todo)} ops · {todo.sum():+.1f}R"
-            + ("\nSegún la lectura de estructura:\n" + "\n".join(lect) if lect else ""))
+            + ("\nSegún la lectura de estructura:\n" + "\n".join(lect) if lect else "")
+            + ("\nSegún la máquina del tiempo:\n" + "\n".join(maq) if maq else ""))
 
 
 def informe_semanal(estado):
@@ -3463,6 +3477,103 @@ def escanear_varios(tfs, p, estado, verbose=True, cargar=obtener):
     return total, filas
 
 
+# ================================================================= MAQUINA DEL TIEMPO (idea de trader-timemachine, MIT)
+# Antes de arriesgar, repite el resto del trade 10.000 veces. Cada vela futura se toma de las velas REALES del mismo
+# mercado a esa misma hora del dia (ultimas semanas): su retorno y sus mechas relativas a la apertura. En cada
+# simulacion se mira que toca primero: TP, SL (si ambos en la misma vela, cuenta SL) o ninguno al final del horizonte.
+TM = {"simulaciones": 10000, "max_pasos": 96, "min_por_hora": 5, "semilla": 19, "voto_ev": 0.10}
+
+
+def _sim_tm(ret, up, dn, buckets, todos, minuto0, tf_min, d, ent, sl, tp, riesgo, pasos, n, semilla):
+    """Un bloque de n simulaciones con los retornos dados. Devuelve (resultado, vivo, muestras de la 1a vela)."""
+    rng = np.random.default_rng(semilla)
+    precio = np.full(n, ent)
+    vivo = np.ones(n, bool)
+    resultado = np.zeros(n)                  # +R al TP, -1 al SL, R flotante si sigue abierta
+    t = minuto0
+    muestras = None
+    for _ in range(pasos):
+        m = t.hour * 60 + t.minute
+        pool = np.array(buckets.get(m, []))
+        if len(pool) < TM["min_por_hora"]:
+            pool = todos
+        if muestras is None:
+            muestras = len(pool)
+        idx = pool[rng.integers(0, len(pool), n)]
+        hi, lo = precio * (1 + up[idx]), precio * (1 + dn[idx])
+        toca_sl = vivo & ((lo <= sl) if d == 1 else (hi >= sl))
+        toca_tp = vivo & ~toca_sl & ((hi >= tp) if d == 1 else (lo <= tp))
+        resultado[toca_sl] = -1.0
+        resultado[toca_tp] = (tp - ent) * d / riesgo
+        vivo &= ~(toca_sl | toca_tp)
+        precio = np.where(vivo, precio * (1 + ret[idx]), precio)
+        t += pd.Timedelta(minutes=tf_min)
+        if not vivo.any():
+            break
+    resultado[vivo] = (precio[vivo] - ent) * d / riesgo
+    return resultado, vivo, muestras
+
+
+def maquina_del_tiempo(df, s, n=None, pasos=None, semilla=None):
+    """Simula el trade n veces. Devuelve proporciones (tp, sl, abierta), el R esperado con DERIVA NEUTRA ('ev', la
+    geometria del trade: stop, objetivo y horizonte) y el R esperado con la tendencia reciente ('ev_tend'), o None
+    si faltan datos. El comite vota solo con 'ev' para no premiar perseguir la ultima tendencia."""
+    if df is None or len(df) < 150 or s.get("sl") is None:
+        return None
+    n = n or TM["simulaciones"]
+    o, h, l, c = (df[x].to_numpy(dtype=float) for x in ("open", "high", "low", "close"))
+    ok = o > 0
+    ret = np.where(ok, c / np.where(ok, o, 1) - 1, 0.0)
+    up = np.where(ok, h / np.where(ok, o, 1) - 1, 0.0)
+    dn = np.where(ok, l / np.where(ok, o, 1) - 1, 0.0)
+    deriva = float(ret.mean())
+    tf_min = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+    minuto = (df.index.hour * 60 + df.index.minute).to_numpy()
+    buckets = {}
+    for i, m in enumerate(minuto):
+        buckets.setdefault(m, []).append(i)
+    todos = np.arange(len(df))
+    d, ent, sl = int(s["bias"]), float(s["entrada"]), float(s["sl"])
+    riesgo = abs(ent - sl)
+    if riesgo <= 0:
+        return None
+    tp = s.get("tp1")
+    tp = float(tp) if tp is not None else ent + d * 2 * riesgo
+    pasos = int(pasos or min(s.get("max_barras") or 24 * 60 // tf_min, TM["max_pasos"]))
+    sem = TM["semilla"] if semilla is None else semilla
+    t0 = df.index[-1] + pd.Timedelta(minutes=tf_min)
+    # 1) deriva neutra: a cada vela se le resta la deriva media de SU hora del dia (o la global si hay pocas muestras).
+    #    Se conserva la volatilidad de cada hora, pero no su direccion: con ~20 velas por hora, esa media es ruido.
+    medias = {m: float(ret[ix].mean()) for m, ix in buckets.items() if len(ix) >= TM["min_por_hora"]}
+    der_i = np.array([medias.get(m, deriva) for m in minuto])
+    res_n, vivo_n, muestras = _sim_tm(ret - der_i, up - der_i, dn - der_i, buckets, todos, t0, tf_min, d, ent, sl,
+                                      tp, riesgo, pasos, n, sem)
+    # 2) con la tendencia reciente (solo informativo)
+    res_t, _, _ = _sim_tm(ret, up, dn, buckets, todos, t0, tf_min, d, ent, sl, tp, riesgo, pasos, n, sem)
+    return {"tp": float(((res_n > 0) & ~vivo_n).mean()), "sl": float((res_n == -1.0).mean()),
+            "abierta": float(vivo_n.mean()), "ev": float(res_n.mean()), "ev_tend": float(res_t.mean()), "n": n,
+            "pasos": pasos, "horas": round(pasos * tf_min / 60, 1), "muestras": int(muestras or 0),
+            "velas": len(df)}
+
+
+def veredicto_tm(tm):
+    if not tm:
+        return "-"
+    return "CON_VENTAJA" if tm["ev"] >= TM["voto_ev"] else "EN_CONTRA" if tm["ev"] <= -TM["voto_ev"] else "MONEDA"
+
+
+def texto_tm(tm):
+    if not tm:
+        return ""
+    v = veredicto_tm(tm)
+    ic = {"CON_VENTAJA": "✅ con ventaja", "EN_CONTRA": "🔴 en contra", "MONEDA": "🎲 moneda al aire"}[v]
+    pocas = " ⚠️ pocas velas de esa hora" if tm.get("muestras", 99) < 10 else ""
+    return (f"\n⏳ Máquina del tiempo ({tm['n']:,} simulaciones, {tm['horas']:g} h): "
+            f"TP primero {100 * tm['tp']:.0f}% · SL primero {100 * tm['sl']:.0f}% · abierta {100 * tm['abierta']:.0f}%"
+            f"\n   R esperado sin tendencia: {tm['ev']:+.2f}R {ic} · con la tendencia reciente: {tm['ev_tend']:+.2f}R"
+            f"{pocas}").replace(",", ".")
+
+
 # ================================================================= COMITE DE ESTRATEGIAS (todas votan)
 # Todas las estrategias vigilan todos los mercados (5m y 15m), pero cada una vota con un PESO segun lo que
 # demostro en los backtests. Las debiles solo generan alerta si otras las respaldan.
@@ -3502,6 +3613,13 @@ def votar(senales, activo):
         elif ver == "CONTRADICE":
             puntos -= COMITE["lectura"]
             motivos.append("−1 lectura 🔮 contradice")
+        tm = s.get("tm")
+        if tm and tm["ev"] >= TM["voto_ev"]:
+            puntos += 1
+            motivos.append(f"+1 máquina del tiempo ({tm['ev']:+.2f}R)")
+        elif tm and tm["ev"] <= -TM["voto_ev"]:
+            puntos -= 1
+            motivos.append(f"−1 máquina del tiempo ({tm['ev']:+.2f}R)")
         if contrarias:
             puntos += COMITE["conflicto"]
             motivos.append(f"−2 conflicto con {contrarias[0]['estrategia']} ({contrarias[0]['tf']})")
@@ -3630,7 +3748,7 @@ def texto_perfil(p):
         n_est = len({e for m in MIS_MERCADOS for e in ESTRATEGIAS_ACTIVO.get(m, [])})
         return (f"🗳️ MODO COMITÉ: {n_est} estrategias votan en {len(MIS_MERCADOS)} mercados (5m y 15m).\n"
                 f"Peso: 3 = robusta 2 años · 2 = experimental · 1 = con evidencia · 0 = solo apoya.\n"
-                f"+1 por aliado · +1 si la lectura 🔮 confirma · −2 si hay señal contraria.\n"
+                f"+1 por aliado · ±1 lectura 🔮 · ±1 máquina del tiempo ⏳ (10.000 simulaciones) · −2 si hay señal contraria.\n"
                 f"Te llega CADA señal: A+/A/B (2+ votos) para operar · C (menos de 2) solo para observar.\n"
                 f"Mercados: {', '.join(sorted(MIS_MERCADOS))}")
     if not p.get("solo_ganadoras"):
