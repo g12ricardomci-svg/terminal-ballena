@@ -126,9 +126,11 @@ ESTRATEGIAS_ACTIVO = {
 # Descartadas a 2 anos (iban bien a 6 meses): ORB + Retest DAX, EMA 20/200 DAX, Ruptura de Londres EUR/USD,
 # Tortugas BTC (1a mitad negativa).
 GANADORAS = {
+    ("S&P 500 (ES)", "15m"): ["ORB", "DI_RSI", "DI_EMA"],
+    ("DAX 40", "15m"): ["ORB"],
+    ("DOW 30 (YM)", "15m"): ["ORBRetest"],
     ("XAU/USD (Oro)", "15m"): ["VWAP", "Tortugas"],
 }
-# (S&P 500, DAX y Dow tambien fueron robustas a 2 anos, pero Cisco opera solo forex, oro y BTC.)
 
 # Filtro de LECTURA DE ESTRUCTURA por combinacion (confirmado a 2 anos). Solo donde mejora.
 FILTRO_LECTURA = {
@@ -145,9 +147,9 @@ for _k, _v in FOREX.items():
     ACTIVOS[_k] = {"tipo": "forex", "yf": _v}
 for _k, _v in ORO.items():
     ACTIVOS[_k] = {"tipo": "oro", "yf": _v}
-# Mercados que opera Cisco: EUR/USD, GBP/USD, USD/JPY, USD/CAD, Oro y BTC. Indices / metales / energia quedan
-# definidos para investigar con el backtest, pero el bot en vivo NO los escanea.
-MIS_MERCADOS = set(CRIPTO) | set(FOREX) | set(ORO)
+# Mercados que escanea el bot en vivo: los de Cisco (forex, oro, BTC) + los indices robustos a 2 anos.
+# FTSE, Nikkei, Euro Stoxx, CAC, plata y petroleo quedan definidos solo para investigar con el backtest.
+MIS_MERCADOS = set(CRIPTO) | set(FOREX) | set(ORO) | {"S&P 500 (ES)", "DAX 40", "DOW 30 (YM)"}
 for _k, _v in INDICES.items():
     ACTIVOS[_k] = {"tipo": "indice", "yf": _v}
 for _k, _v in METALES.items():
