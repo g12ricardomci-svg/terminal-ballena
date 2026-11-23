@@ -4,6 +4,7 @@ BOT PRO - Institutional Quant Terminal (TODO en un solo archivo)
 =================================================================
 Mercados: BTC/USDT · EUR/USD · GBP/USD · USD/JPY · XAU/USD (Oro)
 
+  python bot_pro.py --ping          -> igual, y manda "✅ Bot activo" a Telegram al arrancar
   python bot_pro.py                 -> bot 24/7: escanea al cierre de cada vela y avisa por Telegram
   python bot_pro.py --una-vez       -> una sola pasada (es lo que usa GitHub Actions)
   python bot_pro.py --crear-github  -> crea .github/workflows/bot.yml para correrlo gratis en GitHub
@@ -18,6 +19,8 @@ Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
   Londres  (EUR, GBP)     : Ruptura de Londres: rango 00-07 GMT, primera vela que cierra fuera
                             entre 07 y 11 GMT, stop 1,5 pips tras el ultimo swing, objetivo 1,5R.
 
+Horario de alertas: BTC 24/7 · Oro 24h (dom 18:00 a vie 17:00 NY, pausa 17-18) ·
+Forex en killzones Londres (2-5 NY) y Nueva York (7-10 NY). Se cambia en KZ_DEFAULT.
 Todas las decisiones se toman SOLO con velas cerradas (sin repintado).
 Herramienta educativa. No es asesoria financiera. Prueba primero en demo.
 """
@@ -93,9 +96,10 @@ KILLZONES = {
     "Nueva York": (7.0, 10.0),
     "London Close": (10.0, 12.0),
 }
-KZ_DEFAULT = {"cripto": ["Londres", "Nueva York"],
+# Lista vacia = alertas 24 horas (siempre que el mercado este abierto)
+KZ_DEFAULT = {"cripto": [],                          # BTC: 24/7
               "forex": ["Londres", "Nueva York"],
-              "oro": ["Londres", "Nueva York"],
+              "oro": [],                             # Oro: 24h de domingo 18:00 a viernes 17:00 NY
               "indice": ["Nueva York"]}
 
 # Tamano de contrato por lote estandar
@@ -1090,6 +1094,10 @@ def escanear(tf, p, estado, verbose=True, cargar=obtener):
 
 def correr_bot(a, p):
     estado = Estado(a.estado)
+    if getattr(a, "ping", False):
+        ok, msg = enviar_telegram(f"✅ Bot Pro activo · {datetime.now(NY):%a %d/%m %H:%M} NY\n"
+                                  f"Mercados: {', '.join(ACTIVOS)}\nTemporalidad: {a.tf}")
+        print(f"Ping a Telegram: {'OK' if ok else msg}", flush=True)
     print(f"🏛️ BOT PRO iniciado · estrategias: {', '.join(p['estrategias'])} · {a.tf} · "
           f"{'una pasada' if a.una_vez else 'bucle 24/7'}", flush=True)
     while True:
@@ -1280,7 +1288,8 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
-        run: python bot_pro.py --una-vez --tf 15m
+        # al pulsar "Run workflow" a mano tambien manda "✅ Bot activo" para comprobar Telegram
+        run: python bot_pro.py --una-vez --tf 15m ${{ github.event_name == 'workflow_dispatch' && '--ping' || '' }}
       - name: Guardar memoria anti-spam
         if: always()
         uses: actions/cache/save@v4
@@ -1304,6 +1313,7 @@ def cli():
     ap.add_argument("modo", nargs="?", default="bot", choices=["bot", "backtest"])
     ap.add_argument("--una-vez", action="store_true", help="Una sola pasada (cron / GitHub Actions)")
     ap.add_argument("--crear-github", action="store_true", help="Crea .github/workflows/bot.yml")
+    ap.add_argument("--ping", action="store_true", help="Envia '✅ Bot activo' a Telegram al arrancar")
     ap.add_argument("--tf", default="15m", choices=["5m", "15m", "1h"])
     ap.add_argument("--estrategias", nargs="*", default=list(ESTRATEGIAS), choices=list(ESTRATEGIAS))
     ap.add_argument("--min-score", type=int, default=PARAMS_DEFAULT["min_score"])
