@@ -80,7 +80,7 @@ DEFAULT_SECRETS = {
 # ----------------------------------------------------------------- ACTIVOS
 # Los 5 mercados que vigila el bot. Para agregar otro, sumalo aqui y en ESTRATEGIAS_ACTIVO.
 CRIPTO = ["BTC/USDT"]
-FOREX = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X"}
+FOREX = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X", "USD/CAD": "USDCAD=X"}
 ORO = {"XAU/USD (Oro)": "GC=F"}   # GC=F = futuro COMEX (100 oz), no spot
 INDICES = {"NASDAQ 100 (NQ)": "NQ=F", "S&P 500 (ES)": "ES=F", "DOW 30 (YM)": "YM=F", "DAX 40": "^GDAXI"}
 # USD por punto de 1 micro contrato (MNQ, MES, MYM, micro DAX FDXS ~1 EUR)
@@ -92,6 +92,7 @@ ESTRATEGIAS_ACTIVO = {
     "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
     "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
     "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
+    "USD/CAD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
     "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI"],
     "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
     "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI"],
@@ -1023,6 +1024,7 @@ SESION_ORB = {
     "EUR/USD": ("Europe/London", 8, 0, 8.0),        # apertura de Londres
     "GBP/USD": ("Europe/London", 8, 0, 8.0),
     "USD/JPY": ("Asia/Tokyo", 9, 0, 6.0),           # apertura de Tokio
+    "USD/CAD": ("America/Toronto", 9, 30, 6.5),     # apertura de Toronto / Wall Street
     "XAU/USD (Oro)": ("America/New_York", 9, 30, 6.5),   # apertura de Wall Street
     "BTC/USDT": ("America/New_York", 9, 30, 6.5),
     "NASDAQ 100 (NQ)": ("America/New_York", 9, 30, 6.5),
