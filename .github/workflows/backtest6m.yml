@@ -23,6 +23,10 @@ jobs:
           - { activo: "USD/JPY", duka: "usdjpy", tipo: "forex" }
           - { activo: "XAU/USD (Oro)", duka: "xauusd", tipo: "oro" }
           - { activo: "BTC/USDT", duka: "", tipo: "cripto" }
+          - { activo: "NASDAQ 100 (NQ)", duka: "usatechidxusd", tipo: "indice" }
+          - { activo: "S&P 500 (ES)", duka: "usa500idxusd", tipo: "indice" }
+          - { activo: "DOW 30 (YM)", duka: "usa30idxusd", tipo: "indice" }
+          - { activo: "DAX 40", duka: "deuidxeur", tipo: "indice" }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

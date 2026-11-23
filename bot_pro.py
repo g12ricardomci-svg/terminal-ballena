@@ -32,6 +32,10 @@ Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
                             de 14 dias y del lado del VWAP, control cada 30 min, stop dinamico, cierre fin de sesion.
   HoraBTC  (BTC)          : estacionalidad de Bitcoin (Quantpedia): compra 21:00 UTC, vende 23:00 UTC.
   NocheOro (Oro)          : efecto noche del oro (Blose et al. 2018): compra 19:00 NY, cierra 08:00 NY.
+  ORBRetest(NY + DAX)     : rango de los primeros 30 min de Wall Street (DAX: Frankfurt), ruptura y retest, TP 2R.
+  AsiaSweep(Londres)      : falsa ruptura del rango asiatico en la apertura de Londres + quiebre de estructura,
+                            objetivo el lado opuesto del rango.
+  EMAVWAP  (todos)        : tendencia con VWAP diario + retroceso a EMA21/VWAP + giro de EMA9, TP 2R.
   Gotobi   (USD/JPY)      : dias de pago en Japon (5, 10, 15...): compra 8:00 JST, cierre en el fixing 9:55 JST.
 
 Horario de alertas: BTC 24/7 · Oro 24h (dom 18:00 a vie 17:00 NY, pausa 17-18) ·
@@ -72,16 +76,21 @@ DEFAULT_SECRETS = {
 CRIPTO = ["BTC/USDT"]
 FOREX = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X"}
 ORO = {"XAU/USD (Oro)": "GC=F"}   # GC=F = futuro COMEX (100 oz), no spot
-INDICES = {}                       # ej.: {"NASDAQ 100 (NQ)": "NQ=F"}  (futuro CME: $20/punto, MNQ $2)
+INDICES = {"NASDAQ 100 (NQ)": "NQ=F", "S&P 500 (ES)": "ES=F", "DOW 30 (YM)": "YM=F", "DAX 40": "^GDAXI"}
+# USD por punto de 1 micro contrato (MNQ, MES, MYM, micro DAX FDXS ~1 EUR)
+PUNTO_MICRO = {"NASDAQ 100 (NQ)": 2.0, "S&P 500 (ES)": 5.0, "DOW 30 (YM)": 0.5, "DAX 40": 1.1}
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC"],
-    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
-    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro"],
-    "NASDAQ 100 (NQ)": ["SMC", "Barrido"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC", "ORBRetest", "EMAVWAP"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP"],
+    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP"],
+    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP"],
+    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP"],
+    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP"],
 }
 
 # ================================================================= PERFIL GANADOR
@@ -158,7 +167,7 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
     "solo_ganadoras": True,         # en vivo: solo las combinaciones de GANADORAS (python bot_pro.py --todas = todas)
 }
@@ -519,8 +528,8 @@ def tamano(nombre, tipo, riesgo_usd, dist, precio):
         u = riesgo_usd / dist
         return u, f"{u:.6f} unid."
     if tipo == "indice":
-        cts = riesgo_usd / (dist * NQ_USD_PUNTO)
-        return cts, f"{cts:.2f} NQ ({riesgo_usd / (dist * MNQ_USD_PUNTO):.1f} MNQ)"
+        cts = riesgo_usd / (dist * PUNTO_MICRO.get(nombre, MNQ_USD_PUNTO))
+        return cts, f"{cts:.2f} micro contratos"
     contrato = LOTE[tipo]
     usd_por_unidad = 1.0
     if tipo == "forex" and nombre.startswith("USD/"):   # p. ej. USD/JPY: P&L en JPY -> USD
@@ -532,7 +541,7 @@ def tamano(nombre, tipo, riesgo_usd, dist, precio):
 def usd_por_punto_lote(nombre, tipo, precio):
     """Cuantos USD gana/pierde 1 lote por cada 1.0 de movimiento del precio."""
     if tipo == "indice":
-        return MNQ_USD_PUNTO
+        return PUNTO_MICRO.get(nombre, MNQ_USD_PUNTO)
     usd = 1.0 / precio if (tipo == "forex" and nombre.startswith("USD/")) else 1.0
     return LOTE[tipo] * usd
 
@@ -560,7 +569,7 @@ def viabilidad(s, p):
     valor = usd_por_punto_lote(s["activo"], s["tipo"], px)
     lotes = s["riesgo_usd"] / (dist * valor)
     lotes_ok = np.floor(lotes / paso + 1e-9) * paso
-    unidad = "MNQ" if s["tipo"] == "indice" else "lotes"
+    unidad = "micro contratos" if s["tipo"] == "indice" else "lotes"
     if lotes_ok >= lote_min:
         r_real = lotes_ok * dist * valor
         s["tamano_txt"] = f"{lotes_ok:.2f} {unidad} (riesgo real ${r_real:.2f})"
@@ -1006,6 +1015,9 @@ SESION_ORB = {
     "XAU/USD (Oro)": ("America/New_York", 9, 30, 6.5),   # apertura de Wall Street
     "BTC/USDT": ("America/New_York", 9, 30, 6.5),
     "NASDAQ 100 (NQ)": ("America/New_York", 9, 30, 6.5),
+    "S&P 500 (ES)": ("America/New_York", 9, 30, 6.5),
+    "DOW 30 (YM)": ("America/New_York", 9, 30, 6.5),
+    "DAX 40": ("Europe/Berlin", 9, 0, 8.5),
 }
 
 
@@ -1477,10 +1489,213 @@ def evaluar_noche_oro(nombre, tipo, df, d1, p, ahora, dd=None):
                      "America/New_York", 19, 8, 1, "efecto noche del oro")
 
 
+# ================================================================= ESTRATEGIA 13: ORB + RETEST (sesion de Nueva York)
+APERTURA_RETEST = {"DAX 40": ("Europe/Berlin", 9, 0)}      # el resto: Wall Street 9:30 NY
+
+
+def evaluar_orb_retest(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Opening Range Breakout + Retest:
+      Rango  : maximo y minimo de los primeros 30 min tras la apertura (9:30-10:00 NY; DAX 9:00-9:30 Frankfurt).
+      Ruptura: una vela CIERRA fuera del rango. No se entra en la ruptura.
+      Retest : el precio vuelve a tocar el nivel roto y cierra a favor (vela de rechazo) -> entrada.
+               Si antes una vela cierra de nuevo dentro del rango, el setup se anula.
+      Stop   : detras del ultimo minimo/maximo desde la ruptura. TP: 2R. Ventana: hasta 2,5 h tras la apertura.
+    """
+    diag = {"Estrategia": "ORBRetest", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 30:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    zona, hh, mm = APERTURA_RETEST.get(nombre, ("America/New_York", 9, 30))
+    tf_min = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+    cierre = (df.index[-1] + pd.Timedelta(minutes=tf_min)).tz_convert(ZoneInfo(zona))
+    t0 = cierre.normalize() + pd.Timedelta(hours=hh, minutes=mm)
+    t_r, t_fin = t0 + pd.Timedelta(minutes=30), t0 + pd.Timedelta(hours=2.5)
+    if cierre.weekday() >= 5 or not (t_r < cierre <= t_fin):
+        diag["Estado"] = "Fuera de la ventana de apertura"
+        return diag, None
+    t0u, tru = t0.tz_convert("UTC"), t_r.tz_convert("UTC")
+    rango = df[(df.index >= t0u) & (df.index < tru)]
+    if len(rango) < max(30 // tf_min, 1):
+        diag["Estado"] = "Sin rango de apertura completo"
+        return diag, None
+    rh, rl = float(rango["high"].max()), float(rango["low"].min())
+    diag["_niveles"] = {"Rango H": rh, "Rango L": rl}
+    post = df[df.index >= tru]
+    c, o, h, l = (post[x].to_numpy() for x in ("close", "open", "high", "low"))
+    for d_, nivel in ((1, rh), (-1, rl)):
+        fuera = np.where((c > nivel) if d_ == 1 else (c < nivel))[0]
+        if len(fuera) == 0 or fuera[0] >= len(c) - 1:
+            continue
+        b0 = int(fuera[0])                                    # vela de ruptura
+        tras = slice(b0 + 1, len(c))
+        dentro = (c[tras] < nivel) if d_ == 1 else (c[tras] > nivel)
+        toca = (l[tras] <= nivel) if d_ == 1 else (h[tras] >= nivel)
+        rechazo = toca & ~dentro & ((c[tras] > o[tras]) if d_ == 1 else (c[tras] < o[tras]))
+        if dentro.any() and (not rechazo.any() or dentro.argmax() < rechazo.argmax()):
+            continue                                          # volvio al rango antes del retest: anulado
+        if not rechazo.any() or rechazo.argmax() != len(rechazo) - 1:
+            continue                                          # el retest valido debe ser la ultima vela
+        px = float(c[-1])
+        ext = float(l[b0:].min()) if d_ == 1 else float(h[b0:].max())
+        buf = 0.1 * float(atr(df.tail(100)).iloc[-1])
+        sl = ext - d_ * buf
+        if (px - sl) * d_ <= 0:
+            continue
+        r = abs(px - sl)
+        riesgo_usd = p["banco"] * p["riesgo"] / 100
+        tam, tam_txt = tamano(nombre, tipo, riesgo_usd, r, px)
+        diag["Dir"], diag["Estado"] = ("LONG" if d_ == 1 else "SHORT"), "🚨 SEÑAL"
+        return diag, {"estrategia": "ORB + Retest", "activo": nombre, "tipo": tipo, "dir": diag["Dir"],
+                      "bias": d_, "entrada": px, "sl": sl, "tp1": px + d_ * 2 * r, "tp2": None, "tp_r": 2, "r1": 2,
+                      "max_barras": int(6 * 60 / tf_min), "riesgo_usd": riesgo_usd, "tamano": tam,
+                      "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                      "confluencias": f"rompió y re-testeó el {'máximo' if d_ == 1 else 'mínimo'} del rango "
+                                      f"de apertura ({fmt(rl)} - {fmt(rh)})",
+                      "kz": killzone_actual(ahora) or "-", "vela": df.index[-1],
+                      "id": f"ORBR|{nombre}|{t0:%Y-%m-%d}"}
+    diag["Estado"] = "Esperando ruptura + retest"
+    return diag, None
+
+
+# ================================================================= ESTRATEGIA 14: BARRIDO DEL RANGO ASIATICO
+def _sweep_long(df, lo, hi, ini_idx, ref=5):
+    """LONG: alguna vela desde la apertura de Londres perforo el minimo de Asia; la ultima vela cerrada vuelve
+    DENTRO del rango y rompe el maximo de las 'ref' velas previas al extremo del barrido (MSS). Primera vez."""
+    l, c, h = df["low"].to_numpy(), df["close"].to_numpy(), df["high"].to_numpy()
+    n = len(c)
+    seg = l[ini_idx:]
+    if len(seg) < 2 or seg[:-1].min() >= lo:
+        return None
+    j = ini_idx + int(np.argmin(l[ini_idx:n - 1]))          # extremo del barrido
+    if j < ref or l[j] >= lo:
+        return None
+    mss = float(h[j - ref:j].max())
+    if not (c[-1] > mss and lo < c[-1] < hi):
+        return None
+    previos = c[j + 1:n - 1]
+    if ((previos > mss) & (previos > lo)).any():            # ya habia confirmado antes
+        return None
+    return {"extremo": float(l[j]), "mss": mss}
+
+
+def evaluar_asia_sweep(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Liquidity Sweep del rango asiatico en la apertura de Londres:
+      Rango Asia: 00:00-07:00 UTC (19:00-02:00 hora Colombia).
+      Ventana   : 07:00-10:30 UTC (2:00-5:30 hora Colombia).
+      Setup     : falsa ruptura (mecha fuera del rango), el precio vuelve a entrar y hace un quiebre de
+                  estructura interno (MSS) -> entrada en contra del barrido.
+      Stop      : detras del extremo del barrido. TP: el lado opuesto del rango asiatico (minimo 1R).
+    """
+    diag = {"Estrategia": "AsiaSweep", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 40:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    tf_min = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+    cierre = df.index[-1] + pd.Timedelta(minutes=tf_min)
+    hoy = cierre.normalize()
+    t_ld, t_fin = hoy + pd.Timedelta(hours=7), hoy + pd.Timedelta(hours=10, minutes=30)
+    if cierre.weekday() >= 5 or not (t_ld < cierre <= t_fin):
+        diag["Estado"] = "Fuera de la ventana de Londres"
+        return diag, None
+    asia = df[(df.index >= hoy) & (df.index < t_ld)]
+    if len(asia) < 7 * 60 // tf_min // 2:
+        diag["Estado"] = "Sin rango asiático"
+        return diag, None
+    hi, lo = float(asia["high"].max()), float(asia["low"].min())
+    diag["_niveles"] = {"Asia H": hi, "Asia L": lo}
+    d = df[df.index >= hoy - pd.Timedelta(hours=2)]
+    ini = int(d.index.searchsorted(t_ld))
+    s = _sweep_long(d, lo, hi, ini)
+    bias = 1
+    if s is None:
+        s = _sweep_long(_flip(d), -hi, -lo, ini)
+        if s is not None:
+            s, bias = {"extremo": -s["extremo"], "mss": -s["mss"]}, -1
+    if s is None:
+        diag["Estado"] = "Esperando barrido de Asia + quiebre de estructura"
+        return diag, None
+    px = float(d["close"].iloc[-1])
+    buf = 0.1 * float(atr(df.tail(100)).iloc[-1])
+    sl = s["extremo"] - bias * buf
+    tp = hi if bias == 1 else lo
+    r = abs(px - sl)
+    if r <= 0 or (tp - px) * bias < r:
+        diag["Estado"] = "Barrido válido pero objetivo < 1R"
+        return diag, None
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, r, px)
+    diag["Dir"], diag["Estado"] = ("LONG" if bias == 1 else "SHORT"), "🚨 SEÑAL"
+    return diag, {"estrategia": "Barrido de Asia (Londres)", "activo": nombre, "tipo": tipo, "dir": diag["Dir"],
+                  "bias": bias, "entrada": px, "sl": sl, "tp1": tp, "tp2": None, "tp_r": (tp - px) * bias / r,
+                  "r1": round((tp - px) * bias / r, 1), "max_barras": int(8 * 60 / tf_min),
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": f"barrió el {'mínimo' if bias == 1 else 'máximo'} de Asia y volvió al rango",
+                  "kz": killzone_actual(ahora) or "-", "vela": df.index[-1],
+                  "id": f"ASIA|{nombre}|{hoy:%Y-%m-%d}"}
+
+
+# ================================================================= ESTRATEGIA 15: EMA 9/21 + VWAP (retroceso)
+def evaluar_ema_vwap(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Tendencia con VWAP + EMA 9/21:
+      Contexto: precio sobre el VWAP del dia -> solo compras; debajo -> solo ventas.
+      Setup   : retroceso que toca la EMA 21 o el VWAP en las ultimas 3 velas.
+      Gatillo : la EMA 9 vuelve a apuntar a favor (giro) con EMA9 del lado correcto de la EMA21.
+      Volumen : si hay volumen, la vela gatillo supera la media de 20 velas.
+      Stop    : extremo del retroceso (5 velas) -/+ 0,1 ATR. TP: 2R.
+    """
+    diag = {"Estrategia": "EMAVWAP", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 60:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    d = df.tail(VENTANA)
+    dia = d.index.floor("1D")
+    hoy = d[dia == dia[-1]]
+    if len(hoy) < 6:
+        diag["Estado"] = "Inicio del día: VWAP sin datos"
+        return diag, None
+    vol = hoy["volume"] if hoy["volume"].sum() > 0 else pd.Series(1.0, index=hoy.index)
+    vwap = ((hoy["high"] + hoy["low"] + hoy["close"]) / 3 * vol).cumsum() / vol.cumsum()
+    e9, e21 = d["close"].ewm(span=9, adjust=False).mean(), d["close"].ewm(span=21, adjust=False).mean()
+    px, vw = float(d["close"].iloc[-1]), float(vwap.iloc[-1])
+    bias = 1 if px > vw else -1
+    giro = (e9.iloc[-1] - e9.iloc[-2]) * bias > 0 and (e9.iloc[-2] - e9.iloc[-3]) * bias <= 0
+    lado = (e9.iloc[-1] - e21.iloc[-1]) * bias > 0
+    l3, h3 = d["low"].iloc[-3:], d["high"].iloc[-3:]
+    vw3 = vwap.reindex(d.index[-3:]).ffill().fillna(vw)
+    toca = ((l3 <= e21.iloc[-3:]) | (l3 <= vw3)).any() if bias == 1 else ((h3 >= e21.iloc[-3:]) | (h3 >= vw3)).any()
+    v = d["volume"]
+    vol_ok = True if v.tail(20).sum() == 0 else float(v.iloc[-1]) > float(v.tail(20).mean())
+    if not (giro and lado and toca and vol_ok):
+        diag["Estado"] = "Esperando retroceso + giro de EMA 9"
+        return diag, None
+    buf = 0.1 * float(atr(d).iloc[-1])
+    sl = float(d["low"].tail(5).min()) - buf if bias == 1 else float(d["high"].tail(5).max()) + buf
+    r = abs(px - sl)
+    if (px - sl) * bias <= 0:
+        diag["Estado"] = "SL invalido"
+        return diag, None
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, r, px)
+    diag["Dir"], diag["Estado"] = ("LONG" if bias == 1 else "SHORT"), "🚨 SEÑAL"
+    return diag, {"estrategia": "EMA 9/21 + VWAP", "activo": nombre, "tipo": tipo, "dir": diag["Dir"], "bias": bias,
+                  "entrada": px, "sl": sl, "tp1": px + bias * 2 * r, "tp2": None, "tp_r": 2, "r1": 2,
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": f"{'sobre' if bias == 1 else 'bajo'} VWAP {fmt(vw)} · retroceso a EMA21/VWAP · giro EMA9",
+                  "kz": killzone_actual(ahora) or "-", "vela": d.index[-1],
+                  "id": f"EMAVWAP|{nombre}|{diag['Dir']}|{d.index[-1]}"}
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
                "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
                "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap,
-               "Ruido": evaluar_ruido, "HoraBTC": evaluar_hora_btc, "NocheOro": evaluar_noche_oro}
+               "Ruido": evaluar_ruido, "HoraBTC": evaluar_hora_btc, "NocheOro": evaluar_noche_oro,
+               "ORBRetest": evaluar_orb_retest, "AsiaSweep": evaluar_asia_sweep, "EMAVWAP": evaluar_ema_vwap}
 
 
 def estrategias_de(nombre, p):
