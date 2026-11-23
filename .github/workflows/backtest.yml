@@ -1,0 +1,73 @@
+name: Backtest
+
+# Corre el backtest con datos reales (ultimos ~58 dias) en 5m y 15m para los 5 mercados.
+# Se lanza solo al subir cambios a este archivo, o a mano con "Run workflow".
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/backtest.yml"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        tf: ["5m", "15m"]
+        activo: ["BTC/USDT", "EUR/USD", "GBP/USD", "USD/JPY", "XAU/USD (Oro)"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - name: Backtest ${{ matrix.activo }} ${{ matrix.tf }}
+        run: python bot_pro.py backtest --tf ${{ matrix.tf }} --activos "${{ matrix.activo }}" --salida res
+      - name: Nombre del artefacto
+        id: n
+        run: echo "n=$(echo '${{ matrix.activo }}-${{ matrix.tf }}' | tr -c 'A-Za-z0-9-' '_')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bt-${{ steps.n.outputs.n }}
+          path: res/
+          if-no-files-found: ignore
+
+  resumen:
+    needs: backtest
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: todo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas tabulate
+      - name: Tabla final
+        shell: python
+        run: |
+          import glob, os, pandas as pd
+          filas = []
+          for f in glob.glob("todo/*/*/resumen.csv"):
+              d = pd.read_csv(f); d.insert(0, "TF", os.path.basename(os.path.dirname(f))); filas.append(d)
+          if not filas:
+              print("Sin resultados"); raise SystemExit
+          r = pd.concat(filas).sort_values(["Estrategia", "TF", "Activo"])
+          print(r.to_string(index=False))
+          ops = pd.concat(pd.read_csv(f).assign(TF=os.path.basename(os.path.dirname(f)))
+                          for f in glob.glob("todo/*/*/operaciones.csv"))
+          g = ops.groupby(["estrategia", "TF"])["R"].agg(ops="size", winrate=lambda x: round(100 * (x > 0).mean(), 1),
+                                                       R_prom="mean", R_total="sum").round(3)
+          print("\n=== POR ESTRATEGIA Y TEMPORALIDAD (todos los mercados) ===\n" + g.to_string())
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write("## Por estrategia y temporalidad\n\n" + g.to_markdown() + "\n\n## Detalle\n\n"
+                      + r.to_markdown(index=False) + "\n")
+          ops.to_csv("operaciones_todas.csv", index=False); r.to_csv("resumen_todo.csv", index=False)
+      - uses: actions/upload-artifact@v4
+        with:
+          name: resultados-backtest
+          path: "*.csv"
