@@ -14,6 +14,7 @@ jobs:
     timeout-minutes: 300
     strategy:
       fail-fast: false
+      max-parallel: 4                # Dukascopy bloquea (403) si se le pide demasiado a la vez
       matrix:
         tf: ["5m", "15m"]
         coste: ["normal", "bajo"]
@@ -39,11 +40,26 @@ jobs:
           echo "DESDE=$(date -u -d "$DIAS days ago" +%F)" >> "$GITHUB_ENV"
           echo "HASTA=$(date -u +%F)" >> "$GITHUB_ENV"
           echo "COSTE=$([ "${{ matrix.coste }}" = "bajo" ] && echo "--coste ${{ matrix.mercado.bajo }}" || echo "")" >> "$GITHUB_ENV"
-      - name: Descargar Dukascopy
+      - name: Datos en cache (Dukascopy)
+        id: cache
         if: matrix.mercado.duka != ''
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: duka-${{ matrix.mercado.duka }}-${{ matrix.tf }}-${{ env.HASTA }}
+      - name: Descargar Dukascopy
+        if: matrix.mercado.duka != '' && steps.cache.outputs.cache-hit != 'true'
         run: |
           T=m$(echo "${{ matrix.tf }}" | tr -d m)
-          npx --yes dukascopy-node -i ${{ matrix.mercado.duka }} -from "$DESDE" -to "$HASTA" -t $T -f csv -dir data
+          for intento in 1 2 3 4; do
+            rm -rf data
+            if npx --yes dukascopy-node -i ${{ matrix.mercado.duka }} -from "$DESDE" -to "$HASTA" -t $T -f csv -dir data; then
+              break
+            fi
+            [ "$intento" = "4" ] && { echo "Dukascopy sigue rechazando la descarga"; exit 1; }
+            echo "Intento $intento fallido: espero $((intento * 90)) s"
+            sleep $((intento * 90))
+          done
       - name: Convertir CSV
         if: matrix.mercado.duka != ''
         shell: python
