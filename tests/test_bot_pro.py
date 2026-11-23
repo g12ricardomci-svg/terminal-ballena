@@ -349,3 +349,8 @@ def test_respuestas_con_grafico(monkeypatch):
         assert txt and png and png[:8] == b"\x89PNG\r\n\x1a\n", q
     assert b.responder("/lectura oro solo texto", None, cargar)[1] is None
     assert b.responder("hola", None, cargar)[1] is None
+
+
+def test_todos_los_mercados_tienen_nombre_en_el_chat():
+    assert set(b.ACTIVOS) <= set(b.ALIAS_ACTIVOS.values())
+    assert b.buscar_activo("/lectura uk100") == "FTSE 100" and b.buscar_activo("fra40") == "CAC 40"
