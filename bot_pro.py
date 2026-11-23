@@ -2792,9 +2792,10 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
     dd = solo_cerradas(cargar(nombre, "1d"), "1d", ahora) if {"Tortugas", "MaxHist"} & set(estrategias_de(nombre, p)) else None
     if df is not None and len(df) > 60:                 # detector de saltos anormales (cambio de contrato, hueco)
         tr = (df["high"] - df["low"]).tail(100)
-        salto = df["close"].diff().abs().tail(100).max()
+        tfm = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+        salto = df["close"].diff().abs().tail(max(120 // tfm, 2)).max()   # solo las ultimas ~2 horas
         if tr.median() > 0 and salto > 7 * tr.median():
-            msg = f"⚠️ Salto anormal en los datos ({fmt(salto)} en una vela): sin señales por precaución"
+            msg = f"⚠️ Movimiento brusco ({fmt(salto)} en una vela): pausa de 2 h para no perseguir el pico"
             return {nm: {"Estrategia": nm, "Activo": nombre, "Estado": msg} for nm in estrategias_de(nombre, p)}, []
     diags, senales = evaluar(nombre, meta["tipo"], df, d1, p, ahora, dd)
     if senales and df is not None and len(df) > 20:   # freno de stops absurdos (> 4 ATR)
