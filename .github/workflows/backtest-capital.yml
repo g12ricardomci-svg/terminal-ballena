@@ -1,0 +1,136 @@
+name: Backtest Capital Trading
+
+# Estrategias de CAPITAL TRADING (estructura + liquidez SMC): CT_Bloque (orden limite en el bloque de M15) y
+# CT_Confirma (toque del bloque M15 + ruptura con cuerpo en M5). Backtest con costes en los mercados del bot.
+# Dukascopy (2 anos) si responde; si no, Yahoo (~59 dias). BTC: exchanges via ccxt (2 anos).
+# Se lanza al subir cambios a este archivo, o a mano con "Run workflow".
+on:
+  workflow_dispatch: {}
+  push:
+    paths:
+      - ".github/workflows/backtest-capital.yml"
+
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    strategy:
+      fail-fast: false
+      matrix:
+        tf: ["15m", "5m"]
+        mercado:
+          - { activo: "EUR/USD", duka: "eurusd", tipo: "forex" }
+          - { activo: "GBP/USD", duka: "gbpusd", tipo: "forex" }
+          - { activo: "USD/JPY", duka: "usdjpy", tipo: "forex" }
+          - { activo: "USD/CAD", duka: "usdcad", tipo: "forex" }
+          - { activo: "XAU/USD (Oro)", duka: "xauusd", tipo: "oro" }
+          - { activo: "S&P 500 (ES)", duka: "usa500idxusd", tipo: "indice" }
+          - { activo: "DAX 40", duka: "deuidxeur", tipo: "indice" }
+          - { activo: "DOW 30 (YM)", duka: "usa30idxusd", tipo: "indice" }
+          - { activo: "BTC/USDT", duka: "", tipo: "cripto" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - name: Fechas
+        run: |
+          echo "DESDE=$(date -u -d '730 days ago' +%F)" >> "$GITHUB_ENV"
+          echo "HASTA=$(date -u +%F)" >> "$GITHUB_ENV"
+      - name: Descargar Dukascopy (${{ matrix.mercado.duka }})
+        if: matrix.mercado.duka != ''
+        run: |
+          # Desde el 23/11/2026 Dukascopy da 403 a los servidores de GitHub. Se intenta igual (por si vuelve);
+          # si no hay datos, el backtest usa Yahoo (ultimos ~59 dias en 15m).
+          for v in 1.46.4 latest; do
+            rm -rf data
+            if npx --yes dukascopy-node@$v -i ${{ matrix.mercado.duka }} -from "$DESDE" -to "$HASTA" -t m$(echo "${{ matrix.tf }}" | tr -d m) -f csv -dir data --retries 3 \
+               && ls data/*.csv >/dev/null 2>&1; then
+              echo "Descargado con dukascopy-node@$v"; break
+            fi
+          done
+          ls -la data || echo "Dukascopy no disponible: se usara Yahoo"
+      - name: Convertir CSV
+        if: matrix.mercado.duka != ''
+        shell: python
+        run: |
+          import glob, pandas as pd
+          fs = sorted(glob.glob("data/*.csv"))
+          if not fs:
+              print("Sin datos de Dukascopy"); raise SystemExit
+          f = fs[0]
+          d = pd.read_csv(f)
+          d.columns = [c.lower() for c in d.columns]
+          t = d["timestamp"]
+          d.index = pd.to_datetime(t, unit="ms", utc=True) if pd.api.types.is_numeric_dtype(t) else pd.to_datetime(t, utc=True)
+          if "volume" not in d:
+              d["volume"] = 0.0
+          if "${{ matrix.mercado.tipo }}" == "forex":
+              d["volume"] = 0.0          # igual que en vivo: Yahoo no da volumen de forex
+          d = d[["open", "high", "low", "close", "volume"]].astype(float)
+          d = d[(d["high"] > d["low"]) | (d["volume"] > 0)]   # quita velas planas de mercado cerrado
+          d.to_csv("datos.csv")
+          print(f, len(d), d.index[0], d.index[-1])
+      - name: Backtest del comite
+        run: |
+          if [ -f datos.csv ]; then
+            echo "Fuente: Dukascopy (2 anos)"
+            python bot_pro.py backtest --tf ${{ matrix.tf }} --estrategias CT_Bloque CT_Confirma --csv datos.csv --nombre "${{ matrix.mercado.activo }}" --tipo ${{ matrix.mercado.tipo }} --salida res
+          else
+            echo "Fuente: ${{ matrix.mercado.duka != '' && 'Yahoo (ultimos ~59 dias)' || 'exchanges ccxt (2 anos)' }}"
+            python bot_pro.py backtest --tf ${{ matrix.tf }} --estrategias CT_Bloque CT_Confirma --activos "${{ matrix.mercado.activo }}" --desde "$DESDE" --salida res
+          fi
+      - name: Nombre del artefacto
+        id: n
+        run: echo "n=$(echo '${{ matrix.mercado.activo }}-${{ matrix.tf }}' | tr -c 'A-Za-z0-9-' '_')" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ct-${{ steps.n.outputs.n }}
+          path: res/
+          if-no-files-found: ignore
+
+  resumen:
+    needs: backtest
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: todo
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy tabulate
+      - name: Robustez Capital Trading
+        shell: python
+        run: |
+          import glob, os, numpy as np, pandas as pd
+          fs = glob.glob("todo/*/*/operaciones.csv")
+          if not fs:
+              print("Sin resultados"); raise SystemExit
+          ops = pd.concat(pd.read_csv(f).assign(TF=os.path.basename(os.path.dirname(f))) for f in fs)
+          ops["R_x2"] = ops["R_bruto"] - 2 * ops["coste_R"]
+          filas = []
+          for (e, a, tf), g in ops.groupby(["estrategia", "activo", "TF"]):
+              g = g.sort_values("senal_NY")
+              R = g["R"].to_numpy()
+              gan, per = R[R > 0].sum(), -R[R < 0].sum()
+              mitad = len(g) // 2
+              filas.append({"Estrategia": e, "Activo": a, "TF": tf, "Desde": g["senal_NY"].iloc[0][:10], "Ops": len(g),
+                            "Aciertos%": round(100 * (R > 0).mean(), 1), "R prom": round(R.mean(), 3),
+                            "PF": round(gan / per, 2) if per > 0 else np.inf, "Costes x2": round(g["R_x2"].mean(), 3),
+                            "1a mitad": round(g["R"].iloc[:mitad].mean(), 3) if mitad else np.nan,
+                            "2a mitad": round(g["R"].iloc[mitad:].mean(), 3)})
+          r = pd.DataFrame(filas)
+          r["ROBUSTA"] = ((r["Ops"] >= 30) & (r["R prom"] > 0) & (r["Costes x2"] > 0) &
+                          (r["1a mitad"] > 0) & (r["2a mitad"] > 0)).map({True: "SI", False: ""})
+          r = r.sort_values(["ROBUSTA", "R prom"], ascending=[False, False])
+          pd.set_option("display.width", 250)
+          print(r.to_string(index=False))
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+              s.write("## Capital Trading - robustez\n\n" + r.to_markdown(index=False) + "\n")

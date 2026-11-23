@@ -97,23 +97,23 @@ PUNTO_MICRO = {"NASDAQ 100 (NQ)": 2.0, "S&P 500 (ES)": 5.0, "DOW 30 (YM)": 0.5, 
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "USD/CAD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "FTSE 100": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "NIKKEI 225": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "EURO STOXX 50": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "CAC 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "XAG/USD (Plata)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "WTI (Petróleo)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "BRENT (Petróleo)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "USD/CAD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "FTSE 100": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "NIKKEI 225": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "EURO STOXX 50": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "CAC 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "XAG/USD (Plata)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "WTI (Petróleo)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
+    "BRENT (Petróleo)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
 }
 
 # ================================================================= PERFIL GANADOR
@@ -240,7 +240,7 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "CT_Bloque", "CT_Confirma"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
     "solo_ganadoras": True,         # en vivo: solo las combinaciones de GANADORAS (python bot_pro.py --todas = todas)
 }
@@ -2891,6 +2891,188 @@ def evaluar_bos_mercado(nombre, tipo, df, d1, p, ahora, dd=None):
                   "id": f"BOSM|{nombre}|{diag['Dir']}|{d.index[-1]}"}
 
 
+# ================================================================= CAPITAL TRADING (SMC: estructura + liquidez)
+# Reglas de las clases de CAPITAL TRADING (canal @CapitalTradingPE) programadas con criterios medibles:
+#   1) Direccion en M15 por ruptura con CUERPO de vela (BOS). Una ruptura solo con mecha es toma de liquidez.
+#   2) Rango operativo: del minimo que origino el impulso al maximo del impulso (venta en espejo).
+#   3) Liquidez interna: minimos/maximos dentro del impulso (mechas, techos/pisos iguales). El precio DEBE tomarla
+#      antes de reaccionar: el bloque valido esta DESPUES de esa liquidez (mas lejos que ella).
+#   4) Bloque trampa: si por debajo del bloque quedan minimos iguales sin barrer, no se respeta: el rango "se estira".
+#   5) Bloque valido: ultima vela contraria antes del desplazamiento, que tomo liquidez de la vela anterior, en
+#      descuento (bajo el 50 % del rango) y con imbalance (FVG) que el precio debe llenar al 100 %.
+#   6) Objetivo: la liquidez externa (maximo del impulso). Minimo 1:2.
+# Dos entradas:  CT_Bloque   = orden LIMITE en el bloque de M15 (estilo bloque refinado).
+#                CT_Confirma = en M5, tras tocar el bloque de M15, ruptura con cuerpo del ultimo maximo -> mercado.
+CT = {"k": 3, "tol_iguales": 0.15, "rr_min": 2.0, "rr_max": 10.0, "espera": 40, "buscar_bos": 60}
+
+
+def _ct_bloque_long(d, k=CT["k"]):
+    """Setup alcista de CAPITAL TRADING sobre velas de M15 (d). Devuelve el bloque y el rango, o (None, motivo)."""
+    o, h, l, c = (d[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    n = len(c)
+    if n < 60:
+        return None, "pocas velas"
+    a = float(atr(d).iloc[-1])
+    sh, sl_ = swings(d, k)
+    # 1) ultimo BOS con cuerpo hacia arriba y hacia abajo
+    def _ultimo_bos(idx, alto):
+        mejor = None
+        for j in idx[-8:]:
+            nivel = h[j] if alto else l[j]
+            rompe = np.where((c[j + k:] > nivel) if alto else (c[j + k:] < nivel))[0]
+            if len(rompe):
+                b = j + k + int(rompe[0])
+                if mejor is None or b > mejor[0]:
+                    mejor = (b, j)
+        return mejor
+    alc, baj = _ultimo_bos(sh, True), _ultimo_bos(sl_, False)
+    if alc is None or (baj is not None and baj[0] > alc[0]):
+        return None, "direccion no alcista"
+    b, j = alc
+    if n - 1 - b > CT["buscar_bos"]:
+        return None, "BOS antiguo"
+    # 2) rango operativo
+    m = max(j - 15, 0) + int(np.argmin(l[max(j - 15, 0):b + 1]))   # minimo que origino el impulso
+    lo, hi = float(l[m]), float(h[b:].max())
+    if not (lo < c[-1] < hi) or hi - lo < 2 * a:
+        return None, "fuera del rango"
+    tol = CT["tol_iguales"] * a
+    # rango trampa: el minimo del rango tiene un minimo igual antes (liquidez sin tomar bajo el rango)
+    previos = [s for s in sl_ if s < m and m - s <= 40]
+    if any(abs(l[s] - lo) <= tol and l[m:].min() >= l[s] - 1e-12 for s in previos if l[s] < lo + tol):
+        return None, "rango con minimos iguales (trampa)"
+    mitad = (lo + hi) / 2
+    internos = [s for s in sl_ if m < s < n]                       # liquidez interna del impulso
+    for q in range(b - 1, m - 1, -1):                              # bloques del mas cercano al mas profundo
+        if not (c[q] < o[q] and q >= 1 and l[q] < l[q - 1]):       # vela contraria que tomo liquidez de la anterior
+            continue
+        prox, dist = float(max(o[q], c[q])), float(min(l[q], l[q + 1] if q + 1 < n else l[q]))
+        if prox > mitad:                                           # debe estar en descuento
+            continue
+        if not any(l[r] > h[r - 2] for r in range(q + 1, min(b + 1, n)) if r >= 2):
+            continue                                               # sin imbalance en el desplazamiento
+        liq = [s for s in internos if l[s] > prox and s > q]       # liquidez antes del bloque
+        if not liq:
+            continue
+        abajo = [s for s in internos + [m] if l[s] < dist]         # minimos iguales sin barrer bajo el bloque = trampa
+        if any(abs(l[x] - l[y]) <= tol for i_, x in enumerate(abajo) for y in abajo[i_ + 1:]):
+            continue
+        sl_px = dist - 0.1 * a
+        rr = (hi - prox) / (prox - sl_px) if prox > sl_px else 0
+        t_hi = b + int(np.argmax(h[b:]))                           # el retroceso empieza en el maximo del impulso
+        return {"q": q, "t_hi": t_hi, "entrada": prox, "dist": dist, "sl": sl_px, "tp": hi, "rr": rr, "lo": lo, "hi": hi,
+                "bos": float(h[j]), "liq": float(max(l[s] for s in liq)), "liq_n": len(liq),
+                "tocado": bool(l[t_hi + 1:].min() <= prox) if t_hi + 1 < n else False,
+                "barrida": bool(l[max(liq):].min() < min(l[s] for s in liq)) if liq else False}, ""
+    return None, "sin bloque válido tras la liquidez"
+
+
+def _ct_diag(nombre, clave):
+    return {"Estrategia": clave, "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-", "Score": 0,
+            "Confluencias": ""}
+
+
+def _ct_espejo(s, bias):
+    if bias == 1:
+        return s
+    return {k_: (-v if isinstance(v, float) else v) for k_, v in s.items()}
+
+
+def evaluar_ct_bloque(nombre, tipo, df, d1, p, ahora, dd=None):
+    """CAPITAL TRADING · bloque de M15: orden LIMITE en el bloque valido, stop tras el bloque, TP en la liquidez
+    externa (maximo/minimo del impulso). Solo si el precio aun no ha tocado el bloque y el ratio es >= 1:2."""
+    diag = _ct_diag(nombre, "CT_Bloque")
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 60:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    if _tf_min(df) != 15:
+        diag["Estado"] = "Solo en 15m"
+        return diag, None
+    d = df.tail(VENTANA)
+    s, bias, motivo = None, 1, ""
+    for b_, dd_ in ((1, d), (-1, _flip(d))):
+        s0, mot = _ct_bloque_long(dd_)
+        if s0 and not s0["tocado"] and s0["rr"] >= CT["rr_min"]:
+            s, bias = s0, b_
+            break
+        motivo = motivo or mot or ("ratio menor de 1:2" if s0 else "")
+    if s is None:
+        diag["Estado"] = f"Esperando setup ({motivo or 'bloque ya tocado'})"
+        return diag, None
+    rr = min(s["rr"], CT["rr_max"])
+    s = _ct_espejo(s, bias)
+    ent, sl = s["entrada"], s["sl"]
+    tp = ent + (rr * abs(ent - sl)) * bias
+    r = abs(ent - sl)
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, r, ent)
+    lado = "COMPRA" if bias == 1 else "VENTA"
+    diag["Dir"], diag["Estado"] = ("LONG" if bias == 1 else "SHORT"), "🚨 SEÑAL"
+    return diag, {"estrategia": "Capital Trading · bloque M15", "activo": nombre, "tipo": tipo, "dir": diag["Dir"],
+                  "bias": bias, "entrada": ent, "sl": sl, "tp1": tp, "tp2": None, "orden": "limite",
+                  "espera": CT["espera"], "max_barras": 160, "riesgo_usd": riesgo_usd, "tamano": tam,
+                  "tamano_txt": tam_txt,
+                  "salida_txt": f"Orden: {lado} LIMIT en {fmt(ent)} (bloque válido). Stop: {fmt(sl)}. "
+                                f"TP 1:{rr:.1f}: {fmt(tp)} (liquidez externa). Válida {CT['espera']} velas.",
+                  "score": 1, "score_max": 1,
+                  "confluencias": f"BOS con cuerpo en {fmt(s['bos'])} · {s['liq_n']} liquidez interna antes del "
+                                  f"bloque · imbalance · bloque en descuento",
+                  "kz": killzone_actual(ahora) or "-", "vela": d.index[-1],
+                  "id": f"CTB|{nombre}|{diag['Dir']}|{d.index[s['q']]}"}
+
+
+def evaluar_ct_confirma(nombre, tipo, df, d1, p, ahora, dd=None):
+    """CAPITAL TRADING · confirmacion en M5: el precio barre la liquidez interna, llega al bloque de M15 y la
+    ultima vela de M5 rompe CON CUERPO el ultimo maximo de M5 -> entrada a mercado, stop bajo el minimo del barrido,
+    objetivo en la liquidez externa (>= 1:2)."""
+    diag = _ct_diag(nombre, "CT_Confirma")
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 120:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    if _tf_min(df) != 5:
+        diag["Estado"] = "Solo en 5m"
+        return diag, None
+    d5 = df.tail(VENTANA * 3)
+    m15 = remuestrear(d5, "15m")
+    m15 = m15[m15.index + pd.Timedelta(minutes=15) <= d5.index[-1] + pd.Timedelta(minutes=5)]   # solo cerradas
+    for bias, a5, a15 in ((1, d5, m15), (-1, _flip(d5), _flip(m15))):
+        s, _ = _ct_bloque_long(a15)
+        if s is None or not s["tocado"]:
+            continue
+        t_toque = a15.index[s["t_hi"] + 1:][a15["low"].to_numpy()[s["t_hi"] + 1:] <= s["entrada"]][0]
+        tras = a5[a5.index >= t_toque]
+        if len(tras) < 4 or tras["close"].min() < s["dist"] or len(tras) > 48:
+            continue                                               # cerro bajo el bloque o el toque es viejo
+        o5, h5, l5, c5 = (tras[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+        sh5, _ = swings(tras, 2)
+        previos = [j for j in sh5 if j < len(c5) - 1]
+        if not previos:
+            continue
+        nivel = h5[previos[-1]]
+        if not (c5[-1] > nivel and c5[:-1][previos[-1] + 1:].max(initial=-np.inf) <= nivel and c5[-1] > o5[-1]):
+            continue                                               # la ULTIMA vela de M5 rompe con cuerpo
+        px = float(c5[-1])
+        sl_f = float(l5.min()) - 0.1 * float(atr(a5).iloc[-1])
+        r = px - sl_f
+        if r <= 0 or (s["hi"] - px) / r < CT["rr_min"]:
+            continue
+        r_obj = min((s["hi"] - px) / r, CT["rr_max"])
+        ent, sl, tp = (px, sl_f, px + r_obj * r) if bias == 1 else (-px, -sl_f, -(px + r_obj * r))
+        riesgo_usd = p["banco"] * p["riesgo"] / 100
+        tam, tam_txt = tamano(nombre, tipo, riesgo_usd, r, abs(ent))
+        diag["Dir"], diag["Estado"] = ("LONG" if bias == 1 else "SHORT"), "🚨 SEÑAL"
+        return diag, {"estrategia": "Capital Trading · confirmación M5", "activo": nombre, "tipo": tipo,
+                      "dir": diag["Dir"], "bias": bias, "entrada": ent, "sl": sl, "tp1": tp, "tp2": None,
+                      "tp_r": r_obj, "r1": round(r_obj, 1), "max_barras": 288, "riesgo_usd": riesgo_usd,
+                      "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                      "confluencias": f"bloque M15 tocado · ruptura con cuerpo en M5 de {fmt(nivel if bias == 1 else -nivel)}"
+                                      f" · objetivo liquidez externa",
+                      "kz": killzone_actual(ahora) or "-", "vela": d5.index[-1],
+                      "id": f"CTC|{nombre}|{diag['Dir']}|{a15.index[s['q']]}"}
+    diag["Estado"] = "Esperando toque del bloque M15 + ruptura con cuerpo en M5"
+    return diag, None
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
                "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
                "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap,
@@ -2900,7 +3082,8 @@ ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evalu
                "DI_EMA": evaluar_di_ema, "DI_Ruptura": evaluar_di_ruptura, "DI_RSI": evaluar_di_rsi,
                "Judas": evaluar_judas, "RSI2": evaluar_rsi2, "Squeeze": evaluar_squeeze,
                "ZonaBOS": evaluar_zona_bos, "BOSFVG": evaluar_bos_fvg,
-               "AuraPlus": evaluar_aura_plus, "BOSMercado": evaluar_bos_mercado}
+               "AuraPlus": evaluar_aura_plus, "BOSMercado": evaluar_bos_mercado,
+               "CT_Bloque": evaluar_ct_bloque, "CT_Confirma": evaluar_ct_confirma}
 
 
 def estrategias_de(nombre, p):
@@ -3003,7 +3186,7 @@ def _nota_noticias(nombre, horas=3):
     return ""
 
 
-VERSION_BOT = "v7.1 · analista con gráficos"
+VERSION_BOT = "v7.2 · + Capital Trading"
 
 
 def texto_alerta(s, tf):
@@ -4478,6 +4661,28 @@ def texto_lectura_mercado(m):
     return "\n".join(lin)
 
 
+def texto_capital(nombre, cargar=obtener):
+    """Estado del setup de CAPITAL TRADING (estructura + liquidez) en M15 y del gatillo en M5."""
+    p = dict(PARAMS_DEFAULT)
+    ahora = _ts_utc(datetime.now(UTC))
+    tipo = ACTIVOS[nombre]["tipo"]
+    lin = [f"🏦 CAPITAL TRADING · {nombre}"]
+    for tf, fn in (("15m", evaluar_ct_bloque), ("5m", evaluar_ct_confirma)):
+        try:
+            df = solo_cerradas(cargar(nombre, tf), tf, ahora)
+            d, s = fn(nombre, tipo, df, None, p, ahora)
+        except Exception as e:
+            d, s = {"Estado": f"sin datos ({e})"}, None
+        nom = "Bloque M15 (orden límite)" if tf == "15m" else "Confirmación M5 (a mercado)"
+        if s:
+            lin.append(f"✅ {nom}: {s['dir']} · entrada {fmt(s['entrada'])} · stop {fmt(s['sl'])} · objetivo "
+                       f"{fmt(s['tp1'])}\n   {s['confluencias']}")
+        else:
+            lin.append(f"⏳ {nom}: {d.get('Estado', '-')}")
+    lin.append("ℹ️ En pruebas: aún no envía alertas automáticas hasta pasar el backtest a 2 años.")
+    return "\n".join(lin)
+
+
 def texto_figuras(m):
     if not m["figs"]:
         return f"🔺 {m['activo']} ({m['tf']}): no veo figuras chartistas claras en las últimas 150 velas."
@@ -4612,6 +4817,7 @@ AYUDA_CHAT = ("🤖 Puedo analizar cualquier mercado que vigilo. Escríbeme así
               "• /plan sp500 — plan por temporalidades con entrada, stop, objetivo y gestión\n"
               "• /posicion oro long 4050 4030 — ¿qué hago con mi operación? (stop opcional)\n"
               "• /grafico oro 15m — solo el gráfico con zonas, figuras y niveles dibujados\n"
+              "• /capital oro — setup de Capital Trading (bloque M15 + confirmación M5)\n"
               "• /diario — radiografía del diario y contrato de la semana\n"
               "• /estado — operaciones abiertas y riesgo en juego\n"
               "También vale texto libre: «¿pa dónde va el oro?», «¿hay un doble techo en el euro?», "
@@ -4776,6 +4982,8 @@ def responder(texto, estado=None, cargar=obtener):
             stop = nums[1] if len(nums) > 1 else None
             niv = [("Tu entrada", nums[0], "entrada")] + ([("Tu stop", stop, "stop")] if stop else [])
             return txt, _foto(m, niv, figuras=False, titulo=f"{nombre} · tu posición · 15m")
+        if t.startswith("/capital") or "capital trading" in t:
+            return texto_capital(nombre, cargar), None
         if t.startswith("/plan") or any(w in t for w in ("plan", "entro", "compro", "vendo", "compara")):
             m = analisis_mercado(nombre, "15m", cargar)
             return plan_operativo(nombre, cargar), _foto(m, _niveles_escenario(m), figuras=False,

@@ -208,7 +208,7 @@ def _velas(n=2000, deriva=0.0, semilla=1):
     o = np.r_[100, c[:-1]]
     h = np.maximum(o, c) * (1 + abs(rng.normal(0, 0.001, n)))
     l = np.minimum(o, c) * (1 - abs(rng.normal(0, 0.001, n)))
-    return pd.DataFrame(dict(open=o, high=h, low=l, close=c), index=idx)
+    return pd.DataFrame(dict(open=o, high=h, low=l, close=c, volume=1.0), index=idx)
 
 
 def test_maquina_del_tiempo_proporciones():
@@ -354,3 +354,41 @@ def test_respuestas_con_grafico(monkeypatch):
 def test_todos_los_mercados_tienen_nombre_en_el_chat():
     assert set(b.ACTIVOS) <= set(b.ALIAS_ACTIVOS.values())
     assert b.buscar_activo("/lectura uk100") == "FTSE 100" and b.buscar_activo("fra40") == "CAC 40"
+
+
+# ----------------------------------------------------------------- Capital Trading
+def test_capital_trading_registradas_en_todos_los_mercados():
+    assert {"CT_Bloque", "CT_Confirma"} <= set(b.ESTRATEGIAS)
+    assert all({"CT_Bloque", "CT_Confirma"} <= set(v) for v in b.ESTRATEGIAS_ACTIVO.values())
+
+
+def test_capital_trading_solo_en_su_temporalidad():
+    df15 = _velas(400, semilla=2)
+    ahora = df15.index[-1] + pd.Timedelta(minutes=15)
+    p = dict(b.PARAMS_DEFAULT)
+    d, s = b.evaluar_ct_confirma("BTC/USDT", "cripto", df15, None, p, ahora)
+    assert s is None and d["Estado"] == "Solo en 5m"
+
+
+def test_capital_trading_bloque_niveles_coherentes():
+    """En cualquier senal: stop detras del bloque, objetivo al otro lado y ratio >= 1:2."""
+    df = _velas(1500, semilla=11)
+    p = dict(b.PARAMS_DEFAULT)
+    senales = []
+    for i in range(320, len(df), 7):
+        w = df.iloc[:i]
+        _, s = b.evaluar_ct_bloque("BTC/USDT", "cripto", w, None, p, w.index[-1] + pd.Timedelta(minutes=15))
+        if s:
+            senales.append(s)
+    assert senales, "deberia aparecer algun setup en 1500 velas"
+    for s in senales:
+        d = s["bias"]
+        assert (s["entrada"] - s["sl"]) * d > 0 and (s["tp1"] - s["entrada"]) * d > 0
+        assert abs(s["tp1"] - s["entrada"]) >= 2 * abs(s["entrada"] - s["sl"]) - 1e-9
+        assert s["orden"] == "limite"
+
+
+def test_chat_capital(monkeypatch):
+    df = _velas(800, semilla=11)
+    txt = b.responder_chat("/capital btc", None, lambda nm, tf: df)
+    assert "CAPITAL TRADING" in txt and "Bloque M15" in txt and "Confirmación M5" in txt
