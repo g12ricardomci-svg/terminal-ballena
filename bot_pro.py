@@ -238,6 +238,8 @@ CUENTA = {
     "max_por_exposicion": 2,      # maximo de abiertas apostando lo mismo (p. ej. 2 contra el USD, 2 indices USA)
     "rr_min": 1.5,                # ratio minimo beneficio:riesgo del TP1 (menos = solo observacion)
     "agrupar_alertas": True,      # True = UN mensaje por escaneo con todas las senales nuevas
+    "pausa_min": 60,              # minutos entre dos alertas de la MISMA estrategia, mercado, direccion y TF
+                                  # (el mismo setup nunca se repite; el backtest sigue usando COOLDOWN_H)
     "imagen_alertas": True,       # True = cada alerta operable llega con su grafico (entrada, stop y objetivo)
 }
 
@@ -3290,11 +3292,11 @@ class Estado:
         return f"{s['estrategia']}|{s['activo']}|{s['dir']}|{tf}"
 
     def es_nueva(self, s, tf):
-        """Nunca dos veces el mismo setup y una alerta por estrategia+activo+direccion cada COOLDOWN_H horas."""
+        """Nunca dos veces el mismo setup y una alerta por estrategia+activo+direccion cada CUENTA['pausa_min']."""
         k = self._clave(s, tf)
         en_cola = any(x["s"]["id"] == s["id"] or self._clave(x["s"], x["tf"]) == k for x in getattr(self, "cola", []))
         return not (en_cola or s["id"] in self.d["ids"]
-                    or time.time() - self.d["enviadas"].get(k, 0) < COOLDOWN_H * 3600)
+                    or time.time() - self.d["enviadas"].get(k, 0) < CUENTA.get("pausa_min", 60) * 60)
 
     def _confirmar(self, s, tf, ok, msg):
         if ok:

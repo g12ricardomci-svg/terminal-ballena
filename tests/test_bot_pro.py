@@ -461,3 +461,13 @@ def test_cache_de_datos(monkeypatch):
     b.obtener("EUR/USD", "15m")
     b.obtener("EUR/USD", "15m")
     assert len(llamadas) == 1
+
+
+def test_pausa_entre_alertas_configurable(telegram, estado, monkeypatch):
+    s1 = senal(ident="a")
+    assert estado.procesar(s1, "15m") and estado.vaciar_cola() == 1
+    s2 = senal(ident="b")                                      # mismo estrategia/mercado/dir, setup nuevo
+    assert not estado.es_nueva(s2, "15m")                      # dentro de la pausa
+    estado.d["enviadas"][estado._clave(s1, "15m")] -= 61 * 60  # han pasado 61 minutos
+    assert estado.es_nueva(s2, "15m")
+    assert not estado.es_nueva(senal(ident="a"), "15m")        # el mismo setup jamas se repite
