@@ -212,6 +212,8 @@ CUENTA = {
     "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
     "filtro_noticias": True,    # no avisar 30 min antes ni 15 min despues de una noticia de ALTO impacto
     "reactivar": [],            # nombres de estrategias apagadas por el freno que quieres volver a activar
+    "max_abiertas": 3,          # cartera: maximo de operaciones abiertas a la vez (segun el diario en vivo)
+    "una_por_mercado": True,    # cartera: no abrir otra senal en un mercado con una operacion abierta
     "motor_streamlit": False,   # True = el panel de Streamlit TAMBIEN envia alertas (duplica a GitHub Actions)
     "filtro_estructura": "anotar",  # lectura de estructura: "anotar" (solo informa), "sin_contradice" o "solo_confirma"
     "tfs": ["5m", "15m"],       # temporalidades de entrada que escanea el bot (alertas de 5m y de 15m)
@@ -2885,14 +2887,17 @@ def _nota_noticias(nombre, horas=3):
     return ""
 
 
-VERSION_BOT = "v3 · perfil 2 años"
+VERSION_BOT = "v4 · cerebro único"
 
 
 def texto_alerta(s, tf):
     ic = "🟢 LONG" if s["dir"] == "LONG" else "🔴 SHORT"
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[tf])
-    return (("🧪 EXPERIMENTAL (positiva a 2 años, sin pasar todas las pruebas: tamaño mínimo)\n"
-             if s.get("experimental") else "")
+    nivel = ("🧪 NIVEL B · experimental (positiva a 2 años, sin pasar todas las pruebas: tamaño mínimo)\n"
+             if s.get("experimental") else "🅰️ NIVEL A · robusta a 2 años\n")
+    conf = (f"⭐ CONFLUENCIA: {len(s['confluye']) + 1} estrategias de acuerdo "
+            f"({', '.join([s['estrategia']] + s['confluye'])})\n" if s.get("confluye") else "")
+    return (conf + nivel
             + f"{ic} {s['activo']} ({tf}) · {s['estrategia']}\n"
             f"Entrada: {fmt(s['entrada'])}\nSL: {fmt(s['sl'])}\n"
             + (f"{s['salida_txt']}\n" if s.get("salida_txt") else
@@ -3360,9 +3365,26 @@ def escanear(tf, p, estado, verbose=True, cargar=obtener):
             if verbose:
                 print(f"  {nm:<16} {d.get('Estrategia', '-'):<8} {d.get('Dir', '-'):<5} "
                       f"score {d.get('Score', 0)}  {d['Estado']}")
+        # ⭐ confluencia: varias estrategias en el mismo mercado y direccion -> UNA alerta reforzada
+        grupos = {}
+        for s in senales:
+            grupos.setdefault(s["dir"], []).append(s)
+        senales = []
+        for dir_, g in grupos.items():
+            g.sort(key=lambda x: (bool(x.get("experimental")), -(x.get("lectura") or {}).get("puntos", 0)))
+            lider = g[0]
+            lider["confluye"] = [x["estrategia"] for x in g[1:]]
+            senales.append(lider)
         for s in senales:
             s["tf"] = tf
             if estado is not None:
+                abiertas = estado.d.get("abiertas", [])
+                if len(abiertas) >= CUENTA.get("max_abiertas", 3):
+                    print(f"  🛡️ {nm} {s['estrategia']}: cartera llena ({len(abiertas)} abiertas)", flush=True)
+                    continue
+                if CUENTA.get("una_por_mercado", True) and any(o.get("activo") == nm for o in abiertas):
+                    print(f"  🛡️ {nm} {s['estrategia']}: ya hay una operacion abierta en {nm}", flush=True)
+                    continue
                 if estado.d.get("freno_hasta") == _hoy_ny():
                     print(f"  🛑 {nm} {s['estrategia']}: freno activo ({estado.d.get('freno_motivo')})", flush=True)
                     continue
