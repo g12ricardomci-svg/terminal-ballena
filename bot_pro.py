@@ -1733,8 +1733,13 @@ def correr_backtest(a, p):
         d.columns = [x.lower() for x in d.columns]
         if "volume" not in d:
             d["volume"] = 0.0
-        d.index = d.index.tz_localize(a.csv_tz) if d.index.tz is None else d.index
-        d.index = d.index.tz_convert("UTC")
+        idx = pd.to_datetime(d.index.astype(str), utc=False, format="mixed")
+        if getattr(idx, "tz", None) is None:
+            try:
+                idx = idx.tz_localize(a.csv_tz)
+            except TypeError:                      # mezcla de zonas: normalizar a UTC
+                idx = pd.to_datetime(d.index.astype(str), utc=True, format="mixed")
+        d.index = idx.tz_convert("UTC")
         trabajos.append((a.nombre, a.tipo, d[["open", "high", "low", "close", "volume"]].astype(float)))
     for nm in a.activos or ([] if a.csv else list(ACTIVOS)):
         desde = a.desde or (pd.Timestamp.now("UTC") - pd.Timedelta(days=58)).strftime("%Y-%m-%d")
