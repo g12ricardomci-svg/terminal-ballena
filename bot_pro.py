@@ -3100,15 +3100,26 @@ def resumen_estado(filas):
     return "\n".join(lineas)
 
 
+def texto_perfil(p):
+    """Que vigila el bot de verdad: el perfil ganador (o todas las estrategias con --todas)."""
+    if not p.get("solo_ganadoras"):
+        return f"Modo TODAS las estrategias · mercados: {', '.join(ACTIVOS)}"
+    lin = []
+    for (act, tf), ests in GANADORAS.items():
+        nombres = [e + (" 🔮" if (act, tf, e) in FILTRO_LECTURA else "") for e in ests]
+        lin.append(f"• {act} {tf}: {', '.join(nombres)}")
+    return "Vigilo (probadas 2 años):\n" + "\n".join(lin) + "\n🔮 = con filtro de lectura de estructura"
+
+
 def correr_bot(a, p):
     estado = Estado(a.estado)
     ping = getattr(a, "ping", False)
     if ping:
         revisar_telegram()
         ok, msg = enviar_telegram(f"✅ Bot Pro {VERSION_BOT} activo (GitHub) · {datetime.now(NY):%a %d/%m %H:%M} NY\n"
-                                  f"Mercados: {', '.join(ACTIVOS)}\nTemporalidades: {' y '.join(a.tf)}")
+                                  + texto_perfil(p))
         print(f"Ping a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
-    print(f"🏛️ BOT PRO iniciado · estrategias: {', '.join(p['estrategias'])} · {' + '.join(a.tf)} · "
+    print(f"🏛️ BOT PRO {VERSION_BOT} iniciado · {texto_perfil(p).replace(chr(10), ' ')} · "
           f"{'una pasada' if a.una_vez else 'bucle 24/7'}", flush=True)
     while True:
         print(f"\n[{datetime.now(NY):%Y-%m-%d %H:%M:%S} NY] Escaneando {len(ACTIVOS)} activos", flush=True)
