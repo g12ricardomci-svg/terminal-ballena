@@ -1,32 +1,48 @@
 # -*- coding: utf-8 -*-
 """
-INSTITUTIONAL QUANT TERMINAL - AMT & Order Blocks
-Contexto 1H -> entrada 15m/5m. Cripto 24/7, Forex/Oro lunes-viernes.
-Confluencias: sesgo 1H, BOS, Order Block, descuento Fibonacci >=50%, FVG, POC/VAH/VAL.
-Filtros: ADX por mercado, exhaustacion (Williams %R), mercado cerrado, killzone NY.
+BOT PRO - Institutional Quant Terminal (TODO en un solo archivo)
+=================================================================
+Mercados: BTC/USDT · EUR/USD · GBP/USD · USD/JPY · XAU/USD (Oro)
+
+  python bot_pro.py                 -> bot 24/7: escanea al cierre de cada vela y avisa por Telegram
+  python bot_pro.py --una-vez       -> una sola pasada (es lo que usa GitHub Actions)
+  python bot_pro.py --crear-github  -> crea .github/workflows/bot.yml para correrlo gratis en GitHub
+  python bot_pro.py backtest --activos BTC/USDT "GBP/USD" -> backtest vela a vela
+  streamlit run bot_pro.py          -> panel visual (escaner + backtest)
+
+Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
+  SMC      (todos)        : sesgo 1H -> BOS -> Order Block + OTE + FVG + POC + OB fresco.
+  Barrido  (todos)        : estructura 1H -> barrido de liquidez (dia anterior / Asia) -> cambio de estructura.
+  Tortugas (BTC, JPY, Oro): Sistema 1 de las Tortugas de Richard Dennis: ruptura de 20 dias,
+                            stop 2N (ATR 20 dias), salida en el minimo/maximo de 10 dias.
+  Londres  (EUR, GBP)     : Ruptura de Londres: rango 00-07 GMT, primera vela que cierra fuera
+                            entre 07 y 11 GMT, stop 1,5 pips tras el ultimo swing, objetivo 1,5R.
+
+Todas las decisiones se toman SOLO con velas cerradas (sin repintado).
+Herramienta educativa. No es asesoria financiera. Prueba primero en demo.
 """
+import argparse
+import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
-import plotly.graph_objects as go
 import requests
-import streamlit as st
 
 try:
     import ccxt
-except Exception:
+except Exception:  # pragma: no cover
     ccxt = None
 try:
     import yfinance as yf
-except Exception:
+except Exception:  # pragma: no cover
     yf = None
 
-st.set_page_config(page_title="Institutional Quant Terminal", page_icon="🏛️", layout="wide")
 NY = ZoneInfo("America/New_York")
+UTC = timezone.utc
 
 DEFAULT_SECRETS = {
     "TELEGRAM_TOKEN": "9148434925:AAH_AuswS-GGPHadFBwcrDOUUIwBFbXvtDs",
@@ -34,42 +50,80 @@ DEFAULT_SECRETS = {
 }
 
 # ----------------------------------------------------------------- ACTIVOS
-CRIPTO = ["BTC/USDT", "ETH/USDT", "BNB/USDT", "SOL/USDT", "XRP/USDT",
-          "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT"]
-FOREX = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X",
-         "USD/JPY": "USDJPY=X", "AUD/USD": "AUDUSD=X"}
-ORO = {"XAU/USD (Oro)": "GC=F"}
+# Los 5 mercados que vigila el bot. Para agregar otro, sumalo aqui y en ESTRATEGIAS_ACTIVO.
+CRIPTO = ["BTC/USDT"]
+FOREX = {"EUR/USD": "EURUSD=X", "GBP/USD": "GBPUSD=X", "USD/JPY": "USDJPY=X"}
+ORO = {"XAU/USD (Oro)": "GC=F"}   # GC=F = futuro COMEX (100 oz), no spot
+INDICES = {}                       # ej.: {"NASDAQ 100 (NQ)": "NQ=F"}  (futuro CME: $20/punto, MNQ $2)
+
+# Que estrategias corre cada mercado (ver la cabecera del archivo)
+ESTRATEGIAS_ACTIVO = {
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas"],
+    "EUR/USD": ["SMC", "Barrido", "Londres"],
+    "GBP/USD": ["SMC", "Barrido", "Londres"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas"],
+    "NASDAQ 100 (NQ)": ["SMC", "Barrido"],
+}
 
 ACTIVOS = {}
-for c in CRIPTO:
-    ACTIVOS[c] = {"tipo": "cripto", "yf": c.replace("/USDT", "-USD")}
-for k, v in FOREX.items():
-    ACTIVOS[k] = {"tipo": "forex", "yf": v}
-for k, v in ORO.items():
-    ACTIVOS[k] = {"tipo": "oro", "yf": v}
+for _c in CRIPTO:
+    ACTIVOS[_c] = {"tipo": "cripto", "yf": _c.replace("/USDT", "-USD")}
+for _k, _v in FOREX.items():
+    ACTIVOS[_k] = {"tipo": "forex", "yf": _v}
+for _k, _v in ORO.items():
+    ACTIVOS[_k] = {"tipo": "oro", "yf": _v}
+for _k, _v in INDICES.items():
+    ACTIVOS[_k] = {"tipo": "indice", "yf": _v}
 
-ADX_MIN = {"cripto": 18, "forex": 20, "oro": 20}   # ADX minimo por mercado
+ADX_MIN = {"cripto": 18, "forex": 20, "oro": 20, "indice": 20}
 EXCHANGES = ["kucoin", "okx", "bybit", "binance"]   # binance al final: bloquea IPs de EE.UU.
-YF_CFG = {"5m": ("5m", "5d"), "15m": ("15m", "10d"), "1h": ("1h", "60d")}
+TF_MIN = {"5m": 5, "15m": 15, "30m": 30, "1h": 60, "4h": 240, "1d": 1440}
+# Yahoo: intervalos < 1h solo ultimos 60 dias; 1h solo ultimos 730 dias.
+YF_CFG = {"5m": ("5m", "5d"), "15m": ("15m", "10d"), "1h": ("1h", "60d"), "1d": ("1d", "2y")}
+YF_LIMITE_DIAS = {"5m": 59, "15m": 59, "30m": 59, "1h": 729, "1d": 3650}
 COOLDOWN_H = 4
+VENTANA = 300          # velas de entrada que mira el motor (igual en vivo y en backtest)
+VENTANA_CTX = 200      # velas 1H de contexto
+
+# Killzones en hora de Nueva York (ICT). Se pueden editar.
+KILLZONES = {
+    "Asia": (19.0, 22.0),
+    "Londres": (2.0, 5.0),
+    "Nueva York": (7.0, 10.0),
+    "London Close": (10.0, 12.0),
+}
+KZ_DEFAULT = {"cripto": ["Londres", "Nueva York"],
+              "forex": ["Londres", "Nueva York"],
+              "oro": ["Londres", "Nueva York"],
+              "indice": ["Nueva York"]}
+
+# Tamano de contrato por lote estandar
+LOTE = {"forex": 100_000, "oro": 100}   # oro: 1 lote = 100 oz (igual que el futuro GC)
+NQ_USD_PUNTO, MNQ_USD_PUNTO = 20.0, 2.0
+
+PARAMS_DEFAULT = {
+    "min_score": 3,                 # de 4 confluencias reales
+    "banco": 10.0,
+    "riesgo": 2.0,                  # % del banco por operacion
+    "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
+    "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
+    "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres"],
+}
 
 
-# ----------------------------------------------------------------- TELEGRAM
-def _secret(name):
-    try:
-        v = st.secrets[name]
-        if isinstance(v, (list, tuple)):
-            return ",".join(str(x) for x in v)
-        return str(v).strip()
-    except Exception:
-        return os.environ.get(name, DEFAULT_SECRETS.get(name, "")).strip()
+# ----------------------------------------------------------------- SECRETS
+def secreto(name):
+    """Prioridad: variable de entorno (o st.secrets, que app.py copia al entorno) -> valor por defecto."""
+    return str(os.environ.get(name) or DEFAULT_SECRETS.get(name, "")).strip()
 
 
 def enviar_telegram(texto):
-    token = _secret("TELEGRAM_TOKEN")
-    ids = [i.strip() for i in _secret("TELEGRAM_CHAT_IDS").replace(";", ",").split(",") if i.strip()]
+    token = secreto("TELEGRAM_TOKEN")
+    ids = [i.strip() for i in secreto("TELEGRAM_CHAT_IDS").replace(";", ",").split(",") if i.strip()]
     if not token or not ids:
-        return False, "Faltan TELEGRAM_TOKEN / TELEGRAM_CHAT_IDS en Secrets"
+        return False, "Faltan TELEGRAM_TOKEN / TELEGRAM_CHAT_IDS"
     errores = []
     for chat_id in ids:
         try:
@@ -83,73 +137,189 @@ def enviar_telegram(texto):
 
 
 # ----------------------------------------------------------------- HORARIOS
+def _ny(ahora=None):
+    if ahora is None:
+        return datetime.now(NY)
+    if isinstance(ahora, pd.Timestamp):
+        ahora = ahora.to_pydatetime()
+    if ahora.tzinfo is None:
+        ahora = ahora.replace(tzinfo=UTC)
+    return ahora.astimezone(NY)
+
+
 def mercado_abierto(tipo, ahora=None):
-    """Cripto 24/7. Forex/Oro: cierran viernes 17:00 NY y abren domingo 17:00 NY."""
+    """
+    Cripto: 24/7.
+    Forex:  domingo 17:00 -> viernes 17:00 (hora NY).
+    Oro (GC) y Nasdaq (NQ) en CME Globex: domingo 18:00 -> viernes 17:00 NY,
+    con pausa diaria 17:00-18:00 NY.
+    """
     if tipo == "cripto":
         return True
-    n = ahora or datetime.now(NY)
-    h = n.hour + n.minute / 60
-    wd = n.weekday()
+    n = _ny(ahora)
+    h, wd = n.hour + n.minute / 60, n.weekday()   # lunes=0 ... domingo=6
     if wd == 5:
         return False
+    if tipo == "forex":
+        if wd == 4 and h >= 17:
+            return False
+        if wd == 6 and h < 17:
+            return False
+        return True
+    # oro e indices (CME Globex)
+    if wd == 6:
+        return h >= 18
     if wd == 4 and h >= 17:
         return False
-    if wd == 6 and h < 17:
-        return False
-    return True
+    return not (17 <= h < 18)
 
 
-def en_killzone(ahora=None):
-    n = ahora or datetime.now(NY)
-    return 7 <= n.hour < 11
+def killzone_actual(ahora=None):
+    n = _ny(ahora)
+    h = n.hour + n.minute / 60
+    for nombre, (a, b) in KILLZONES.items():
+        if a <= h < b:
+            return nombre
+    return None
+
+
+def en_killzone(tipo, p, ahora=None):
+    """True si no hay filtro para ese mercado o si estamos dentro de alguna killzone elegida."""
+    zonas = (p.get("kz") or {}).get(tipo, [])
+    if not zonas:
+        return True
+    return killzone_actual(ahora) in zonas
 
 
 # ----------------------------------------------------------------- DATOS
-@st.cache_resource
+_EX = {}
+
+
 def _exchange(nombre):
-    return getattr(ccxt, nombre)({"enableRateLimit": True, "timeout": 15000})
+    if nombre not in _EX:
+        _EX[nombre] = getattr(ccxt, nombre)({"enableRateLimit": True, "timeout": 15000})
+    return _EX[nombre]
 
 
-def _ohlcv_ccxt(simbolo, tf, limite=500):
+def _ts_utc(x):
+    t = pd.Timestamp(x)
+    return t.tz_localize("UTC") if t.tzinfo is None else t.tz_convert("UTC")
+
+
+def _df_ccxt(raw):
+    df = pd.DataFrame(raw, columns=["t", "open", "high", "low", "close", "volume"])
+    df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
+    df = df.drop_duplicates("t").set_index("t").sort_index()
+    return df.astype(float)
+
+
+def ohlcv_ccxt(simbolo, tf, limite=500):
     if ccxt is None:
         return None
     for nombre in EXCHANGES:
         try:
             raw = _exchange(nombre).fetch_ohlcv(simbolo, timeframe=tf, limit=limite)
             if raw and len(raw) > 50:
-                df = pd.DataFrame(raw, columns=["t", "open", "high", "low", "close", "volume"])
-                df["t"] = pd.to_datetime(df["t"], unit="ms", utc=True)
-                return df.set_index("t")
+                return _df_ccxt(raw)
         except Exception:
             continue
     return None
 
 
-def _ohlcv_yf(ticker, tf):
+def historico_ccxt(simbolo, tf, desde, hasta=None, max_lotes=400):
+    """Descarga paginada (since = ultima vela + 1 ms), como en los ejemplos oficiales de ccxt."""
+    if ccxt is None:
+        return None
+    desde_ms = int(_ts_utc(desde).timestamp() * 1000)
+    hasta_ms = int(_ts_utc(hasta or datetime.now(UTC)).timestamp() * 1000)
+    for nombre in EXCHANGES:
+        try:
+            ex = _exchange(nombre)
+            since, filas = desde_ms, []
+            for _ in range(max_lotes):
+                lote = ex.fetch_ohlcv(simbolo, timeframe=tf, since=since, limit=1000)
+                if not lote:
+                    break
+                filas += lote
+                nuevo = lote[-1][0] + 1
+                if nuevo <= since or lote[-1][0] >= hasta_ms:
+                    break
+                since = nuevo
+            if len(filas) > 200:
+                df = _df_ccxt(filas)
+                return df[df.index < pd.Timestamp(hasta_ms, unit="ms", tz="UTC")]
+        except Exception:
+            continue
+    return None
+
+
+def _limpiar_yf(d):
+    if d is None or d.empty:
+        return None
+    if isinstance(d.columns, pd.MultiIndex):
+        d.columns = d.columns.get_level_values(0)
+    d = d.rename(columns=str.lower)[["open", "high", "low", "close", "volume"]].dropna()
+    d.index = pd.to_datetime(d.index, utc=True)
+    return d.astype(float)
+
+
+def ohlcv_yf(ticker, tf):
     if yf is None:
         return None
     interval, periodo = YF_CFG[tf]
     try:
-        d = yf.download(ticker, interval=interval, period=periodo, progress=False,
-                        auto_adjust=False, threads=False)
-        if d is None or d.empty:
-            return None
-        if isinstance(d.columns, pd.MultiIndex):
-            d.columns = d.columns.get_level_values(0)
-        d = d.rename(columns=str.lower)[["open", "high", "low", "close", "volume"]].dropna()
-        d.index = pd.to_datetime(d.index, utc=True)
-        return d
+        return _limpiar_yf(yf.download(ticker, interval=interval, period=periodo, progress=False,
+                                       auto_adjust=False, threads=False))
     except Exception:
         return None
 
 
-@st.cache_data(ttl=120, show_spinner=False)
+def historico_yf(ticker, tf, desde=None, hasta=None):
+    """Respeta los limites de Yahoo: <1h = 60 dias, 1h = 730 dias."""
+    if yf is None:
+        return None
+    lim = datetime.now(UTC) - timedelta(days=YF_LIMITE_DIAS[tf])
+    ini = max(_ts_utc(desde) if desde else _ts_utc(lim), _ts_utc(lim))
+    fin = _ts_utc(hasta) if hasta else None
+    try:
+        return _limpiar_yf(yf.download(ticker, interval=tf, start=ini.to_pydatetime(),
+                                       end=fin.to_pydatetime() if fin is not None else None,
+                                       progress=False, auto_adjust=False, threads=False))
+    except Exception:
+        return None
+
+
 def obtener(nombre, tf):
     meta = ACTIVOS[nombre]
-    df = _ohlcv_ccxt(nombre, tf) if meta["tipo"] == "cripto" else None
+    df = ohlcv_ccxt(nombre, tf) if meta["tipo"] == "cripto" else None
     if df is None:
-        df = _ohlcv_yf(meta["yf"], tf)
+        df = ohlcv_yf(meta["yf"], tf)
     return df
+
+
+def historico(nombre, tf, desde, hasta=None):
+    meta = ACTIVOS[nombre]
+    df = historico_ccxt(nombre, tf, desde, hasta) if meta["tipo"] == "cripto" else None
+    if df is None:
+        df = historico_yf(meta["yf"], tf, desde, hasta)
+    return df
+
+
+def solo_cerradas(df, tf, ahora=None):
+    """Elimina la vela en formacion: se queda con las velas cuyo cierre (apertura + tf) ya paso."""
+    if df is None or df.empty:
+        return df
+    ahora = _ts_utc(ahora if ahora is not None else datetime.now(UTC))
+    cierre = df.index + pd.Timedelta(minutes=TF_MIN[tf])
+    return df[cierre <= ahora]
+
+
+def remuestrear(df, tf):
+    """Construye velas de mayor temporalidad (p. ej. 15m -> 1h) con apertura a la izquierda."""
+    regla = {"1d": "1D", "1h": "1h", "4h": "4h", "30m": "30min", "15m": "15min"}[tf]
+    r = df.resample(regla, label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+    return r.dropna(subset=["open", "close"])
 
 
 # ----------------------------------------------------------------- INDICADORES
@@ -177,7 +347,8 @@ def williams_r(df, n=14):
 
 
 def swings(df, k=3):
-    h, l = df["high"].values, df["low"].values
+    """Swings confirmados: necesitan k velas cerradas a cada lado."""
+    h, l = df["high"].to_numpy(), df["low"].to_numpy()
     sh, sl = [], []
     for i in range(k, len(df) - k):
         if h[i] == h[i - k:i + k + 1].max():
@@ -188,17 +359,17 @@ def swings(df, k=3):
 
 
 def perfil_volumen(df, bins=48, area=0.70):
-    """POC / VAH / VAL. Si no hay volumen (forex) pondera por tiempo."""
+    """POC / VAH / VAL. Si no hay volumen (forex en Yahoo) pondera por tiempo (TPO)."""
     lo, hi = df["low"].min(), df["high"].max()
-    if hi <= lo:
+    if not hi > lo:
         return None
     edges = np.linspace(lo, hi, bins + 1)
     centros = (edges[:-1] + edges[1:]) / 2
     vol = np.zeros(bins)
-    pesos = df["volume"].values if df["volume"].sum() > 0 else np.ones(len(df))
-    for h, l, v in zip(df["high"].values, df["low"].values, pesos):
-        i0 = max(int(np.searchsorted(edges, l, side="right")) - 1, 0)
-        i1 = min(int(np.searchsorted(edges, h, side="right")) - 1, bins - 1)
+    pesos = df["volume"].to_numpy() if df["volume"].sum() > 0 else np.ones(len(df))
+    i0s = np.clip(np.searchsorted(edges, df["low"].to_numpy(), side="right") - 1, 0, bins - 1)
+    i1s = np.clip(np.searchsorted(edges, df["high"].to_numpy(), side="right") - 1, 0, bins - 1)
+    for i0, i1, v in zip(i0s, i1s, pesos):
         vol[i0:i1 + 1] += v / (i1 - i0 + 1)
     p = int(vol.argmax())
     objetivo, acc, a, b = vol.sum() * area, vol[p], p, p
@@ -214,18 +385,18 @@ def perfil_volumen(df, bins=48, area=0.70):
     return {"poc": float(centros[p]), "vah": float(edges[b + 1]), "val": float(edges[a])}
 
 
-def sesgo_1h(d1):
-    """+1 alcista, -1 bajista, 0 neutral (EMA21/50 + posicion vs POC)."""
+def sesgo_ctx(d1):
+    """+1 alcista, -1 bajista, 0 neutral (EMA21/50 + posicion vs POC) sobre velas 1H cerradas."""
     c = d1["close"]
     e21, e50 = c.ewm(span=21, adjust=False).mean(), c.ewm(span=50, adjust=False).mean()
     vp = perfil_volumen(d1.tail(120))
-    s = 0
-    if c.iloc[-1] > e50.iloc[-1] and e21.iloc[-1] > e50.iloc[-1]:
+    s, x = 0, c.iloc[-1]
+    if x > e50.iloc[-1] and e21.iloc[-1] > e50.iloc[-1]:
         s += 1
-    if c.iloc[-1] < e50.iloc[-1] and e21.iloc[-1] < e50.iloc[-1]:
+    if x < e50.iloc[-1] and e21.iloc[-1] < e50.iloc[-1]:
         s -= 1
     if vp:
-        s += 1 if c.iloc[-1] > vp["poc"] else -1
+        s += 1 if x > vp["poc"] else -1
     return (1 if s >= 1 else -1 if s <= -1 else 0), vp
 
 
@@ -238,58 +409,93 @@ def _flip(df):
     return f
 
 
-def setup_long(df, ventana=40):
-    """BOS alcista reciente + Order Block (ultima vela bajista antes del impulso) + FVG + retroceso."""
+def setup_long(df, ventana=40, fib=(0.5, 0.79), k=3):
+    """
+    BOS alcista reciente + Order Block (ultima vela bajista antes del impulso).
+    Devuelve las piezas por separado para que el score cuente solo confluencias reales:
+      toco   -> alguna de las 3 ultimas velas cerradas (posteriores al BOS) tocó el OB sin cerrar debajo
+      ote    -> retroceso Fibonacci del impulso dentro de la zona OTE (por defecto 50%-79%)
+      fvg    -> hay un Fair Value Gap alcista en el tramo del impulso (entre el minimo y la vela del BOS)
+      fresco -> el OB no habia sido mitigado entre el BOS y el toque actual
+      roto   -> el precio perdio el origen del impulso (retroceso > 100%): setup invalido
+    """
     n = len(df)
-    o, h, l, c = (df[x].values for x in ("open", "high", "low", "close"))
-    sh, _ = swings(df, 3)
+    o, h, l, c = (df[x].to_numpy() for x in ("open", "high", "low", "close"))
+    sh, _ = swings(df, k)
     for j in reversed([x for x in sh if x < n - 4]):
         if j < n - 90:
             break
         idx = np.where(c[j + 1:] > h[j])[0]
         if len(idx) == 0:
             continue
-        i = j + 1 + int(idx[0])                 # vela que rompe la estructura
-        if i < n - ventana:
+        i = j + 1 + int(idx[0])                       # vela que cierra por encima del swing (BOS)
+        if i < n - ventana or i > n - 2:
             continue
-        m = j + int(np.argmin(l[j:i + 1]))      # minimo previo al impulso
+        m = j + int(np.argmin(l[j:i + 1]))            # minimo previo al impulso
         ob = m
-        for k in range(m, max(m - 6, -1), -1):
-            if c[k] < o[k]:
-                ob = k
+        for q in range(m, max(m - 6, -1), -1):
+            if c[q] < o[q]:
+                ob = q
                 break
-        ob_lo, ob_hi = l[ob], h[ob]
-        top, base = h[i:].max(), l[m]
+        ob_lo, ob_hi = float(l[ob]), float(h[ob])
+        top, base = float(h[i:].max()), float(l[m])
         if top <= base:
             continue
-        ratio = (top - c[-1]) / (top - base)    # retroceso Fibonacci (0.5 = 50%)
-        toco = bool((l[-3:] <= ob_hi).any() and c[-1] >= ob_lo)
-        fvg = any(l[q] > h[q - 2] and not (l[q] < ob_lo or h[q - 2] > ob_hi)
-                  for q in range(max(2, m), n))
-        return {"ob_lo": float(ob_lo), "ob_hi": float(ob_hi), "ratio": float(ratio),
-                "toco": toco, "fvg": bool(fvg), "ob_t": df.index[ob],
-                "base": float(base), "top": float(top)}
+        px = float(c[-1])
+        ratio = (top - px) / (top - base)             # 0.5 = 50% de retroceso
+        ini_toque = max(i + 1, n - 3)
+        toco = bool((l[ini_toque:] <= ob_hi).any() and px >= ob_lo)
+        fresco = not bool((l[i + 1:ini_toque] <= ob_hi).any())
+        fvg = any(l[q] > h[q - 2] and l[q] >= ob_lo for q in range(max(m + 2, 2), min(i, n - 1) + 1))
+        return {"ob_lo": ob_lo, "ob_hi": ob_hi, "ratio": float(ratio), "toco": toco,
+                "ote": bool(fib[0] <= ratio <= fib[1]), "fvg": bool(fvg), "fresco": fresco,
+                "roto": bool(ratio > 1.0), "ob_t": df.index[ob], "bos_t": df.index[i],
+                "base": base, "top": top}
     return None
 
 
 # ----------------------------------------------------------------- ANALISIS
 def fmt(x):
-    return f"{x:,.2f}" if abs(x) >= 100 else (f"{x:.4f}" if abs(x) >= 1 else f"{x:.6f}")
+    return f"{x:,.2f}" if abs(x) >= 100 else (f"{x:.3f}" if abs(x) >= 10 else
+                                             (f"{x:.5f}" if abs(x) >= 0.1 else f"{x:.6f}"))
 
 
-def analizar(nombre, tf, p):
-    """Devuelve (diagnostico, senal|None)."""
-    meta = ACTIVOS[nombre]
-    diag = {"Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-", "Score": 0}
-    if not mercado_abierto(meta["tipo"]):
+def tamano(nombre, tipo, riesgo_usd, dist, precio):
+    """Unidades para cripto; lotes estandar para forex/oro (con valor por punto en USD)."""
+    if dist <= 0:
+        return 0.0, ""
+    if tipo == "cripto":
+        u = riesgo_usd / dist
+        return u, f"{u:.6f} unid."
+    if tipo == "indice":
+        cts = riesgo_usd / (dist * NQ_USD_PUNTO)
+        return cts, f"{cts:.2f} NQ ({riesgo_usd / (dist * MNQ_USD_PUNTO):.1f} MNQ)"
+    contrato = LOTE[tipo]
+    usd_por_unidad = 1.0
+    if tipo == "forex" and nombre.startswith("USD/"):   # p. ej. USD/JPY: P&L en JPY -> USD
+        usd_por_unidad = 1.0 / precio
+    lotes = riesgo_usd / (dist * contrato * usd_por_unidad)
+    if lotes < 0.01:
+        return lotes, f"{lotes:.4f} lotes (menos del mínimo de 0.01: sube el bank o el riesgo)"
+    return lotes, f"{lotes:.2f} lotes ({lotes * 100:.0f} micro)"
+
+
+def evaluar_smc(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Estrategia 1 (SMC / Order Blocks). Nucleo comun (vivo y backtest). df y d1 deben contener SOLO velas cerradas a la hora 'ahora'.
+    Devuelve (diagnostico, senal|None).
+    """
+    diag = {"Estrategia": "SMC", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-", "Score": 0,
+            "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora):
         diag["Estado"] = "Mercado cerrado"
         return diag, None
-    df, d1 = obtener(nombre, tf), obtener(nombre, "1h")
     if df is None or d1 is None or len(df) < 120 or len(d1) < 60:
         diag["Estado"] = "Sin datos"
         return diag, None
+    df, d1 = df.tail(VENTANA), d1.tail(VENTANA_CTX)
 
-    bias, vp = sesgo_1h(d1)
+    bias, vp = sesgo_ctx(d1)
     diag["Sesgo 1H"] = {1: "Alcista", -1: "Bajista", 0: "Neutral"}[bias]
     diag["_vp"] = vp
     if bias == 0:
@@ -297,154 +503,851 @@ def analizar(nombre, tf, p):
         return diag, None
 
     adx_v = float(adx(df).iloc[-1])
-    if adx_v < ADX_MIN[meta["tipo"]]:
-        diag["Estado"] = f"ADX bajo ({adx_v:.0f} < {ADX_MIN[meta['tipo']]})"
+    if not adx_v >= ADX_MIN[tipo]:
+        diag["Estado"] = f"ADX bajo ({adx_v:.0f} < {ADX_MIN[tipo]})"
         return diag, None
 
-    s = setup_long(df) if bias == 1 else setup_long(_flip(df))
+    fib = tuple(p.get("fib", (0.5, 0.79)))
+    s = setup_long(df, p.get("ventana_bos", 40), fib) if bias == 1 else \
+        setup_long(_flip(df), p.get("ventana_bos", 40), fib)
     if s is None:
         diag["Estado"] = "Sin BOS reciente"
         return diag, None
     if bias == -1:   # deshacer el espejo
         s = {**s, "ob_lo": -s["ob_hi"], "ob_hi": -s["ob_lo"], "base": -s["base"], "top": -s["top"]}
     diag["_ob"] = (s["ob_lo"], s["ob_hi"])
+    diag["_ote"] = tuple(sorted((s["top"] - fib[0] * (s["top"] - s["base"]),
+                                 s["top"] - fib[1] * (s["top"] - s["base"]))))
     diag["Dir"] = "LONG" if bias == 1 else "SHORT"
+    if s["roto"]:
+        diag["Estado"] = "Estructura rota (retroceso > 100%)"
+        return diag, None
 
     px = float(df["close"].iloc[-1])
     a_v = float(atr(df).iloc[-1])
     wr = float(williams_r(df).iloc[-1])
     poc_ok = vp is not None and ((px <= vp["poc"]) if bias == 1 else (px >= vp["poc"]))
-    score = 1 + 1 + int(s["toco"]) + int(s["ratio"] >= 0.5) + int(s["fvg"]) + int(poc_ok)
+    conf = {"OTE": s["ote"], "FVG": s["fvg"], "Valor<POC" if bias == 1 else "Valor>POC": poc_ok,
+            "OB fresco": s["fresco"]}
+    score = int(sum(conf.values()))
     diag["Score"] = score
+    diag["Confluencias"] = " · ".join(k for k, v in conf.items() if v) or "-"
+    diag["Fib %"] = round(100 * s["ratio"], 1)
 
     if not s["toco"]:
-        diag["Estado"] = f"Esperando retroceso al OB ({score}/6)"
+        diag["Estado"] = f"Esperando retroceso al OB ({score}/4)"
         return diag, None
     if (bias == 1 and wr > -20) or (bias == -1 and wr < -80):
         diag["Estado"] = f"Filtro exhaustacion (Williams {wr:.0f})"
         return diag, None
     if score < p["min_score"]:
-        diag["Estado"] = f"Score insuficiente ({score}/{p['min_score']})"
+        diag["Estado"] = f"Score insuficiente ({score}/4, minimo {p['min_score']})"
         return diag, None
-    if p["kz"] and not en_killzone():
-        diag["Estado"] = f"Setup valido {score}/6 fuera de killzone"
+    if not en_killzone(tipo, p, ahora):
+        diag["Estado"] = f"Setup valido {score}/4 fuera de killzone"
         return diag, None
 
     sl = s["ob_lo"] - 0.3 * a_v if bias == 1 else s["ob_hi"] + 0.3 * a_v
     riesgo_px = abs(px - sl)
-    if riesgo_px <= 0 or riesgo_px > 3 * a_v:
+    if (bias == 1 and sl >= px) or (bias == -1 and sl <= px) or riesgo_px > 3 * a_v:
         diag["Estado"] = "SL invalido o demasiado lejos"
         return diag, None
     riesgo_usd = p["banco"] * p["riesgo"] / 100
-    diag["Estado"] = "🚨 SENAL"
-    return diag, {"activo": nombre, "tf": tf, "dir": diag["Dir"], "entrada": px, "sl": sl,
-                  "tp1": px + bias * 2 * riesgo_px, "tp2": px + bias * 3 * riesgo_px,
-                  "riesgo_usd": riesgo_usd, "unidades": riesgo_usd / riesgo_px, "score": score}
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, riesgo_px, px)
+    diag["Estado"] = "🚨 SEÑAL"
+    vela = df.index[-1]
+    return diag, {"estrategia": "SMC Order Block", "score_max": 4, "activo": nombre, "tipo": tipo, "dir": diag["Dir"], "bias": bias,
+                  "entrada": px, "sl": sl, "tp1": px + bias * 2 * riesgo_px,
+                  "tp2": px + bias * 3 * riesgo_px, "riesgo_usd": riesgo_usd,
+                  "tamano": tam, "tamano_txt": tam_txt, "score": score,
+                  "confluencias": diag["Confluencias"], "kz": killzone_actual(ahora) or "-",
+                  "vela": vela, "id": f"SMC|{nombre}|{diag['Dir']}|{s['ob_t']}"}
 
 
-def texto_alerta(s):
-    ic = "🟢 LONG" if s["dir"] == "LONG" else "🔴 SHORT"
-    return (f"{ic} {s['activo']} ({s['tf']})\n"
-            f"Entrada: {fmt(s['entrada'])}\nSL: {fmt(s['sl'])}\n"
-            f"TP1 (2R): {fmt(s['tp1'])}\nTP2 (3R): {fmt(s['tp2'])}\n"
-            f"Riesgo: ${s['riesgo_usd']:.2f} | Tamano: {s['unidades']:.4f} unid.\n"
-            f"Score: {s['score']}/6 | Hora NY: {datetime.now(NY):%a %H:%M}")
+# ================================================================= ESTRATEGIA 2: BARRIDO DE LIQUIDEZ
+def sesgo_estructura(d1, k=3):
+    """Sesgo SIN indicadores: maximos y minimos crecientes (+1) o decrecientes (-1) en 1H."""
+    sh, sl = swings(d1, k)
+    if len(sh) < 2 or len(sl) < 2:
+        return 0
+    h, l = d1["high"].to_numpy(), d1["low"].to_numpy()
+    if h[sh[-1]] > h[sh[-2]] and l[sl[-1]] > l[sl[-2]]:
+        return 1
+    if h[sh[-1]] < h[sh[-2]] and l[sl[-1]] < l[sl[-2]]:
+        return -1
+    return 0
 
 
-@st.cache_resource
-def memoria():
-    return {"enviadas": {}, "log": []}
-
-
-def procesar_senal(s):
-    """Evita spam: una alerta por activo y direccion cada COOLDOWN_H horas."""
-    mem = memoria()
-    k = (s["activo"], s["dir"])
-    if time.time() - mem["enviadas"].get(k, 0) < COOLDOWN_H * 3600:
-        return False
-    ok, msg = enviar_telegram(texto_alerta(s))
-    mem["enviadas"][k] = time.time()
-    mem["log"].append({"Hora NY": f"{datetime.now(NY):%d/%m %H:%M}", "Activo": s["activo"],
-                       "Dir": s["dir"], "Entrada": fmt(s["entrada"]), "SL": fmt(s["sl"]),
-                       "TP1": fmt(s["tp1"]), "Score": s["score"],
-                       "Telegram": "OK" if ok else msg})
-    return True
-
-
-# ----------------------------------------------------------------- GRAFICO
-def grafico(nombre, tf, diag):
-    df = obtener(nombre, tf)
-    if df is None:
+def niveles_liquidez(d1, ahora):
+    """Maximo/minimo del dia anterior (PDH/PDL) y rango de Asia (19:00-00:00 NY) con velas 1H cerradas."""
+    ny = d1.index.tz_convert(NY)
+    hoy = _ny(ahora).date()
+    dias = sorted({x.date() for x in ny if x.date() < hoy})
+    if not dias:
         return None
-    d = df.tail(150)
-    fig = go.Figure(go.Candlestick(x=d.index, open=d["open"], high=d["high"],
-                                   low=d["low"], close=d["close"], name=nombre))
-    vp = diag.get("_vp")
-    if vp:
-        for k, col in (("poc", "#facc15"), ("vah", "#a78bfa"), ("val", "#a78bfa")):
-            fig.add_hline(y=vp[k], line_dash="dot", line_color=col, annotation_text=k.upper())
-    ob = diag.get("_ob")
-    if ob:
-        fig.add_hrect(y0=ob[0], y1=ob[1], fillcolor="rgba(56,189,248,0.25)",
-                      line_width=0, annotation_text="OB")
-    fig.update_layout(template="plotly_dark", height=460, xaxis_rangeslider_visible=False,
-                      margin=dict(l=10, r=10, t=30, b=10))
-    return fig
+    ayer = dias[-1]
+    m_ayer = np.array([x.date() == ayer for x in ny])
+    ini_asia = pd.Timestamp(datetime.combine(hoy, datetime.min.time()), tz=NY) - pd.Timedelta(hours=5)
+    fin_asia = pd.Timestamp(datetime.combine(hoy, datetime.min.time()), tz=NY)
+    m_asia = (ny >= ini_asia) & (ny < fin_asia)
+    niv = {"PDH": float(d1["high"][m_ayer].max()), "PDL": float(d1["low"][m_ayer].min())}
+    if m_asia.any():
+        niv["Asia H"] = float(d1["high"][m_asia].max())
+        niv["Asia L"] = float(d1["low"][m_asia].min())
+    return niv
 
 
-# ----------------------------------------------------------------- UI
-def main():
-    st.sidebar.title("🌐 Configuracion")
-    activo = st.sidebar.selectbox("Activo:", list(ACTIVOS.keys()))
-    tf = st.sidebar.selectbox("Temporalidad de entrada:", ["15m", "5m"], index=0)
-    kz = st.sidebar.checkbox("Exigir killzone Nueva York (7-11 ET)", True)
-    min_score = st.sidebar.slider("Score minimo (de 6)", 3, 6, 5)
-    banco = st.sidebar.number_input("Bank ($)", 1.0, 1_000_000.0, 10.0)
-    riesgo = st.sidebar.number_input("Riesgo por operacion (%)", 0.1, 10.0, 2.0)
-    auto = st.sidebar.checkbox("Auto-escaneo cada 5 min", True)
-    params = {"kz": kz, "min_score": min_score, "banco": banco, "riesgo": riesgo}
+def _barrido_long(df, lows, buscar=12, ref=5):
+    """
+    LONG: una vela perfora un nivel de liquidez inferior con la mecha y CIERRA por encima (barrido),
+    y luego una vela cierra por encima del maximo de las 'ref' velas previas al barrido (cambio de estructura).
+    Solo dispara si ese cambio de estructura ocurre en la ULTIMA vela cerrada (una alerta por setup).
+    """
+    n = len(df)
+    o, h, l, c = (df[x].to_numpy() for x in ("open", "high", "low", "close"))
+    if c[-1] <= o[-1]:
+        return None
+    for j in range(n - 2, max(n - 2 - buscar, ref), -1):
+        barridos = [nm for nm, lv in lows.items() if l[j] < lv < c[j]]
+        if not barridos:
+            continue
+        nivel_mss = h[j - ref:j].max()
+        if c[j] > nivel_mss:                                      # la propia vela del barrido ya rompio
+            return None
+        previos = c[j + 1:n - 1]
+        if (previos > nivel_mss).any() or c[-1] <= nivel_mss:   # ya habia confirmado antes, o no confirma
+            return None
+        minimo = float(l[j:].min())
+        fvg = any(l[q] > h[q - 2] for q in range(j + 2, n))
+        return {"barridos": barridos, "minimo": minimo, "mss": float(nivel_mss), "fvg": bool(fvg),
+                "vela_barrido": df.index[j]}
+    return None
 
-    if not _secret("TELEGRAM_TOKEN") or not _secret("TELEGRAM_CHAT_IDS"):
-        st.sidebar.warning("Telegram sin configurar: agrega TELEGRAM_TOKEN y TELEGRAM_CHAT_IDS en Secrets.")
-    if st.sidebar.button("🔔 Probar Telegram Ahora"):
-        ok, msg = enviar_telegram("✅ Prueba de Institutional Quant Terminal")
-        (st.sidebar.success if ok else st.sidebar.error)(msg if ok else f"No se pudo enviar: {msg}")
-    if st.sidebar.button("⚡ Forzar Escaneo Ahora"):
-        obtener.clear()
 
-    st.markdown("# 🏛️ INSTITUTIONAL QUANT TERMINAL")
-    st.caption("AMT + Order Blocks · contexto 1H → entrada 15m/5m · Cripto 24/7 · Forex/Oro lun-vie")
+def evaluar_barrido(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Estrategia 'Liquidez + Estructura' (sin indicadores): contexto estructural 1H -> barrido de
+    liquidez (PDH/PDL o rango de Asia) -> cambio de estructura en la temporalidad de entrada.
+    Basada en los conceptos PUBLICOS de SMC (estructura, bloques institucionales, liquidez).
+    No es la estrategia privada de ningun trader.
+    """
+    diag = {"Estrategia": "Barrido", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora):
+        diag["Estado"] = "Mercado cerrado"
+        return diag, None
+    if df is None or d1 is None or len(df) < 60 or len(d1) < 48:
+        diag["Estado"] = "Sin datos"
+        return diag, None
+    df, d1 = df.tail(VENTANA), d1.tail(VENTANA_CTX)
+    bias = sesgo_estructura(d1)
+    diag["Sesgo 1H"] = {1: "Alcista", -1: "Bajista", 0: "Rango"}[bias]
+    if bias == 0:
+        diag["Estado"] = "Estructura 1H en rango: sin operar"
+        return diag, None
+    niv = niveles_liquidez(d1, ahora)
+    if not niv:
+        diag["Estado"] = "Sin niveles de liquidez"
+        return diag, None
+    diag["_niveles"] = niv
+    if bias == 1:
+        s = _barrido_long(df, {k: v for k, v in niv.items() if k in ("PDL", "Asia L")})
+    else:
+        s = _barrido_long(_flip(df), {k: -v for k, v in niv.items() if k in ("PDH", "Asia H")})
+        if s:
+            s = {**s, "minimo": -s["minimo"], "mss": -s["mss"]}
+    diag["Dir"] = "LONG" if bias == 1 else "SHORT"
+    if s is None:
+        diag["Estado"] = "Esperando barrido + cambio de estructura"
+        return diag, None
+    conf = {"Barrio dia anterior": any(b in ("PDL", "PDH") for b in s["barridos"]), "FVG": s["fvg"]}
+    score = int(sum(conf.values()))
+    diag["Score"] = score
+    diag["Confluencias"] = " · ".join(k for k, v in conf.items() if v) or "-"
+    if not en_killzone(tipo, p, ahora):
+        diag["Estado"] = f"Barrido valido fuera de killzone ({', '.join(s['barridos'])})"
+        return diag, None
+    px = float(df["close"].iloc[-1])
+    sl = s["minimo"] - bias * 0.1 * abs(px - s["minimo"])
+    riesgo_px = abs(px - sl)
+    if riesgo_px <= 0 or (bias == 1 and sl >= px) or (bias == -1 and sl <= px):
+        diag["Estado"] = "SL invalido"
+        return diag, None
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, riesgo_px, px)
+    diag["Estado"] = "🚨 SEÑAL"
+    return diag, {"estrategia": "Barrido de liquidez", "activo": nombre, "tipo": tipo, "dir": diag["Dir"],
+                  "bias": bias, "entrada": px, "sl": sl, "tp1": px + bias * 2 * riesgo_px,
+                  "tp2": px + bias * 3 * riesgo_px, "riesgo_usd": riesgo_usd, "tamano": tam,
+                  "tamano_txt": tam_txt, "score": score, "score_max": 2,
+                  "confluencias": f"barrio {', '.join(s['barridos'])}" + (" · FVG" if s["fvg"] else ""),
+                  "kz": killzone_actual(ahora) or "-", "vela": df.index[-1],
+                  "id": f"BARRIDO|{nombre}|{diag['Dir']}|{s['vela_barrido']}"}
 
-    @st.fragment(run_every=300 if auto else None)
-    def panel():
-        nuevas, filas, diags = 0, [], {}
-        with st.spinner("Escaneando mercados..."):
-            for nm in ACTIVOS:
-                diag, sen = analizar(nm, tf, params)
-                diags[nm] = diag
-                filas.append({k: v for k, v in diag.items() if not k.startswith("_")})
-                if sen and procesar_senal(sen):
-                    nuevas += 1
-        ahora = datetime.now(NY)
-        st.info(f"⚡ Motor activo · {ahora:%a %H:%M} ET · Killzone NY: "
-                f"{'SI' if en_killzone(ahora) else 'no'} · {len(ACTIVOS)} graficos revisados · "
-                f"{nuevas} alertas nuevas")
-        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
-        fig = grafico(activo, tf, diags.get(activo, {}))
-        if fig is not None:
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.warning("Sin datos para este activo ahora mismo.")
-        with st.expander("📜 Registro de alertas"):
-            log = memoria()["log"]
-            if log:
-                st.dataframe(pd.DataFrame(log[-30:][::-1]), use_container_width=True, hide_index=True)
+
+# ================================================================= ESTRATEGIA 3: TORTUGAS (Richard Dennis)
+def atr_n(dd, n=20):
+    """N de las Tortugas: media exponencial de 20 dias del rango verdadero."""
+    return atr(dd, n)
+
+
+def evaluar_tortugas(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Sistema 1 de las Tortugas (reglas publicas de Richard Dennis / William Eckhardt):
+      Entrada : el precio rompe el maximo (LONG) o minimo (SHORT) de los 20 dias anteriores.
+      Stop    : 2N desde la entrada (N = ATR de 20 dias).
+      Salida  : cuando el precio toca el minimo de 10 dias (LONG) o el maximo de 10 dias (SHORT).
+    Aqui la ruptura se confirma con el CIERRE de la vela de entrada (sin repintado).
+    No aplica killzone: es un sistema diario de seguimiento de tendencia.
+    """
+    diag = {"Estrategia": "Tortugas", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora):
+        diag["Estado"] = "Mercado cerrado"
+        return diag, None
+    if dd is None or df is None or len(dd) < 25 or len(df) < 3:
+        diag["Estado"] = "Sin datos diarios"
+        return diag, None
+    dd = dd.tail(60)
+    h20, l20 = float(dd["high"].tail(20).max()), float(dd["low"].tail(20).min())
+    h10, l10 = float(dd["high"].tail(10).max()), float(dd["low"].tail(10).min())
+    n_val = float(atr_n(dd).iloc[-1])
+    c_ant, c_act = float(df["close"].iloc[-2]), float(df["close"].iloc[-1])
+    diag["Confluencias"] = f"canal 20d {fmt(l20)} - {fmt(h20)}"
+    if c_act > h20 >= c_ant:
+        bias = 1
+    elif c_act < l20 <= c_ant:
+        bias = -1
+    else:
+        diag["Estado"] = "Dentro del canal de 20 días"
+        return diag, None
+    diag["Dir"] = "LONG" if bias == 1 else "SHORT"
+    sl = c_act - bias * 2 * n_val
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, abs(c_act - sl), c_act)
+    salida = l10 if bias == 1 else h10
+    diag["Estado"] = "🚨 SEÑAL"
+    return diag, {"estrategia": "Tortugas (ruptura 20 días)", "activo": nombre, "tipo": tipo,
+                  "dir": diag["Dir"], "bias": bias, "entrada": c_act, "sl": sl, "tp1": None, "tp2": None,
+                  "salida": "canal",
+                  "salida_txt": f"Salida: cuando toque el {'mínimo' if bias == 1 else 'máximo'} de 10 días "
+                                f"(hoy {fmt(salida)}). Sin TP fijo: deja correr la tendencia.",
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1,
+                  "score_max": 1, "confluencias": f"rompió {'máximo' if bias == 1 else 'mínimo'} de 20 días · "
+                                                  f"N={fmt(n_val)}",
+                  "kz": killzone_actual(ahora) or "-", "vela": df.index[-1],
+                  "id": f"TORTUGAS|{nombre}|{diag['Dir']}|{dd.index[-1]:%Y-%m-%d}"}
+
+
+# ================================================================= ESTRATEGIA 4: RUPTURA DE LONDRES
+def _pip(nombre):
+    return 0.01 if "JPY" in nombre else 0.0001
+
+
+def evaluar_londres(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Ruptura de Londres (London Breakout, version publicada por DailyForex para GBP/USD):
+      Rango  : maximo y minimo de 00:00 a 07:00 GMT.
+      Entrada: primera vela que CIERRA fuera del rango entre 07:00 y 11:00 GMT.
+      Filtro : se descarta si la vela de ruptura es un pin bar en contra (mecha contraria >= 2x cuerpo).
+      Stop   : 1,5 pips mas alla del ultimo swing (minimo para LONG, maximo para SHORT).
+      Objetivo: 1,5R.
+    """
+    diag = {"Estrategia": "Londres", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if tipo != "forex":
+        diag["Estado"] = "Solo forex"
+        return diag, None
+    if not mercado_abierto(tipo, ahora) or df is None or len(df) < 40:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    t = _ts_utc(ahora)
+    hoy = t.normalize()
+    if not (hoy + pd.Timedelta(hours=7) < t <= hoy + pd.Timedelta(hours=11)):
+        diag["Estado"] = "Fuera de la ventana 07:00-11:00 GMT"
+        return diag, None
+    rango = df[(df.index >= hoy) & (df.index < hoy + pd.Timedelta(hours=7))]
+    if len(rango) < 4:
+        diag["Estado"] = "Sin rango 00-07 GMT"
+        return diag, None
+    r_hi, r_lo = float(rango["high"].max()), float(rango["low"].min())
+    diag["Confluencias"] = f"rango {fmt(r_lo)} - {fmt(r_hi)}"
+    diag["_niveles"] = {"Rango H": r_hi, "Rango L": r_lo}
+    sesion = df[df.index >= hoy + pd.Timedelta(hours=7)]
+    cierres = sesion["close"].to_numpy()
+    fuera = (cierres > r_hi) | (cierres < r_lo)
+    if not fuera.any() or fuera.argmax() != len(cierres) - 1:     # solo la PRIMERA ruptura del dia
+        diag["Estado"] = "Esperando ruptura" if not fuera.any() else "Ruptura de hoy ya avisada"
+        return diag, None
+    v = df.iloc[-1]
+    bias = 1 if v["close"] > r_hi else -1
+    cuerpo = abs(v["close"] - v["open"])
+    mecha_contra = (v["high"] - max(v["open"], v["close"])) if bias == 1 else (min(v["open"], v["close"]) - v["low"])
+    diag["Dir"] = "LONG" if bias == 1 else "SHORT"
+    if mecha_contra >= 2 * max(cuerpo, 1e-12):
+        diag["Estado"] = "Ruptura con pin bar en contra: descartada"
+        return diag, None
+    _, sls = swings(df.tail(60), 2)
+    shs, _ = swings(_flip(df.tail(60)), 2)
+    px, pip = float(v["close"]), _pip(nombre)
+    if bias == 1:
+        ref = float(df.tail(60)["low"].iloc[sls[-1]]) if sls else float(df["low"].tail(5).min())
+        sl = ref - 1.5 * pip
+    else:
+        ref = float(df.tail(60)["high"].iloc[shs[-1]]) if shs else float(df["high"].tail(5).max())
+        sl = ref + 1.5 * pip
+    riesgo_px = abs(px - sl)
+    if (bias == 1 and sl >= px) or (bias == -1 and sl <= px):
+        diag["Estado"] = "SL invalido"
+        return diag, None
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, riesgo_px, px)
+    diag["Estado"] = "🚨 SEÑAL"
+    return diag, {"estrategia": "Ruptura de Londres", "activo": nombre, "tipo": tipo, "dir": diag["Dir"],
+                  "bias": bias, "entrada": px, "sl": sl, "tp1": px + bias * 1.5 * riesgo_px, "tp2": None,
+                  "r1": 1.5, "tp_r": 1.5, "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt,
+                  "score": 1, "score_max": 1, "confluencias": f"rompió rango 00-07 GMT ({fmt(r_lo)}-{fmt(r_hi)})",
+                  "kz": killzone_actual(ahora) or "-", "vela": df.index[-1],
+                  "id": f"LONDRES|{nombre}|{hoy:%Y-%m-%d}"}
+
+
+ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
+               "Londres": evaluar_londres}
+
+
+def estrategias_de(nombre, p):
+    propias = ESTRATEGIAS_ACTIVO.get(nombre, list(ESTRATEGIAS))
+    return [e for e in p.get("estrategias", list(ESTRATEGIAS)) if e in propias]
+
+
+def evaluar(nombre, tipo, df, d1, p, ahora, dd=None):
+    """Corre las estrategias de ese mercado. Devuelve (diagnosticos por estrategia, lista de senales)."""
+    diags, senales = {}, []
+    for nm in estrategias_de(nombre, p):
+        try:
+            d, s = ESTRATEGIAS[nm](nombre, tipo, df, d1, p, ahora, dd)
+        except Exception as e:
+            d, s = {"Estrategia": nm, "Activo": nombre, "Estado": f"Error: {e}"}, None
+        diags[nm] = d
+        if s:
+            senales.append(s)
+    return diags, senales
+
+
+def analizar(nombre, tf, p, ahora=None, cargar=obtener):
+    """Analisis en vivo: descarga, quita la vela en formacion y evalua todas las estrategias."""
+    ahora = _ts_utc(ahora if ahora is not None else datetime.now(UTC))
+    meta = ACTIVOS[nombre]
+    if not mercado_abierto(meta["tipo"], ahora):
+        return {nm: {"Estrategia": nm, "Activo": nombre, "Estado": "Mercado cerrado"}
+                for nm in estrategias_de(nombre, p)}, []
+    df = solo_cerradas(cargar(nombre, tf), tf, ahora)
+    d1 = solo_cerradas(cargar(nombre, "1h"), "1h", ahora)
+    dd = solo_cerradas(cargar(nombre, "1d"), "1d", ahora) if "Tortugas" in estrategias_de(nombre, p) else None
+    return evaluar(nombre, meta["tipo"], df, d1, p, ahora, dd)
+
+
+def texto_alerta(s, tf):
+    ic = "🟢 LONG" if s["dir"] == "LONG" else "🔴 SHORT"
+    hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[tf])
+    return (f"{ic} {s['activo']} ({tf}) · {s['estrategia']}\n"
+            f"Entrada: {fmt(s['entrada'])}\nSL: {fmt(s['sl'])}\n"
+            + (f"{s['salida_txt']}\n" if s.get("salida_txt") else
+               f"TP1 ({s.get('r1', 2):g}R): {fmt(s['tp1'])}\n"
+               + (f"TP2 (3R): {fmt(s['tp2'])}\n" if s.get("tp2") is not None else ""))
+            + f"Riesgo: ${s['riesgo_usd']:.2f} | Tamaño: {s['tamano_txt']}\n"
+            f"Score: {s['score']}/{s['score_max']} ({s['confluencias']})\n"
+            f"Killzone: {s['kz']} | Vela cerrada: {hora:%a %H:%M} NY")
+
+
+# ================================================================= ESTADO / ANTI-SPAM
+class Estado:
+    """Memoria persistente en JSON (sirve para el panel, el bucle 24/7 y GitHub Actions)."""
+
+    def __init__(self, ruta="estado.json"):
+        self.ruta = ruta
+        self.d = {"enviadas": {}, "ids": [], "log": []}
+        try:
+            with open(ruta, encoding="utf-8") as f:
+                self.d.update(json.load(f))
+        except Exception:
+            pass
+
+    def guardar(self):
+        self.d["ids"] = self.d["ids"][-500:]
+        self.d["log"] = self.d["log"][-200:]
+        tmp = self.ruta + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(self.d, f, ensure_ascii=False, indent=1)
+        os.replace(tmp, self.ruta)
+
+    def procesar(self, s, tf, enviar=True):
+        """Una alerta por estrategia+activo+direccion cada COOLDOWN_H horas y nunca dos veces el mismo
+        setup. El cooldown solo se activa si Telegram confirmo el envio."""
+        k = f"{s['estrategia']}|{s['activo']}|{s['dir']}"
+        if s["id"] in self.d["ids"] or time.time() - self.d["enviadas"].get(k, 0) < COOLDOWN_H * 3600:
+            return False
+        ok, msg = enviar_telegram(texto_alerta(s, tf)) if enviar else (False, "Envio desactivado")
+        if ok:
+            self.d["enviadas"][k] = time.time()
+            self.d["ids"].append(s["id"])
+        self.d["log"].append({"Hora NY": f"{datetime.now(NY):%d/%m %H:%M}", "Estrategia": s["estrategia"],
+                              "Activo": s["activo"], "Dir": s["dir"], "Entrada": fmt(s["entrada"]),
+                              "SL": fmt(s["sl"]), "TP1": fmt(s["tp1"]) if s.get("tp1") else "canal",
+                              "Score": f"{s['score']}/{s['score_max']}", "Telegram": "OK" if ok else msg})
+        self.guardar()
+        return ok
+
+
+# ================================================================= BACKTEST
+COSTE_DEFAULT = {"cripto": 0.10, "forex": 0.01, "oro": 0.02, "indice": 0.01}   # % por lado: AJUSTALO
+
+
+def simular(o, h, l, c, k, d, sl, gestion, max_barras, s=None, canal_lo=None, canal_hi=None):
+    """Simula una operacion desde la vela k (entrada a la apertura). Devuelve (R bruto, idx salida, motivo).
+    s['salida']=='canal' -> Tortugas: stop que solo se acerca, en el minimo/maximo de 10 dias.
+    s['tp_r']            -> objetivo unico a ese multiplo de R (Ruptura de Londres: 1.5R)."""
+    s = s or {}
+    e = o[k]
+    riesgo = (e - sl) * d
+    if riesgo <= 0:
+        return None
+    tp1, tp2 = e + d * 2 * riesgo, e + d * 3 * riesgo
+    objetivo = {"tp1": tp1, "tp2": tp2, "parcial": tp1}[gestion]
+    if s.get("tp_r"):
+        gestion, objetivo = "unico", e + d * s["tp_r"] * riesgo
+    canal = s.get("salida") == "canal" and canal_lo is not None
+    if canal:
+        gestion, objetivo = "canal", (np.inf if d == 1 else -np.inf)
+    stop, resto, r_acum = sl, 1.0, 0.0
+    fin = min(k + max_barras, len(c))
+    for b in range(k, fin):
+        if canal:
+            nivel = canal_lo[b] if d == 1 else canal_hi[b]
+            if np.isfinite(nivel):
+                stop = max(stop, nivel) if d == 1 else min(stop, nivel)
+        toca_sl = (l[b] <= stop) if d == 1 else (h[b] >= stop)
+        toca_tp = (h[b] >= objetivo) if d == 1 else (l[b] <= objetivo)
+        if toca_sl:                                     # conservador: SL primero
+            motivo = "BE" if stop == e else ("Canal 10d" if canal and stop != sl else "SL")
+            return r_acum + resto * (stop - e) * d / riesgo, b, motivo
+        if toca_tp:
+            if gestion == "parcial" and resto == 1.0:
+                r_acum, resto, stop, objetivo = 0.5 * 2, 0.5, e, tp2
+                continue
+            return r_acum + resto * (objetivo - e) * d / riesgo, b, "TP"
+    b = fin - 1
+    return r_acum + resto * (c[b] - e) * d / riesgo, b, "Tiempo"
+
+
+def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", coste_pct=None,
+                    max_barras=None, progreso=None):
+    """Recorre df vela a vela con la MISMA funcion evaluar() del modo en vivo.
+    El contexto se construye remuestreando df (solo velas de contexto ya cerradas)."""
+    coste_pct = COSTE_DEFAULT[tipo] if coste_pct is None else coste_pct
+    max_barras = max_barras or int(24 * 60 / TF_MIN[tf])
+    df = df.sort_index()
+    df = df[~df.index.duplicated()]
+    ctx = remuestrear(df, ctx_tf)
+    ctx_cierre = ctx.index + pd.Timedelta(minutes=TF_MIN[ctx_tf])
+    dia = remuestrear(df, "1d")
+    dia_cierre = dia.index + pd.Timedelta(days=1)
+    # canal de salida de las Tortugas: minimo/maximo de los 10 dias COMPLETOS previos a cada vela
+    nd_vela = dia_cierre.searchsorted(df.index, side="right")
+    lo10 = np.r_[np.nan, dia["low"].rolling(10).min().to_numpy()][nd_vela]
+    hi10 = np.r_[np.nan, dia["high"].rolling(10).max().to_numpy()][nd_vela]
+    o, h, l, c = (df[x].to_numpy() for x in ("open", "high", "low", "close"))
+    paso = pd.Timedelta(minutes=TF_MIN[tf])
+    ops, ultimo, ids, libre = [], {}, set(), {}
+    n = len(df)
+    inicio = max(VENTANA, 150)
+    for idx in range(inicio, n - 1):
+        if progreso and idx % 200 == 0:
+            progreso((idx - inicio) / max(n - 1 - inicio, 1))
+        ahora = df.index[idx] + paso
+        nc = int(ctx_cierre.searchsorted(ahora, side="right"))
+        if nc < 60:
+            continue
+        nd = int(dia_cierre.searchsorted(ahora, side="right"))
+        _, senales = evaluar(nombre, tipo, df.iloc[idx - VENTANA + 1: idx + 1],
+                             ctx.iloc[max(0, nc - VENTANA_CTX): nc], p, ahora, dia.iloc[max(0, nd - 60): nd])
+        for s in senales:
+            clave = f"{s['estrategia']}|{s['dir']}"
+            if idx < libre.get(s["estrategia"], 0):          # una posicion a la vez por estrategia
+                continue
+            if s["id"] in ids or (ahora - ultimo.get(clave, pd.Timestamp(0, tz="UTC"))) < \
+                    pd.Timedelta(hours=COOLDOWN_H):
+                continue
+            mb = max_barras * 60 if s.get("salida") == "canal" else max_barras   # Tortugas: hasta 60 dias
+            r = simular(o, h, l, c, idx + 1, s["bias"], s["sl"], gestion, mb, s, lo10, hi10)
+            if r is None:
+                continue
+            r_bruto, salida, motivo = r
+            riesgo_px = abs(o[idx + 1] - s["sl"])
+            r_coste = 2 * coste_pct / 100 * o[idx + 1] / riesgo_px
+            ultimo[clave] = ahora
+            ids.add(s["id"])
+            ops.append({"estrategia": s["estrategia"], "activo": nombre,
+                        "senal_NY": ahora.tz_convert(NY).strftime("%Y-%m-%d %H:%M"), "dir": s["dir"],
+                        "score": s["score"], "confluencias": s["confluencias"], "killzone": s["kz"],
+                        "entrada": o[idx + 1], "sl": s["sl"],
+                        "salida_NY": (df.index[salida] + paso).tz_convert(NY).strftime("%Y-%m-%d %H:%M"),
+                        "motivo": motivo, "R_bruto": round(r_bruto, 3), "coste_R": round(r_coste, 3),
+                        "R": round(r_bruto - r_coste, 3), "barras": salida - idx})
+            libre[s["estrategia"]] = salida + 1
+    if progreso:
+        progreso(1.0)
+    return pd.DataFrame(ops)
+
+
+def metricas(ops, riesgo_pct=2.0):
+    if ops is None or ops.empty:
+        return {"Operaciones": 0}
+    R = ops["R"].to_numpy()
+    eq_R = np.r_[0, np.cumsum(R)]
+    dd_R = float((np.maximum.accumulate(eq_R) - eq_R).max())
+    eq = np.r_[1.0, np.cumprod(1 + riesgo_pct / 100 * R)]
+    dd_pct = float(((np.maximum.accumulate(eq) - eq) / np.maximum.accumulate(eq)).max() * 100)
+    gan, per = R[R > 0].sum(), -R[R < 0].sum()
+    racha = max((len(x) for x in "".join("L" if r < 0 else "W" for r in R).split("W")), default=0)
+    return {"Operaciones": len(R), "Winrate %": round(100 * (R > 0).mean(), 1),
+            "R promedio": round(R.mean(), 3), "R total": round(R.sum(), 2),
+            "Profit factor": round(gan / per, 2) if per > 0 else float("inf"),
+            "Max DD (R)": round(dd_R, 2), "Max DD %": round(dd_pct, 1),
+            "Retorno %": round((eq[-1] - 1) * 100, 1), "Peor racha": racha}
+
+
+def desglose(ops, col):
+    if ops is None or ops.empty:
+        return pd.DataFrame()
+    g = ops.groupby(col)["R"]
+    return pd.DataFrame({"ops": g.size(), "winrate %": g.apply(lambda r: (r > 0).mean() * 100).round(1),
+                         "R prom": g.mean().round(3), "R total": g.sum().round(2)})
+
+
+def correr_backtest(a, p):
+    os.makedirs(a.salida, exist_ok=True)
+    trabajos = []
+    if a.csv:
+        d = pd.read_csv(a.csv, index_col=0, parse_dates=True)
+        d.columns = [x.lower() for x in d.columns]
+        if "volume" not in d:
+            d["volume"] = 0.0
+        d.index = d.index.tz_localize(a.csv_tz) if d.index.tz is None else d.index
+        d.index = d.index.tz_convert("UTC")
+        trabajos.append((a.nombre, a.tipo, d[["open", "high", "low", "close", "volume"]].astype(float)))
+    for nm in a.activos or ([] if a.csv else list(ACTIVOS)):
+        desde = a.desde or (pd.Timestamp.now("UTC") - pd.Timedelta(days=58)).strftime("%Y-%m-%d")
+        print(f"Descargando {nm} {a.tf} desde {desde}...", flush=True)
+        d = historico(nm, a.tf, desde, a.hasta)
+        if d is None or len(d) < 500:
+            print(f"  ! Sin datos suficientes para {nm}")
+            continue
+        trabajos.append((nm, ACTIVOS[nm]["tipo"], d))
+    resumen, todas = [], []
+    for nm, tipo, d in trabajos:
+        t0 = time.time()
+        print(f"\n=== {nm} ({tipo}) {a.tf}/{a.ctx} · {len(d)} velas · "
+              f"{d.index[0]:%Y-%m-%d} -> {d.index[-1]:%Y-%m-%d}", flush=True)
+        ops = backtest_activo(nm, tipo, d, a.tf, p, a.ctx, a.gestion, a.coste)
+        if ops.empty:
+            print("Sin operaciones.")
+            continue
+        todas.append(ops)
+        for est, g in ops.groupby("estrategia"):
+            m = metricas(g, p["riesgo"])
+            resumen.append({"Estrategia": est, "Activo": nm, **m})
+            print(f"\n--- {est}\n" + pd.Series(m).to_string())
+            print("Por score:\n" + desglose(g, "score").to_string())
+            print("Por killzone:\n" + desglose(g, "killzone").to_string())
+        print(f"({time.time() - t0:.0f}s)")
+    if todas:
+        allops = pd.concat(todas, ignore_index=True)
+        allops.to_csv(os.path.join(a.salida, "operaciones.csv"), index=False)
+        pd.DataFrame(resumen).to_csv(os.path.join(a.salida, "resumen.csv"), index=False)
+        print("\n=== RESUMEN ===\n" + pd.DataFrame(resumen).to_string(index=False))
+        print(f"\nCSV guardados en {a.salida}/")
+
+
+# ================================================================= ESCANER 24/7
+def escanear(tf, p, estado, verbose=True, cargar=obtener):
+    nuevas, filas = 0, []
+    for nm in ACTIVOS:
+        try:
+            diags, senales = analizar(nm, tf, p, cargar=cargar)
+        except Exception as e:
+            diags, senales = {"-": {"Estrategia": "-", "Activo": nm, "Estado": f"Error: {e}"}}, []
+        for d in diags.values():
+            filas.append(d)
+            if verbose:
+                print(f"  {nm:<16} {d.get('Estrategia', '-'):<8} {d.get('Dir', '-'):<5} "
+                      f"score {d.get('Score', 0)}  {d['Estado']}")
+        for s in senales:
+            if estado is not None and estado.procesar(s, tf):
+                nuevas += 1
+    return nuevas, filas
+
+
+def correr_bot(a, p):
+    estado = Estado(a.estado)
+    print(f"🏛️ BOT PRO iniciado · estrategias: {', '.join(p['estrategias'])} · {a.tf} · "
+          f"{'una pasada' if a.una_vez else 'bucle 24/7'}", flush=True)
+    while True:
+        print(f"\n[{datetime.now(NY):%Y-%m-%d %H:%M:%S} NY] Escaneando {len(ACTIVOS)} activos", flush=True)
+        try:
+            n, _ = escanear(a.tf, p, estado)
+            print(f"  -> {n} alertas nuevas enviadas", flush=True)
+        except Exception as e:                     # el bot nunca se cae por un error puntual
+            print(f"  ! Error en el escaneo: {e}", flush=True)
+        estado.guardar()
+        if a.una_vez:
+            break
+        seg = TF_MIN[a.tf] * 60
+        time.sleep(seg - (time.time() % seg) + 20)   # 20 s despues del cierre de la siguiente vela
+
+
+# ================================================================= PANEL STREAMLIT
+def panel():
+    import plotly.graph_objects as go
+    import streamlit as st
+
+    st.set_page_config(page_title="Bot Pro · Quant Terminal", page_icon="🏛️", layout="wide")
+    try:                                       # st.secrets tiene prioridad sobre el codigo
+        for k in ("TELEGRAM_TOKEN", "TELEGRAM_CHAT_IDS"):
+            if k in st.secrets:
+                v = st.secrets[k]
+                os.environ[k] = ",".join(map(str, v)) if isinstance(v, (list, tuple)) else str(v)
+    except Exception:
+        pass
+
+    @st.cache_data(ttl=120, show_spinner=False)
+    def cargar(nombre, tf):
+        return obtener(nombre, tf)
+
+    @st.cache_data(ttl=3600, show_spinner=False)
+    def cargar_hist(nombre, tf, desde):
+        return historico(nombre, tf, desde)
+
+    @st.cache_resource
+    def memoria():
+        return Estado("estado.json")
+
+    sb = st.sidebar
+    sb.title("🌐 Configuración")
+    estrategias = sb.multiselect("Estrategias", list(ESTRATEGIAS), list(ESTRATEGIAS),
+                                 help="SMC = Order Block + OTE + FVG + POC · Barrido = liquidez PDH/PDL/Asia + "
+                                      "cambio de estructura, sin indicadores")
+    activo = sb.selectbox("Activo (gráfico):", list(ACTIVOS))
+    tf = sb.selectbox("Temporalidad de entrada:", ["15m", "5m"])
+    min_score = sb.slider("Score mínimo SMC (de 4)", 0, 4, PARAMS_DEFAULT["min_score"])
+    banco = sb.number_input("Bank ($)", 1.0, 1_000_000.0, float(PARAMS_DEFAULT["banco"]))
+    riesgo = sb.number_input("Riesgo por operación (%)", 0.1, 10.0, float(PARAMS_DEFAULT["riesgo"]))
+    fib = sb.slider("Zona OTE Fibonacci", 0.30, 1.00, PARAMS_DEFAULT["fib"], 0.01)
+    sb.markdown("**Killzones (hora NY)** · vacío = sin filtro")
+    kz = {t: sb.multiselect(t.capitalize(), list(KILLZONES), KZ_DEFAULT[t], key=f"kz_{t}") for t in KZ_DEFAULT}
+    sb.caption(" · ".join(f"{k} {a:02.0f}-{b:02.0f}h" for k, (a, b) in KILLZONES.items()))
+    auto = sb.checkbox("Auto-escaneo cada 5 min", True)
+    enviar = sb.checkbox("Enviar alertas a Telegram desde el panel", True,
+                         help="Desactívalo si el bot 24/7 ya está corriendo, para no duplicar")
+    if sb.button("🔔 Probar Telegram ahora"):
+        ok, msg = enviar_telegram("✅ Prueba de Bot Pro")
+        (sb.success if ok else sb.error)(msg if ok else f"No se pudo enviar: {msg}")
+    if sb.button("⚡ Forzar escaneo ahora"):
+        cargar.clear()
+    p = dict(PARAMS_DEFAULT, min_score=min_score, banco=banco, riesgo=riesgo, fib=fib, kz=kz,
+             estrategias=estrategias or list(ESTRATEGIAS))
+
+    st.markdown("# 🏛️ BOT PRO · QUANT TERMINAL")
+    st.caption("SMC Order Blocks + Barrido de liquidez · contexto 1H → entrada 15m/5m · solo velas cerradas")
+    t1, t2 = st.tabs(["📡 Escáner", "🧪 Backtest"])
+
+    with t1:
+        @st.fragment(run_every=300 if auto else None)
+        def escaner():
+            mem = memoria()
+            with st.spinner("Escaneando mercados..."):
+                n, filas = escanear(tf, p, mem if enviar else None, verbose=False, cargar=cargar)
+            ahora = datetime.now(NY)
+            st.info(f"⚡ {ahora:%a %H:%M} NY · Killzone: {killzone_actual(ahora) or 'ninguna'} · "
+                    f"{len(ACTIVOS)} activos · {n} alertas nuevas")
+            st.dataframe(pd.DataFrame([{k: v for k, v in f.items() if not k.startswith("_")} for f in filas]),
+                         width="stretch", hide_index=True)
+            df = cargar(activo, tf)
+            if df is not None:
+                d = df.tail(150)
+                fig = go.Figure(go.Candlestick(x=d.index.tz_convert(NY), open=d["open"], high=d["high"],
+                                               low=d["low"], close=d["close"], name=activo))
+                for f in filas:
+                    if f.get("Activo") != activo:
+                        continue
+                    if f.get("_vp"):
+                        for k, col in (("poc", "#facc15"), ("vah", "#a78bfa"), ("val", "#a78bfa")):
+                            fig.add_hline(y=f["_vp"][k], line_dash="dot", line_color=col,
+                                          annotation_text=k.upper())
+                    if f.get("_ote"):
+                        fig.add_hrect(y0=f["_ote"][0], y1=f["_ote"][1], fillcolor="rgba(34,197,94,0.10)",
+                                      line_width=0, annotation_text="OTE", annotation_position="top left")
+                    if f.get("_ob"):
+                        fig.add_hrect(y0=f["_ob"][0], y1=f["_ob"][1], fillcolor="rgba(56,189,248,0.25)",
+                                      line_width=0, annotation_text="OB")
+                    for nm_, v in (f.get("_niveles") or {}).items():
+                        fig.add_hline(y=v, line_dash="dash", line_color="#f97316", annotation_text=nm_)
+                fig.update_layout(template="plotly_dark", height=460, xaxis_rangeslider_visible=False,
+                                  margin=dict(l=10, r=10, t=30, b=10))
+                st.plotly_chart(fig, width="stretch")
+            with st.expander("📜 Registro de alertas"):
+                log = memoria().d["log"]
+                if log:
+                    st.dataframe(pd.DataFrame(log[-30:][::-1]), width="stretch", hide_index=True)
+                else:
+                    st.write("Aún no hay alertas.")
+        escaner()
+
+    with t2:
+        c1, c2, c3 = st.columns(3)
+        activos = c1.multiselect("Activos", list(ACTIVOS), ["BTC/USDT"])
+        dias = c2.number_input("Días hacia atrás", 7, 730, 58,
+                               help="Forex, oro y Nasdaq vienen de Yahoo: 5m/15m solo últimos 60 días")
+        gestion = c3.selectbox("Gestión", ["parcial", "tp1", "tp2"], help="parcial = 50% en 2R + BE, resto 3R")
+        if st.button("▶️ Ejecutar backtest"):
+            desde = (datetime.now(UTC) - timedelta(days=int(dias))).strftime("%Y-%m-%d")
+            todas = []
+            for nm in activos:
+                with st.status(f"{nm}: descargando y simulando...") as stt:
+                    d = cargar_hist(nm, tf, desde)
+                    if d is None or len(d) < 500:
+                        stt.update(label=f"{nm}: sin datos suficientes", state="error")
+                        continue
+                    barra = st.progress(0.0)
+                    ops = backtest_activo(nm, ACTIVOS[nm]["tipo"], d, tf, p, "1h", gestion,
+                                          progreso=lambda x: barra.progress(min(x, 1.0)))
+                    if not ops.empty:
+                        todas.append(ops)
+                    stt.update(label=f"{nm}: {len(ops)} operaciones en {len(d)} velas", state="complete")
+            if todas:
+                ops = pd.concat(todas, ignore_index=True)
+                res = [{"Estrategia": e, "Activo": a_, **metricas(g, riesgo)}
+                       for (e, a_), g in ops.groupby(["estrategia", "activo"])]
+                st.subheader("Resumen")
+                st.dataframe(pd.DataFrame(res), width="stretch", hide_index=True)
+                fig = go.Figure()
+                for e, g in ops.groupby("estrategia"):
+                    fig.add_trace(go.Scatter(y=g["R"].cumsum().to_numpy(), mode="lines", name=e))
+                fig.update_layout(template="plotly_dark", height=300, title="R acumulado por estrategia",
+                                  margin=dict(l=10, r=10, t=40, b=10))
+                st.plotly_chart(fig, width="stretch")
+                a1, a2 = st.columns(2)
+                a1.markdown("**Por score**")
+                a1.dataframe(desglose(ops, ["estrategia", "score"]), width="stretch")
+                a2.markdown("**Por killzone**")
+                a2.dataframe(desglose(ops, ["estrategia", "killzone"]), width="stretch")
+                st.dataframe(ops, width="stretch", hide_index=True)
+                st.download_button("⬇️ Descargar operaciones (CSV)", ops.to_csv(index=False), "operaciones.csv")
             else:
-                st.write("Aun no hay alertas.")
+                st.warning("No hubo operaciones con estos parámetros.")
+    st.caption("Herramienta educativa. No es asesoría financiera. Prueba primero en demo.")
 
-    panel()
-    st.caption("Herramienta educativa. No es asesoria financiera. Prueba primero en demo.")
+
+# ================================================================= GITHUB ACTIONS
+WORKFLOW_YML = """name: Bot Pro
+
+on:
+  schedule:
+    - cron: "1,16,31,46 * * * *"   # UTC, 1 min despues de cada cierre de vela de 15m (minimo de GitHub: 5 min)
+  workflow_dispatch: {}            # boton "Run workflow" para probarlo a mano
+
+concurrency:
+  group: bot-pro
+  cancel-in-progress: false
+
+jobs:
+  escanear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - name: Restaurar memoria anti-spam
+        uses: actions/cache/restore@v4
+        with:
+          path: estado.json
+          key: estado-${{ github.run_id }}
+          restore-keys: estado-
+      - name: Escanear
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+        run: python bot_pro.py --una-vez --tf 15m
+      - name: Guardar memoria anti-spam
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: estado.json
+          key: estado-${{ github.run_id }}
+"""
+
+
+def crear_github():
+    ruta = os.path.join(".github", "workflows", "bot.yml")
+    os.makedirs(os.path.dirname(ruta), exist_ok=True)
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write(WORKFLOW_YML)
+    print(f"Creado {ruta}. Subelo a tu repositorio junto con bot_pro.py.")
+
+
+# ================================================================= ARRANQUE
+def cli():
+    ap = argparse.ArgumentParser(description="Bot Pro: escaner 24/7 + backtest (panel: streamlit run bot_pro.py)")
+    ap.add_argument("modo", nargs="?", default="bot", choices=["bot", "backtest"])
+    ap.add_argument("--una-vez", action="store_true", help="Una sola pasada (cron / GitHub Actions)")
+    ap.add_argument("--crear-github", action="store_true", help="Crea .github/workflows/bot.yml")
+    ap.add_argument("--tf", default="15m", choices=["5m", "15m", "1h"])
+    ap.add_argument("--estrategias", nargs="*", default=list(ESTRATEGIAS), choices=list(ESTRATEGIAS))
+    ap.add_argument("--min-score", type=int, default=PARAMS_DEFAULT["min_score"])
+    ap.add_argument("--banco", type=float, default=PARAMS_DEFAULT["banco"])
+    ap.add_argument("--riesgo", type=float, default=PARAMS_DEFAULT["riesgo"])
+    ap.add_argument("--sin-kz", action="store_true", help="Sin filtro de killzone")
+    ap.add_argument("--cripto-24h", action="store_true", help="Cripto sin filtro de killzone")
+    ap.add_argument("--estado", default="estado.json")
+    # backtest
+    ap.add_argument("--activos", nargs="*", default=[])
+    ap.add_argument("--ctx", default="1h", choices=["1h", "4h"])
+    ap.add_argument("--desde", default=None)
+    ap.add_argument("--hasta", default=None)
+    ap.add_argument("--csv", default=None)
+    ap.add_argument("--csv-tz", default="UTC")
+    ap.add_argument("--nombre", default="CSV")
+    ap.add_argument("--tipo", default="forex", choices=["cripto", "forex", "oro", "indice"])
+    ap.add_argument("--gestion", default="parcial", choices=["parcial", "tp1", "tp2"])
+    ap.add_argument("--coste", type=float, default=None)
+    ap.add_argument("--salida", default="resultados_backtest")
+    a = ap.parse_args()
+    if a.crear_github:
+        return crear_github()
+
+    kz = {k: list(v) for k, v in KZ_DEFAULT.items()}
+    if a.sin_kz:
+        kz = {k: [] for k in kz}
+    if a.cripto_24h:
+        kz["cripto"] = []
+    p = dict(PARAMS_DEFAULT, min_score=a.min_score, banco=a.banco, riesgo=a.riesgo, kz=kz,
+             estrategias=a.estrategias)
+    if a.modo == "backtest":
+        correr_backtest(a, p)
+    else:
+        correr_bot(a, p)
+
+
+def _en_streamlit():
+    try:
+        from streamlit import runtime
+        return runtime.exists()
+    except Exception:
+        return False
 
 
 if __name__ == "__main__":
-    main()
+    panel() if _en_streamlit() else cli()
