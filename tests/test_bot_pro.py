@@ -256,3 +256,50 @@ def test_simular_cartera_aplica_las_reglas(monkeypatch):
     assert list(tm["activo"]) == ["BTC/USDT", "EUR/USD"]
     assert res["Retorno % (suma)"] == pytest.approx(2 * 2.0 - 1 * 1.0)
     assert res["Rechazadas"] == {"tope de riesgo total": 1, "nivel C": 1, "ratio bajo": 1}
+
+
+# ----------------------------------------------------------------- analista en el chat
+def _serie(precios, freq="15min"):
+    c = np.asarray(precios, float)
+    idx = pd.date_range("2026-11-01", periods=len(c), freq=freq, tz="UTC")
+    o = np.r_[c[0], c[:-1]]
+    return pd.DataFrame(dict(open=o, high=np.maximum(o, c) + 0.05, low=np.minimum(o, c) - 0.05, close=c,
+                             volume=1.0), index=idx)
+
+
+def test_detecta_doble_techo():
+    subida = np.linspace(100, 110, 40)
+    techo1 = np.r_[np.linspace(110, 104, 15), np.linspace(104, 110, 15)]
+    caida = np.linspace(110, 102, 30)
+    figs = b.figuras_chartistas(_serie(np.r_[subida, techo1, caida]))
+    dt = [f for f in figs if f["figura"] == "Doble techo"]
+    assert dt and dt[0]["estado"] == "confirmada" and dt[0]["objetivo"] < dt[0]["cuello"] < dt[0]["invalidacion"]
+
+
+def test_busca_activo_y_temporalidad():
+    assert b.buscar_activo("¿pa dónde va el oro?") == "XAU/USD (Oro)"
+    assert b.buscar_activo("/plan sp500") == "S&P 500 (ES)"
+    assert b.buscar_activo("hay un doble techo en el euro") == "EUR/USD"
+    assert b.buscar_tf("/lectura btc 5m") == "5m" and b.buscar_tf("/lectura btc h1") == "1h"
+
+
+def test_chat_responde_sin_red(monkeypatch):
+    df = _velas(800, deriva=0.0003, semilla=7)
+    monkeypatch.setattr(b, "noticia_cercana", lambda *a, **k: None)
+    cargar = lambda nm, tf: df
+    e = None
+    assert "LECTURA" in b.responder_chat("¿pa dónde va el oro?", e, cargar)
+    assert "Escenarios" in b.responder_chat("/escenarios btc", e, cargar)
+    assert "PLAN" in b.responder_chat("/plan dax", e, cargar)
+    assert "POSICIÓN LARGA" in b.responder_chat("/posicion oro long 100 99", e, cargar)
+    assert "No reconozco" in b.responder_chat("/lectura zzz", e, cargar)
+
+
+def test_chat_ignora_chats_no_autorizados(monkeypatch, estado):
+    monkeypatch.setenv("TELEGRAM_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_CHAT_IDS", "1")
+    upd = {"ok": True, "result": [{"update_id": 7, "message": {"chat": {"id": 999}, "text": "/ayuda"}}]}
+    monkeypatch.setattr(b.requests, "get", lambda *a, **k: RespuestaFalsa(js=upd))
+    enviados = []
+    monkeypatch.setattr(b, "_post_telegram", lambda tok, chat, txt: enviados.append(chat))
+    assert b.atender_telegram(estado) == 0 and enviados == [] and estado.d["tg_offset"] == 8

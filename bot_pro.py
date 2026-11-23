@@ -3001,7 +3001,7 @@ def _nota_noticias(nombre, horas=3):
     return ""
 
 
-VERSION_BOT = "v6 · comité con cupos"
+VERSION_BOT = "v7 · comité + analista"
 
 
 def texto_alerta(s, tf):
@@ -4181,7 +4181,486 @@ def correr_bot(a, p):
         if getattr(a, "minutos", 0) and time.time() - t_ini + seg > a.minutos * 60:
             print(f"Fin del bucle de {a.minutos:g} min: me relanzo.", flush=True)
             break
-        time.sleep(seg - (time.time() % seg) + 20)   # 20 s despues del cierre de la siguiente vela
+        fin = time.time() + seg - (time.time() % seg) + 20   # 20 s despues del cierre de la siguiente vela
+        while True:                                # mientras espera, contesta el chat cada ~15 s
+            try:
+                if atender_telegram(estado):
+                    estado.guardar()
+            except Exception as e:
+                print(f"  ! Chat: {e}", flush=True)
+            if time.time() >= fin:
+                break
+            time.sleep(min(15, max(fin - time.time(), 0)))
+
+
+# ================================================================= ANALISTA EN TELEGRAM (motor propio)
+# Responde en el chat de Telegram con analisis calculados (nada inventado, todo sale de las velas):
+#   /lectura ORO 15m   -> las 5 lineas: que manda, que implica, que espera, riesgo, que vigilar
+#   /figuras EURUSD    -> figuras chartistas vigentes (doble techo/suelo, HCH, triangulos, canales)
+#   /escenarios BTC    -> escenario principal y alternativo con niveles
+#   /plan SP500        -> plan por temporalidades (5m, 15m, 1h): veredicto, entrada, stop, objetivo, gestion
+#   /posicion ORO long 4050 [stop]  -> "estoy comprado desde X, ¿que hago?"
+#   /diario            -> diagnostico del diario en vivo, patrones y contrato de la semana
+# Tambien entiende texto libre: "¿pa donde va el oro?", "¿hay un doble techo en el euro?", "dame los escenarios de BTC".
+ALIAS_ACTIVOS = {
+    "oro": "XAU/USD (Oro)", "xau": "XAU/USD (Oro)", "xauusd": "XAU/USD (Oro)", "gold": "XAU/USD (Oro)",
+    "btc": "BTC/USDT", "bitcoin": "BTC/USDT", "btcusd": "BTC/USDT", "btcusdt": "BTC/USDT",
+    "eur": "EUR/USD", "eurusd": "EUR/USD", "euro": "EUR/USD", "gbp": "GBP/USD", "gbpusd": "GBP/USD",
+    "libra": "GBP/USD", "jpy": "USD/JPY", "usdjpy": "USD/JPY", "yen": "USD/JPY", "cad": "USD/CAD",
+    "usdcad": "USD/CAD", "sp": "S&P 500 (ES)", "sp500": "S&P 500 (ES)", "spx": "S&P 500 (ES)", "us500": "S&P 500 (ES)",
+    "es": "S&P 500 (ES)", "nasdaq": "NASDAQ 100 (NQ)", "nq": "NASDAQ 100 (NQ)", "nas100": "NASDAQ 100 (NQ)",
+    "us100": "NASDAQ 100 (NQ)", "dow": "DOW 30 (YM)", "us30": "DOW 30 (YM)", "dj30": "DOW 30 (YM)",
+    "ym": "DOW 30 (YM)", "dax": "DAX 40", "ger40": "DAX 40", "de40": "DAX 40", "plata": "XAG/USD (Plata)",
+    "xag": "XAG/USD (Plata)", "wti": "WTI (Petróleo)", "petroleo": "WTI (Petróleo)", "brent": "BRENT (Petróleo)",
+}
+
+
+def _norm(txt):
+    import unicodedata
+    t = unicodedata.normalize("NFKD", str(txt).lower())
+    return "".join(ch for ch in t if not unicodedata.combining(ch))
+
+
+def buscar_activo(texto):
+    t = _norm(texto).replace("/", "").replace("&", "").replace("-", " ")
+    for pal in t.replace("?", " ").replace("¿", " ").replace(",", " ").split():
+        if pal in ALIAS_ACTIVOS:
+            return ALIAS_ACTIVOS[pal]
+    for k, v in ALIAS_ACTIVOS.items():
+        if len(k) >= 4 and k in t.replace(" ", ""):
+            return v
+    return None
+
+
+def buscar_tf(texto, defecto="15m"):
+    t = _norm(texto)
+    for tf, pals in (("5m", ("5m", "m5", "5 min")), ("15m", ("15m", "m15", "15 min")),
+                     ("1h", ("1h", "h1", "1 hora", "60m")), ("1d", ("diario 1d", "1d", "d1"))):
+        if any(p in t.split() or p in t for p in pals):
+            return tf
+    return defecto
+
+
+def _velas(nombre, tf, cargar=obtener):
+    df = solo_cerradas(cargar(nombre, tf), tf)
+    if df is None or len(df) < 60:
+        raise ValueError(f"no hay velas suficientes de {nombre} en {tf}")
+    return df
+
+
+def _pendiente(xs, ys):
+    xs, ys = np.asarray(xs, float), np.asarray(ys, float)
+    m, b = np.polyfit(xs, ys, 1)
+    return float(m), float(b)
+
+
+def figuras_chartistas(df, k=3, ventana=150):
+    """Figuras clasicas sobre los swings de las ultimas 'ventana' velas. Cada una con cuello (nivel que la
+    confirma), objetivo (altura proyectada), invalidacion y estado (formandose / confirmada)."""
+    d = df.tail(ventana)
+    h, l, c = d["high"].to_numpy(), d["low"].to_numpy(), d["close"].to_numpy()
+    a = float(atr(d).iloc[-1])
+    sh, sl = swings(d, k)
+
+    def _agrupar(idx, vals, mayor):                   # swings pegados (< k velas) = un solo extremo
+        out = []
+        for i in idx:
+            if out and i - out[-1] < k:
+                if (vals[i] >= vals[out[-1]]) if mayor else (vals[i] <= vals[out[-1]]):
+                    out[-1] = i
+            else:
+                out.append(i)
+        return out
+
+    sh, sl = _agrupar(sh, h, True), _agrupar(sl, l, False)
+    px, n, figs = float(c[-1]), len(d), []
+    tol = 0.6 * a
+
+    def _fig(nombre, dir_, cuello, objetivo, inval, confirmada):
+        figs.append({"figura": nombre, "dir": dir_, "cuello": float(cuello), "objetivo": float(objetivo),
+                     "invalidacion": float(inval), "estado": "confirmada" if confirmada else "formándose"})
+
+    # Doble techo / doble suelo (dos ultimos extremos parecidos con un valle/pico entre medias)
+    if len(sh) >= 2:
+        i1, i2 = sh[-2], sh[-1]
+        valle = [j for j in sl if i1 < j < i2]
+        if abs(h[i1] - h[i2]) <= tol and valle and i2 - i1 >= 2 * k:
+            cu = float(l[min(valle, key=lambda j: l[j])])
+            alto = max(h[i1], h[i2])
+            if px > cu - 2 * (alto - cu):                    # aun vigente
+                _fig("Doble techo", -1, cu, cu - (alto - cu), alto + 0.2 * a, px < cu)
+    if len(sl) >= 2:
+        i1, i2 = sl[-2], sl[-1]
+        pico = [j for j in sh if i1 < j < i2]
+        if abs(l[i1] - l[i2]) <= tol and pico and i2 - i1 >= 2 * k:
+            cu = float(h[max(pico, key=lambda j: h[j])])
+            bajo = min(l[i1], l[i2])
+            if px < cu + 2 * (cu - bajo):
+                _fig("Doble suelo", 1, cu, cu + (cu - bajo), bajo - 0.2 * a, px > cu)
+    # Hombro-cabeza-hombro (y su version invertida)
+    if len(sh) >= 3:
+        a1, cab, a2 = sh[-3], sh[-2], sh[-1]
+        if h[cab] > max(h[a1], h[a2]) + 0.3 * a and abs(h[a1] - h[a2]) <= 1.2 * a:
+            vs = [min((j for j in sl if x < j < y), key=lambda j: l[j], default=None) for x, y in ((a1, cab), (cab, a2))]
+            if None not in vs:
+                cu = float(np.mean([l[j] for j in vs]))
+                if px > cu - 2 * (h[cab] - cu):
+                    _fig("Hombro-cabeza-hombro", -1, cu, cu - (h[cab] - cu), h[a2] + 0.2 * a, px < cu)
+    if len(sl) >= 3:
+        a1, cab, a2 = sl[-3], sl[-2], sl[-1]
+        if l[cab] < min(l[a1], l[a2]) - 0.3 * a and abs(l[a1] - l[a2]) <= 1.2 * a:
+            ps = [max((j for j in sh if x < j < y), key=lambda j: h[j], default=None) for x, y in ((a1, cab), (cab, a2))]
+            if None not in ps:
+                cu = float(np.mean([h[j] for j in ps]))
+                if px < cu + 2 * (cu - l[cab]):
+                    _fig("HCH invertido", 1, cu, cu + (cu - l[cab]), l[a2] - 0.2 * a, px > cu)
+    # Triangulos, canales y rangos: rectas por los ultimos 3 maximos y 3 minimos
+    if len(sh) >= 3 and len(sl) >= 3:
+        mh, bh = _pendiente(sh[-3:], h[sh[-3:]])
+        ml, bl = _pendiente(sl[-3:], l[sl[-3:]])
+        techo, suelo = mh * (n - 1) + bh, ml * (n - 1) + bl
+        ini = min(sh[-3], sl[-3])
+        altura = (mh * ini + bh) - (ml * ini + bl)
+        plano = 0.05 * a                                   # pendiente "plana" por vela
+        if techo > suelo and altura > 0:
+            if abs(mh) <= plano and abs(ml) <= plano:
+                nombre, dir_ = "Rango lateral", 0
+            elif mh < -plano and ml > plano:
+                nombre, dir_ = "Triángulo simétrico", 0
+            elif abs(mh) <= plano and ml > plano:
+                nombre, dir_ = "Triángulo ascendente", 1
+            elif mh < -plano and abs(ml) <= plano:
+                nombre, dir_ = "Triángulo descendente", -1
+            elif mh > plano and ml > plano and abs(mh - ml) <= 0.5 * max(abs(mh), abs(ml)):
+                nombre, dir_ = "Canal alcista", 1
+            elif mh < -plano and ml < -plano and abs(mh - ml) <= 0.5 * max(abs(mh), abs(ml)):
+                nombre, dir_ = "Canal bajista", -1
+            else:
+                nombre, dir_ = None, 0
+            if nombre:
+                fuera_arriba, fuera_abajo = px > techo, px < suelo
+                if dir_ >= 0 or fuera_arriba:
+                    _fig(f"{nombre} (ruptura arriba)", 1, techo, techo + altura, suelo, fuera_arriba)
+                if dir_ <= 0 or fuera_abajo:
+                    _fig(f"{nombre} (ruptura abajo)", -1, suelo, suelo - altura, techo, fuera_abajo)
+    return figs
+
+
+def fibonacci(df, k=3, ventana=150):
+    """Retrocesos y extensiones del ultimo impulso entre swings."""
+    d = df.tail(ventana)
+    h, l = d["high"].to_numpy(), d["low"].to_numpy()
+    sh, sl = swings(d, k)
+    if not sh or not sl:
+        return None
+    if sh[-1] > sl[-1]:                                   # ultimo impulso alcista: de minimo a maximo
+        lo_i = max([j for j in sl if j < sh[-1]] or [sl[-1]])
+        a0, a1, dir_ = l[lo_i], h[sh[-1]], 1
+    else:
+        hi_i = max([j for j in sh if j < sl[-1]] or [sh[-1]])
+        a0, a1, dir_ = h[hi_i], l[sl[-1]], -1
+    rng = a1 - a0
+    niveles = {f"{x:g}": float(a1 - x * rng) for x in (0.382, 0.5, 0.618, 0.786)}
+    ext = {f"{x:g}": float(a0 + x * rng) for x in (1.272, 1.618)}
+    return {"dir": dir_, "desde": float(a0), "hasta": float(a1), "retrocesos": niveles, "extensiones": ext}
+
+
+def indicadores(df):
+    c = df["close"]
+    e20, e50 = c.ewm(span=20, adjust=False).mean(), c.ewm(span=50, adjust=False).mean()
+    e200 = c.ewm(span=200, adjust=False).mean()
+    return {"px": float(c.iloc[-1]), "ema20": float(e20.iloc[-1]), "ema50": float(e50.iloc[-1]),
+            "ema200": float(e200.iloc[-1]), "rsi": float(_rsi(c).iloc[-1]), "adx": float(adx(df).iloc[-1]),
+            "atr": float(atr(df).iloc[-1])}
+
+
+def _sesgo_txt(t):
+    return "alcista" if t > 0 else "bajista" if t < 0 else "lateral"
+
+
+def analisis_mercado(nombre, tf="15m", cargar=obtener):
+    """Todo lo que el motor detecta en un mercado y temporalidad (base de los comandos del chat)."""
+    df = _velas(nombre, tf, cargar)
+    try:
+        d1 = _velas(nombre, "1h", cargar) if tf != "1h" else df
+    except Exception:
+        d1 = df
+    est, est1 = leer_estructura(df), leer_estructura(d1)
+    ind = indicadores(df)
+    zonas = zonas_oferta_demanda(df)
+    px, a = ind["px"], ind["atr"]
+    dem = sorted([z for z in zonas if z["d"] == 1 and z["prox"] <= px], key=lambda z: px - z["prox"])
+    ofe = sorted([z for z in zonas if z["d"] == -1 and z["prox"] >= px], key=lambda z: z["prox"] - px)
+    fv = fvg_abiertos(df)
+    sesgo = est1["tendencia"] or est["tendencia"]
+    if not sesgo:
+        sesgo = 1 if ind["px"] > ind["ema200"] and ind["ema20"] > ind["ema50"] else \
+            -1 if ind["px"] < ind["ema200"] and ind["ema20"] < ind["ema50"] else 0
+    return {"activo": nombre, "tf": tf, "df": df, "est": est, "est1": est1, "ind": ind, "dem": dem, "ofe": ofe,
+            "fvg": fv, "figs": figuras_chartistas(df), "fib": fibonacci(df), "sesgo": sesgo, "px": px, "atr": a,
+            "noticia": noticia_cercana(nombre) if nombre in MONEDAS else None}
+
+
+def _zona_txt(z):
+    return f"{z['tipo']} {fmt(min(z['prox'], z['dist']))}-{fmt(max(z['prox'], z['dist']))} ({z['estado']})"
+
+
+def escenarios_de(m):
+    """Escenario principal (a favor del sesgo) y alternativo (si se rompe la invalidacion), con niveles."""
+    px, a, s = m["px"], m["atr"], m["sesgo"] or (1 if m["est"]["evento_dir"] >= 0 else -1)
+    rng = m["est"].get("rango") or (px - 3 * a, px + 3 * a)
+    if s > 0:
+        zona = m["dem"][0] if m["dem"] else None
+        entrada = zona["prox"] if zona else max(rng[0], px - a)
+        inval = (zona["dist"] if zona else rng[0]) - 0.2 * a
+        obj = m["ofe"][0]["prox"] if m["ofe"] else max(rng[1], px + 2 * a)
+        obj = max(obj, entrada + 2 * (entrada - inval))
+        alt_obj = m["dem"][1]["prox"] if len(m["dem"]) > 1 else inval - 2 * a
+    else:
+        zona = m["ofe"][0] if m["ofe"] else None
+        entrada = zona["prox"] if zona else min(rng[1], px + a)
+        inval = (zona["dist"] if zona else rng[1]) + 0.2 * a
+        obj = m["dem"][0]["prox"] if m["dem"] else min(rng[0], px - 2 * a)
+        obj = min(obj, entrada - 2 * (inval - entrada))
+        alt_obj = m["ofe"][1]["prox"] if len(m["ofe"]) > 1 else inval + 2 * a
+    return {"dir": s, "entrada": float(entrada), "invalidacion": float(inval), "objetivo": float(obj),
+            "zona": zona, "alt_objetivo": float(alt_obj), "rr": abs(obj - entrada) / max(abs(entrada - inval), 1e-12)}
+
+
+def texto_lectura_mercado(m):
+    """Las 5 lineas: que manda, que implica, que espera, riesgo y que vigilar (+ detalle)."""
+    e, e1, ind, esc = m["est"], m["est1"], m["ind"], escenarios_de(m)
+    dir_txt = "compras" if esc["dir"] > 0 else "ventas"
+    figs = [f for f in m["figs"] if f["estado"] == "confirmada"] or m["figs"]
+    lin = [f"🧭 LECTURA {m['activo']} ({m['tf']}) · precio {fmt(m['px'])}",
+           f"1️⃣ Qué manda: estructura 1H {_sesgo_txt(e1['tendencia'])} ({e1['etiquetas'] or '-'}), "
+           f"{m['tf']} {_sesgo_txt(e['tendencia'])} ({e['etiquetas'] or '-'})"
+           + (f" · último {e['evento']} hace {e['evento_hace']} velas" if e.get("evento") else ""),
+           f"2️⃣ Qué implica: sesgo de {dir_txt}; precio "
+           + ("sobre" if ind["px"] > ind["ema200"] else "bajo") + f" la EMA200 ({fmt(ind['ema200'])}), "
+           f"RSI {ind['rsi']:.0f}, ADX {ind['adx']:.0f} ({'con tendencia' if ind['adx'] >= 25 else 'sin tendencia clara'})",
+           f"3️⃣ Qué espera: retroceso a {fmt(esc['entrada'])}"
+           + (f" ({_zona_txt(esc['zona'])})" if esc["zona"] else "") + f" para buscar {dir_txt} hacia {fmt(esc['objetivo'])}",
+           f"4️⃣ Riesgo: invalidación en {fmt(esc['invalidacion'])} · ATR {fmt(m['atr'])}"
+           + (f" · 📰 {m['noticia']['moneda']} {m['noticia']['titulo']}" if m.get("noticia") else ""),
+           "5️⃣ Vigilar: " + " · ".join(
+               ([f"{figs[0]['figura']} ({figs[0]['estado']}, cuello {fmt(figs[0]['cuello'])})"] if figs else [])
+               + ([f"oferta {fmt(m['ofe'][0]['prox'])}"] if m["ofe"] else [])
+               + ([f"demanda {fmt(m['dem'][0]['prox'])}"] if m["dem"] else [])
+               + ([f"FVG {fmt(m['fvg'][-1][1])}-{fmt(m['fvg'][-1][2])}"] if m["fvg"] else [])) or "sin niveles cercanos"]
+    if m["fib"]:
+        f = m["fib"]
+        lin.append("📐 Fibonacci del último impulso " + ("alcista" if f["dir"] > 0 else "bajista") + ": "
+                   + " · ".join(f"{k} {fmt(v)}" for k, v in f["retrocesos"].items()))
+    return "\n".join(lin)
+
+
+def texto_figuras(m):
+    if not m["figs"]:
+        return f"🔺 {m['activo']} ({m['tf']}): no veo figuras chartistas claras en las últimas 150 velas."
+    lin = [f"🔺 Figuras en {m['activo']} ({m['tf']}) · precio {fmt(m['px'])}"]
+    for f in m["figs"]:
+        ic = "🟢" if f["dir"] > 0 else "🔴"
+        lin.append(f"{ic} {f['figura']} · {f['estado']}\n   cuello {fmt(f['cuello'])} → objetivo {fmt(f['objetivo'])}"
+                   f" · invalidación {fmt(f['invalidacion'])}")
+    return "\n".join(lin)
+
+
+def texto_escenarios(m):
+    esc = escenarios_de(m)
+    pr = "ALCISTA 🟢" if esc["dir"] > 0 else "BAJISTA 🔴"
+    al = "BAJISTA 🔴" if esc["dir"] > 0 else "ALCISTA 🟢"
+    cond = "cierre por debajo" if esc["dir"] > 0 else "cierre por encima"
+    return (f"🗺️ Escenarios {m['activo']} ({m['tf']}) · precio {fmt(m['px'])}\n"
+            f"Principal {pr}: zona de entrada {fmt(esc['entrada'])} → objetivo {fmt(esc['objetivo'])} "
+            f"(ratio 1:{esc['rr']:.1f}), mientras no haya {cond} de {fmt(esc['invalidacion'])}.\n"
+            f"Alternativo {al}: si hay {cond} de {fmt(esc['invalidacion'])}, el siguiente nivel es "
+            f"{fmt(esc['alt_objetivo'])}.")
+
+
+def plan_operativo(nombre, cargar=obtener):
+    """Plan por temporalidades: 1h da la direccion, 15m la estructura, 5m el gatillo."""
+    ms = {}
+    for tf in ("5m", "15m", "1h"):
+        try:
+            ms[tf] = analisis_mercado(nombre, tf, cargar)
+        except Exception:
+            pass
+    if "15m" not in ms:
+        return f"No hay datos de {nombre} ahora mismo."
+    votos = [m["sesgo"] for m in ms.values()]
+    acuerdo = sum(v == ms["15m"]["sesgo"] for v in votos)
+    esc = escenarios_de(ms["15m"])
+    px = ms["15m"]["px"]
+    if esc["dir"] == 0 or acuerdo < 2 or esc["rr"] < CUENTA.get("rr_min", 1.5):
+        ver, nivel = "ESPERAR ⏸️", "C"
+    else:
+        ver = "BUSCAR COMPRAS 🟢" if esc["dir"] > 0 else "BUSCAR VENTAS 🔴"
+        nivel = "A" if acuerdo == 3 else "B"
+    pct = CUENTA["riesgo_nivel"].get(nivel, 0)
+    lin = [f"🧠 PLAN {nombre} · precio {fmt(px)}",
+           "Temporalidades: " + " · ".join(f"{tf} {_sesgo_txt(m['sesgo'])}" for tf, m in ms.items()),
+           f"Veredicto: {ver} · nivel {nivel}" + (f" (arriesgar {pct:g}%)" if pct else " (no operar)"),
+           f"Entrada: {fmt(esc['entrada'])} · Stop: {fmt(esc['invalidacion'])} · Objetivo: {fmt(esc['objetivo'])} "
+           f"(1:{esc['rr']:.1f})",
+           f"Condición: esperar en 5m una vela que cierre a favor dentro de la zona; si cierra más allá de "
+           f"{fmt(esc['invalidacion'])}, el plan se cancela.",
+           "Gestión: al llegar a 1R mueve el stop a la entrada; cierra la mitad en 2R y deja correr el resto."]
+    return "\n".join(lin)
+
+
+def consejo_posicion(nombre, lado, entrada, stop=None, cargar=obtener):
+    """'Estoy comprado/vendido desde X, ¿que hago?': R actual, estructura y que hacer."""
+    m = analisis_mercado(nombre, "15m", cargar)
+    d = 1 if lado > 0 else -1
+    px, a = m["px"], m["atr"]
+    stop = stop if stop is not None else (escenarios_de(m)["invalidacion"] if m["sesgo"] == d else entrada - d * 1.5 * a)
+    if (entrada - stop) * d <= 0:                      # stop del lado equivocado: uno tecnico de 1,5 ATR
+        stop = entrada - d * 1.5 * a
+    riesgo = abs(entrada - stop) or a
+    r_act = (px - entrada) * d / riesgo
+    a_favor = m["sesgo"] == d
+    if (px - stop) * d <= 0:
+        acc = "el precio ya pasó tu stop: cierra la operación y no promedies a la contra."
+    elif r_act <= -0.8:
+        acc = "estás cerca del stop: respétalo, no lo muevas en contra."
+    elif not a_favor and r_act > 0:
+        acc = "la estructura ya no te acompaña: asegura (cierra parcial o stop a la entrada)."
+    elif not a_favor:
+        acc = "la estructura va en contra: reduce o cierra si se confirma un cierre más allá de tu stop."
+    elif r_act >= 2:
+        acc = "ya vas en 2R o más: toma parcial y sube el stop bajo el último mínimo." if d > 0 else \
+            "ya vas en 2R o más: toma parcial y baja el stop sobre el último máximo."
+    elif r_act >= 1:
+        acc = "vas en 1R+: mueve el stop a la entrada (break-even) y deja correr."
+    else:
+        acc = "la estructura te acompaña: mantén con el stop original."
+    obj = m["ofe"][0]["prox"] if d > 0 and m["ofe"] else m["dem"][0]["prox"] if d < 0 and m["dem"] else entrada + d * 2 * riesgo
+    return (f"📍 POSICIÓN {'LARGA' if d > 0 else 'CORTA'} {nombre} desde {fmt(entrada)}\n"
+            f"Precio {fmt(px)} · stop {fmt(stop)} · vas en {r_act:+.2f}R\n"
+            f"Estructura 15m {_sesgo_txt(m['est']['tendencia'])}, 1H {_sesgo_txt(m['est1']['tendencia'])} → "
+            f"{'a favor' if a_favor else 'en contra'}\n"
+            f"Siguiente objetivo: {fmt(obj)}\n👉 Qué haría: {acc}")
+
+
+def informe_diario_pro(estado):
+    """Radiografia del diario en vivo: diagnostico, patrones y contrato para la semana."""
+    dia = [x for x in estado.d.get("diario", []) if x.get("R") is not None]
+    if len(dia) < 5:
+        return "📒 Aún hay pocas operaciones cerradas en el diario (menos de 5) para un diagnóstico serio."
+    df = pd.DataFrame(dia)
+    df["hora"] = pd.to_datetime(df["enviada"], errors="coerce").dt.hour
+    R = df["R"]
+    lin = [f"🩻 INFORME DEL DIARIO · {len(df)} operaciones · {R.sum():+.1f}R · aciertos {100 * (R > 0).mean():.0f}% · "
+           f"media {R.mean():+.2f}R"]
+    pat = []
+    for col, nom in (("estrategia", "Estrategia"), ("activo", "Mercado"), ("nivel", "Nivel"), ("hora", "Hora NY")):
+        if col not in df or df[col].isna().all():
+            continue
+        g = df.groupby(col)["R"].agg(["size", "mean", "sum"])
+        g = g[g["size"] >= 3]
+        if g.empty:
+            continue
+        mejor, peor = g["mean"].idxmax(), g["mean"].idxmin()
+        lin.append(f"• {nom}: mejor {mejor} ({g.loc[mejor, 'mean']:+.2f}R, {int(g.loc[mejor, 'size'])} ops) · "
+                   f"peor {peor} ({g.loc[peor, 'mean']:+.2f}R, {int(g.loc[peor, 'size'])} ops)")
+        if g.loc[peor, "mean"] < -0.2:
+            pat.append((nom, peor, g.loc[peor, "mean"]))
+    racha = 0
+    for r in R[::-1]:
+        if r < 0:
+            racha += 1
+        else:
+            break
+    if racha >= 3:
+        lin.append(f"⚠️ Vienes de {racha} pérdidas seguidas: baja el riesgo a nivel B hasta cortar la racha.")
+    lin.append("\n📜 CONTRATO DE LA SEMANA")
+    reglas = [f"No operar {nom.lower()} {val} (media {m:+.2f}R)" for nom, val, m in pat[:3]]
+    reglas.append(f"Máximo {FRENO['max_racha_perdidas']} pérdidas seguidas o {abs(FRENO['max_perdida_dia_R']):g}R al día y paro.")
+    reglas.append(f"Solo señales con ratio ≥ 1:{CUENTA.get('rr_min', 1.5):g} y riesgo total ≤ {CUENTA.get('riesgo_total_max_pct', 6):g}%.")
+    lin += [f"{i + 1}. {r}" for i, r in enumerate(reglas)]
+    return "\n".join(lin)
+
+
+AYUDA_CHAT = ("🤖 Puedo analizar cualquier mercado que vigilo. Escríbeme así:\n"
+              "• /lectura oro 15m — las 5 líneas (qué manda, implica, espera, riesgo, vigilar)\n"
+              "• /figuras eurusd — figuras chartistas con cuello, objetivo e invalidación\n"
+              "• /escenarios btc — principal y alternativo con niveles\n"
+              "• /plan sp500 — plan por temporalidades con entrada, stop, objetivo y gestión\n"
+              "• /posicion oro long 4050 4030 — ¿qué hago con mi operación? (stop opcional)\n"
+              "• /diario — radiografía del diario y contrato de la semana\n"
+              "• /estado — operaciones abiertas y riesgo en juego\n"
+              "También vale texto libre: «¿pa dónde va el oro?», «¿hay un doble techo en el euro?», "
+              "«dame los escenarios de btc».")
+
+
+def responder_chat(texto, estado=None, cargar=obtener):
+    """Convierte un mensaje del chat en una respuesta del analista."""
+    t = _norm(texto).strip()
+    if not t:
+        return None
+    if t.startswith(("/start", "/ayuda", "/help")) or t in ("hola", "ayuda", "que sabes hacer", "que sabes hacer?"):
+        return AYUDA_CHAT
+    if t.startswith("/diario") or "informe del diario" in t or "como voy" in t:
+        return informe_diario_pro(estado) if estado else "Sin diario disponible."
+    if t.startswith("/estado"):
+        ab = estado.d.get("abiertas", []) if estado else []
+        en_juego = sum(float(o.get("riesgo_pct") or CUENTA["riesgo_pct"]) for o in ab)
+        return (f"📊 {len(ab)} operaciones abiertas · riesgo en juego {en_juego:g}% de "
+                f"{CUENTA.get('riesgo_total_max_pct', 6):g}%\n"
+                + "\n".join(f"• {o['activo']} {o['dir']} · {o['estrategia']} · nivel {o.get('nivel') or '-'}" for o in ab))
+    nombre = buscar_activo(t)
+    if not nombre:
+        return "No reconozco el mercado. Prueba con: oro, btc, eurusd, gbpusd, usdjpy, usdcad, sp500, dax, dow.\n\n" + AYUDA_CHAT
+    tf = buscar_tf(t)
+    try:
+        if t.startswith("/posicion") or "comprado" in t or "vendido" in t:
+            import re
+            limpio = re.sub(r"\b(\d+m|m\d+|\d+h|h\d+|sp500|us500|us100|us30|dj30|ger40|de40|nas100)\b", " ", t)
+            nums = [float(x.replace(",", ".")) for x in re.findall(r"\d+(?:[.,]\d+)?", limpio)]
+            if not nums:
+                return "Dime el precio de entrada, p. ej.: /posicion oro long 4050 4030"
+            lado = -1 if any(w in t for w in ("short", "vend", "corto")) else 1
+            return consejo_posicion(nombre, lado, nums[0], nums[1] if len(nums) > 1 else None, cargar)
+        if t.startswith("/plan") or any(w in t for w in ("plan", "entro", "compro", "vendo", "compara")):
+            return plan_operativo(nombre, cargar)
+        m = analisis_mercado(nombre, tf, cargar)
+        if t.startswith("/figuras") or any(w in t for w in ("figura", "chartist", "doble", "hch", "hombro", "triangulo", "canal")):
+            return texto_figuras(m)
+        if t.startswith("/escenario") or any(w in t for w in ("escenario", "si rompe", "que pasa si")):
+            return texto_escenarios(m)
+        return texto_lectura_mercado(m)
+    except Exception as e:
+        return f"No pude analizar {nombre} ahora mismo ({e}). Inténtalo en unos minutos."
+
+
+def atender_telegram(estado, cargar=obtener):
+    """Lee los mensajes nuevos del chat (getUpdates) y responde. Solo atiende a los chats autorizados."""
+    token = secreto("TELEGRAM_TOKEN")
+    permitidos = {i.strip() for i in secreto("TELEGRAM_CHAT_IDS").replace(";", ",").split(",") if i.strip()}
+    if not token or not permitidos:
+        return 0
+    try:
+        r = requests.get(f"https://api.telegram.org/bot{token}/getUpdates",
+                         params={"offset": estado.d.get("tg_offset", 0), "timeout": 0}, timeout=15).json()
+    except Exception:
+        return 0
+    n = 0
+    for u in r.get("result", []):
+        estado.d["tg_offset"] = u["update_id"] + 1
+        msg = u.get("message") or u.get("edited_message") or {}
+        chat = str((msg.get("chat") or {}).get("id", ""))
+        if chat not in permitidos or not msg.get("text"):
+            continue
+        resp = responder_chat(msg["text"], estado, cargar)
+        if resp:
+            for parte in trozos_telegram(resp):
+                try:
+                    _post_telegram(token, chat, parte)
+                except Exception:
+                    pass
+            n += 1
+    return n
 
 
 # ================================================================= PANEL STREAMLIT
