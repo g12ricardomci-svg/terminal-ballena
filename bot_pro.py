@@ -85,17 +85,16 @@ ESTRATEGIAS_ACTIVO = {
 }
 
 # ================================================================= PERFIL GANADOR
-# Combinaciones (mercado, temporalidad) -> estrategias que salieron POSITIVAS en el backtest con datos reales
-# (ultimos ~58 dias, costes incluidos). En vivo el bot solo avisa de estas. El backtest sigue probando todas.
-# Tortugas es un sistema diario: solo se evalua en 15m para no duplicar alertas.
+# Combinaciones (mercado, temporalidad) -> estrategias que PASARON la prueba de 6 meses (Dukascopy/ccxt, costes
+# incluidos): positivas, siguen positivas con costes x2 y ganan en la 1a y la 2a mitad del periodo.
+# En vivo el bot solo avisa de estas. El backtest sigue probando todas.
+#   Confluencia VWAP Oro 15m: 162 ops, +0,14 R, PF 1,26, costes x2 +0,08 R  -> ROBUSTA
+#   Tortugas Oro / BTC (15m): pocas operaciones pero positivas en 58 dias y en 6 meses (sistema diario clasico)
+# Descartadas a los 6 meses (habian salido bien en 58 dias): ORB Oro, Ruptura de Londres, VWAP GBP/USD,
+# Tortugas USD/JPY.
 GANADORAS = {
-    ("XAU/USD (Oro)", "5m"): ["ORB"],
-    ("XAU/USD (Oro)", "15m"): ["VWAP", "ORB", "Tortugas"],
-    ("EUR/USD", "5m"): ["Londres"],
-    ("EUR/USD", "15m"): ["Londres"],
-    ("GBP/USD", "15m"): ["Londres", "VWAP"],
+    ("XAU/USD (Oro)", "15m"): ["VWAP", "Tortugas"],
     ("BTC/USDT", "15m"): ["Tortugas"],
-    ("USD/JPY", "15m"): ["Tortugas"],
 }
 
 ACTIVOS = {}
