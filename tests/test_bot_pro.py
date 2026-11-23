@@ -471,3 +471,14 @@ def test_pausa_entre_alertas_configurable(telegram, estado, monkeypatch):
     estado.d["enviadas"][estado._clave(s1, "15m")] -= 61 * 60  # han pasado 61 minutos
     assert estado.es_nueva(s2, "15m")
     assert not estado.es_nueva(senal(ident="a"), "15m")        # el mismo setup jamas se repite
+
+
+def test_formato_corto(monkeypatch):
+    monkeypatch.setitem(b.CUENTA, "formato", "corto")
+    monkeypatch.setattr(b, "_nota_noticias", lambda a: "")
+    s = {**senal(activo="XAU/USD (Oro)", ent=4020.0, sl=4031.2, tp=3965.8, est="CT"), "dir": "SHORT", "bias": -1,
+         "orden": "limite", "espera": 40, "peso": 0}
+    txt = b.texto_alerta(s, "15m")
+    for trozo in ("🚨 NUEVA SEÑAL DE TRADING 🚨", "💎 Activo: XAU/USD (Oro)", "🔴 VENTA", "⏱️ Tiempo: 15 MINUTOS",
+                  "VENTA LÍMITE en 4,020.00", "🛑 Stop: 4,031.20", "✅ TP1: 3,965.80", "SIN VENTAJA PROBADA"):
+        assert trozo in txt, trozo
