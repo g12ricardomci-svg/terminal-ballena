@@ -1,30 +1,20 @@
-"""Lee paginas publicas de SpikeCharting (sin iniciar sesion) y resume su contenido y su JavaScript publico."""
+"""Segunda pasada: textos legales completos de SpikeCharting y busqueda dirigida en TODO su JavaScript publico."""
 import re
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
 UA = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
-      "Accept-Language": "es-CO,es;q=0.9,en;q=0.8"}
-INICIO = ["https://spikecharting.com/", "https://spikecharting.com/en/", "https://spikecharting.com/es/",
-          "https://app.spikecharting.com/", "https://academia.spikecharting.com/",
-          "https://spikecharting.com/robots.txt", "https://spikecharting.com/sitemap.xml",
-          "https://app.spikecharting.com/robots.txt", "https://academia.spikecharting.com/sitemap.xml"]
-CLAVES = ["aura", "tick", "plan", "precio", "price", "edge", "openai", "gpt", "claude", "anthropic",
-          "gemini", "llm", "deepseek", "mistral", "groq", "api/", "deriv", "affiliate", "afiliad", "terms",
-          "términos", "privacidad", "privacy", "empresa", "company", "contact", "soporte", "support", "replay",
-          "choch", "fvg", "stripe", "paypal", "mercadopago", "suscrip", "subscription", "supabase", "firebase",
-          "wss://", "lightweight-charts", "derivws", "twelvedata", "polygon", "binance"]
-vistos, scripts, enlaces = set(), set(), set()
+      "Accept-Language": "es-CO,es;q=0.9"}
 
 
 def get(url):
     try:
-        r = requests.get(url, headers=UA, timeout=20)
-        return r.status_code, r.headers.get("content-type", ""), r.text
+        r = requests.get(url, headers=UA, timeout=25)
+        return r.status_code, r.text
     except Exception as e:
-        return None, "", f"ERROR {e}"
+        return None, f"ERROR {e}"
 
 
 def texto(html):
@@ -34,57 +24,48 @@ def texto(html):
     return re.sub(r"\s+", " ", s.get_text(" ")).strip()
 
 
-def pagina(url):
-    if url in vistos or len(vistos) > 60:
-        return
-    vistos.add(url)
-    code, ctype, body = get(url)
-    print(f"\n{'=' * 100}\n### {url}  -> {code} {ctype[:40]}  ({len(body)} chars)")
-    if code is None or code >= 400:
-        print(body[:300])
-        return
-    if "xml" in ctype or url.endswith((".xml", ".txt")):
-        print(body[:4000])
-        for loc in re.findall(r"<loc>(.*?)</loc>", body)[:40]:
-            enlaces.add(loc.strip())
-        return
-    soup = BeautifulSoup(body, "html.parser")
-    t = soup.title.string.strip() if soup.title and soup.title.string else ""
-    meta = {m.get("name") or m.get("property"): m.get("content") for m in soup.find_all("meta")
-            if (m.get("name") or m.get("property")) and m.get("content")}
-    print("TITULO:", t)
-    for k in ("description", "og:description", "og:title", "keywords", "author", "generator"):
-        if k in meta:
-            print(f"META {k}: {meta[k][:300]}")
-    print("TEXTO:", texto(body)[:6000])
-    for sc in soup.find_all("script", src=True):
-        scripts.add(urljoin(url, sc["src"]))
-    for a in soup.find_all("a", href=True):
-        u = urljoin(url, a["href"]).split("#")[0]
-        if urlparse(u).netloc.endswith("spikecharting.com"):
-            enlaces.add(u)
-        elif u.startswith("http"):
-            print("ENLACE EXTERNO:", u)
+# 1) Textos legales completos, solo las secciones relevantes
+for url, secciones in [("https://spikecharting.com/terminos",
+                        ["1.7 ", "1.8 ", "1.9 ", "1.10 ", "1.11 ", "1.12 ", "1.13 ", "1.22 ", "1.23 ", "1.24 ",
+                         "1.25 ", "1.26 ", "1.27 ", "1.36 "]),
+                       ("https://spikecharting.com/privacidad", ["2.8 ", "2.9 ", "2.18 "])]:
+    code, html = get(url)
+    t = texto(html)
+    print(f"\n{'=' * 100}\n### {url} -> {code} ({len(t)} chars de texto)")
+    for sec in secciones:
+        idxs = [m.start() for m in re.finditer(re.escape(sec), t)]
+        if len(idxs) >= 2:                       # la 1a aparicion es el indice; la 2a es el cuerpo
+            i = idxs[1]
+            sig = re.search(r"\s\d\.\d{1,2} [A-ZÁÉÍÓÚ]", t[i + 6:])
+            fin = i + 6 + sig.start() if sig else i + 2500
+            print(f"\n[{sec.strip()}] {t[i:min(fin, i + 2500)]}")
 
-
-for u in INICIO:
-    pagina(u)
-for u in sorted(enlaces):
-    if not u.endswith((".png", ".jpg", ".svg", ".webp", ".pdf")):
-        pagina(u)
-
-print(f"\n{'#' * 100}\n### SCRIPTS PUBLICOS ({len(scripts)})")
-for s in sorted(scripts)[:25]:
-    code, _, js = get(s)
-    print(f"\n--- {s} -> {code} ({len(js)} chars)")
-    if not code or code >= 400:
+# 2) Todo el JavaScript publico de la app: busqueda dirigida
+code, html = get("https://app.spikecharting.com/")
+soup = BeautifulSoup(html, "html.parser")
+scripts = sorted({urljoin("https://app.spikecharting.com/", s["src"]) for s in soup.find_all("script", src=True)})
+print(f"\n{'#' * 100}\n### {len(scripts)} scripts")
+PATRONES = {
+    "proveedor_ia": r"openai|chatgpt|gpt-[0-9o]|anthropic|claude|gemini|generativelanguage|deepseek|mistral|groq|llama|grok|x\.ai|openrouter|together\.ai|perplexity|cohere",
+    "backend": r"[a-z0-9]{10,}\.supabase\.co|functions/v1/[a-z0-9_-]+|/rest/v1/[a-z_]+|workers\.dev|wss://[a-z0-9./_-]+",
+    "pagos": r"whop\.com[a-z0-9/_?=-]*|stripe|paypal|mercadopago|lemonsqueezy|checkout",
+    "precios": r"(?:US)?\$\s?\d{1,3}(?:[.,]\d{2})?|\d{1,3}(?:[.,]\d{2})?\s?(?:USD|usd)|/\s?mes|por mes|mensual|anual",
+    "ticks": r"\d{1,3}[.,]?\d{3}\s?ticks|ticks?\s?(?:al|por)\s?mes|costo[s]? (?:en|de) ticks|cuesta[n]? \d+",
+    "datos": r"derivws|binary\.com|ws\.derivws|weltrade|fapi\.binance|api\.binance|stream\.binance|twelvedata|polygon\.io|finnhub|oanda",
+    "aura_prompt": r"eres aura|you are aura|system ?prompt|no inventes|role:\s?['\"]system",
+}
+hallado = {k: {} for k in PATRONES}
+for s in scripts:
+    c, js = get(s)
+    if not c or c >= 400:
         continue
-    urls = sorted(set(re.findall(r"https?://[a-zA-Z0-9._/-]{6,120}", js)))
-    print("URLS EN EL CODIGO:", [u for u in urls if "w3.org" not in u and "reactjs" not in u][:80])
-    low = js.lower()
-    for k in CLAVES:
-        n = low.count(k)
-        if n:
-            ej = [re.sub(r"\s+", " ", js[max(0, m.start() - 90): m.start() + 110])
-                  for m in re.finditer(re.escape(k), low)][:3]
-            print(f"  [{k}] x{n}: " + " || ".join(ej))
+    for k, pat in PATRONES.items():
+        for m in re.finditer(pat, js, flags=re.I):
+            frag = re.sub(r"\s+", " ", js[max(0, m.start() - 120): m.end() + 160])
+            clave = m.group(0).lower()
+            if clave not in hallado[k] or len(hallado[k]) < 60:
+                hallado[k].setdefault(clave, (s.rsplit("/", 1)[-1], frag))
+for k, d in hallado.items():
+    print(f"\n{'-' * 100}\n## {k}: {len(d)} coincidencias distintas")
+    for clave, (arch, frag) in list(d.items())[:25]:
+        print(f"  <{clave}> en {arch}: ...{frag}...")
