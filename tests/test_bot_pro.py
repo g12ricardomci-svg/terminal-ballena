@@ -21,6 +21,14 @@ class RespuestaFalsa:
         return self._js
 
 
+@pytest.fixture(autouse=True)
+def modo_base(monkeypatch):
+    """Los tests de cartera usan el modo filtrado y sin imagenes; los del modo 'todas' lo activan ellos."""
+    monkeypatch.setitem(b.CUENTA, "modo", "ganadoras")
+    monkeypatch.setitem(b.CUENTA, "imagen_alertas", False)
+    b._CACHE_DATOS.clear()
+
+
 @pytest.fixture
 def telegram(monkeypatch):
     """Sustituye la API de Telegram: guarda cada mensaje enviado y no duerme."""
@@ -392,3 +400,64 @@ def test_chat_capital(monkeypatch):
     df = _velas(800, semilla=11)
     txt = b.responder_chat("/capital btc", None, lambda nm, tf: df)
     assert "CAPITAL TRADING" in txt and "Bloque M15" in txt and "Confirmación M5" in txt
+
+
+
+# ----------------------------------------------------------------- modo todas + imagen en cada alerta
+def test_modo_todas_envia_todo_y_marca_observacion(telegram, estado, monkeypatch):
+    monkeypatch.setitem(b.CUENTA, "modo", "todas")
+    assert len(b.mercados_vivos()) == len(b.ACTIVOS)
+    assert b.decidir_senal(senal(puntaje=1, est="E1"), "15m", P, estado) == "enviar"          # nivel C tambien
+    assert b.decidir_senal(senal(puntaje=3, est="E2", activo="BTC/USDT", ent=90000, sl=89500, tp=91000),
+                           "15m", P, estado) == "enviar"
+    c, op = estado.cola
+    assert c["s"]["compacta"] and not c["s"]["operable"] and "nivel C" in c["s"]["motivo_obs"]
+    assert op["s"]["operable"] and not op["s"]["compacta"]
+    assert estado.vaciar_cola() == 2
+    assert len(telegram) == 2 and telegram[-1].startswith("👀 1 señales en observación")
+    ab = {o["activo"]: o["operable"] for o in estado.d["abiertas"]}
+    assert ab == {"EUR/USD": False, "BTC/USDT": True}                     # el diario sigue las dos
+
+
+def test_observacion_no_ocupa_cupos(telegram, estado, monkeypatch):
+    monkeypatch.setitem(b.CUENTA, "modo", "todas")
+    monkeypatch.setitem(b.CUENTA, "una_por_mercado", True)
+    b.decidir_senal(senal(puntaje=1, est="E1"), "15m", P, estado)                          # C en EUR/USD
+    s = senal(puntaje=3, est="E2")                                                          # A en EUR/USD
+    b.decidir_senal(s, "15m", P, estado)
+    assert s["operable"]                                                                    # la C no bloquea
+
+
+def test_alerta_operable_llega_con_imagen(estado, monkeypatch):
+    pytest.importorskip("matplotlib")
+    monkeypatch.setitem(b.CUENTA, "modo", "todas")
+    monkeypatch.setitem(b.CUENTA, "imagen_alertas", True)
+    monkeypatch.setenv("TELEGRAM_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_CHAT_IDS", "1")
+    monkeypatch.setattr(b, "_dormir", lambda s: None)
+    df = _velas(800, semilla=4)
+    monkeypatch.setattr(b, "obtener", lambda nm, tf: df)
+    monkeypatch.setattr(b, "noticia_cercana", lambda *a, **k: None)
+    fotos, textos = [], []
+
+    def post(url, data=None, json=None, files=None, timeout=None):
+        if files:
+            fotos.append((files["photo"][1][:8], data["caption"]))
+        else:
+            textos.append(json["text"])
+        return RespuestaFalsa()
+    monkeypatch.setattr(b.requests, "post", post)
+    px = float(df["close"].iloc[-1])
+    s = senal(activo="BTC/USDT", ent=px, sl=px * 0.995, tp=px * 1.01, puntaje=5, est="E9")
+    assert b.decidir_senal(s, "15m", P, estado) == "enviar"
+    assert estado.vaciar_cola() == 1
+    assert fotos and fotos[0][0] == b"\x89PNG\r\n\x1a\n"
+    assert "BTC/USDT" in (fotos[0][1] + "".join(textos))
+
+
+def test_cache_de_datos(monkeypatch):
+    llamadas = []
+    monkeypatch.setattr(b, "_obtener_red", lambda nm, tf: llamadas.append(1) or _velas(200))
+    b.obtener("EUR/USD", "15m")
+    b.obtener("EUR/USD", "15m")
+    assert len(llamadas) == 1
