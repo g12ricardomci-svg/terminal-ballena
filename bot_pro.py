@@ -112,11 +112,26 @@ ESTRATEGIAS_ACTIVO = {
 #   ORB apertura DAX 15m: 112 ops, +0,24 R, PF 1,34, 5/7 meses -> ROBUSTA
 #   ORB apertura S&P 500 15m: 116 ops, +0,18 R, PF 1,25, 5/7 meses -> ROBUSTA
 #   EMA 20/200 (Dr. Inversor) DAX 15m: 44 ops, +0,15 R, PF 1,26, 5/6 meses -> ROBUSTA
+#   Ruptura de Londres EUR/USD 15m + filtro "sin_contradice": 68 ops, +0,23 R, PF 1,46 -> ROBUSTA (vigilada)
 GANADORAS = {
+    ("EUR/USD", "15m"): ["Londres"],
     ("XAU/USD (Oro)", "15m"): ["VWAP", "Tortugas"],
     ("BTC/USDT", "15m"): ["Tortugas"],
     ("DAX 40", "15m"): ["ORBRetest", "ORB", "DI_EMA"],
     ("S&P 500 (ES)", "15m"): ["ORB"],
+}
+
+# Filtro de LECTURA DE ESTRUCTURA por combinacion (backtest 6 meses). Solo donde mejoro los resultados:
+#   ORB S&P 500 15m:  todas +0,18 R (PF 1,25) -> sin_contradice +0,68 R (PF 2,01), costes x2 +0,54
+#   ORB DAX 15m:      todas +0,24 R (PF 1,34) -> sin_contradice +0,56 R (PF 1,92), costes x2 +0,47
+#   VWAP Oro 15m:     todas +0,14 R (PF 1,26) -> sin_contradice +0,20 R (PF 1,38), costes x2 +0,13
+#   Londres EUR 15m:  todas -0,01 R           -> sin_contradice +0,23 R (PF 1,46)
+# En ORB + Retest y EMA 20/200 del DAX el filtro EMPEORABA: ahi no se aplica.
+FILTRO_LECTURA = {
+    ("S&P 500 (ES)", "15m", "ORB"): "sin_contradice",
+    ("DAX 40", "15m", "ORB"): "sin_contradice",
+    ("XAU/USD (Oro)", "15m", "VWAP"): "sin_contradice",
+    ("EUR/USD", "15m", "Londres"): "sin_contradice",
 }
 
 ACTIVOS = {}
@@ -2495,6 +2510,7 @@ def evaluar(nombre, tipo, df, d1, p, ahora, dd=None):
                 s = None
         diags[nm] = d
         if s:
+            s["clave"] = nm
             try:
                 s["lectura"] = lectura_senal(s, df, d1)
             except Exception as e:
@@ -2518,10 +2534,12 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
     d1 = solo_cerradas(cargar(nombre, "1h"), "1h", ahora)
     dd = solo_cerradas(cargar(nombre, "1d"), "1d", ahora) if {"Tortugas", "MaxHist"} & set(estrategias_de(nombre, p)) else None
     diags, senales = evaluar(nombre, meta["tipo"], df, d1, p, ahora, dd)
-    modo = CUENTA.get("filtro_estructura", "anotar")
-    if senales and modo in ("sin_contradice", "solo_confirma"):
-        permitidos = {"sin_contradice": ("CONFIRMA", "NEUTRAL"), "solo_confirma": ("CONFIRMA",)}[modo]
-        fuera = [s for s in senales if s.get("lectura", {}).get("veredicto") not in permitidos]
+    permitidos = {"sin_contradice": ("CONFIRMA", "NEUTRAL"), "solo_confirma": ("CONFIRMA",)}
+    def _modo(s):
+        return FILTRO_LECTURA.get((nombre, tf, s.get("clave")), CUENTA.get("filtro_estructura", "anotar"))
+    if senales:
+        fuera = [s for s in senales if _modo(s) in permitidos
+                 and s.get("lectura", {}).get("veredicto") not in permitidos[_modo(s)]]
         for s in fuera:
             print(f"  🔮 {nombre} {s['estrategia']}: descartada por lectura ({s['lectura']['veredicto']})", flush=True)
         senales = [s for s in senales if s not in fuera]
