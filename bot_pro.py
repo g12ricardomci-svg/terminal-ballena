@@ -9,8 +9,8 @@ Mercados: BTC/USDT · EUR/USD · GBP/USD · USD/JPY · XAU/USD (Oro)
   python bot_pro.py --una-vez       -> una sola pasada (es lo que usa GitHub Actions)
   python bot_pro.py --crear-github  -> crea .github/workflows/bot.yml para correrlo gratis en GitHub
   python bot_pro.py backtest --activos BTC/USDT "GBP/USD" -> backtest vela a vela
-  streamlit run bot_pro.py          -> panel + MOTOR 24/7 en segundo plano (Streamlit Cloud): escanea cada
-                                       15 min y avisa por Telegram aunque nadie tenga la pagina abierta.
+  streamlit run bot_pro.py          -> panel + MOTOR 24/7 en segundo plano (Streamlit Cloud): escanea al cierre de
+                                       cada vela de 5m y avisa por Telegram aunque nadie tenga la pagina abierta.
                                        Streamlit Cloud duerme la app tras 12 h sin visitas: para 24/7 real
                                        usa tambien GitHub Actions (python bot_pro.py --crear-github).
 
@@ -21,6 +21,9 @@ Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
                             stop 2N (ATR 20 dias), salida en el minimo/maximo de 10 dias.
   Londres  (EUR, GBP)     : Ruptura de Londres: rango 00-07 GMT, primera vela que cierra fuera
                             entre 07 y 11 GMT, stop 1,5 pips tras el ultimo swing, objetivo 1,5R.
+  Setup91  (todos)        : Setup 9.1 de Larry Williams, el mas difundido en Brasil (Palex; Wolwacz 2010):
+                            giro de la media exponencial de 9, orden stop en el extremo de la vela
+                            senal, stop en el otro extremo, salida cuando la MME9 gira en contra.
 
 Horario de alertas: BTC 24/7 · Oro 24h (dom 18:00 a vie 17:00 NY, pausa 17-18) ·
 Forex en killzones Londres (2-5 NY) y Nueva York (7-10 NY). Se cambia en KZ_DEFAULT.
@@ -64,11 +67,11 @@ INDICES = {}                       # ej.: {"NASDAQ 100 (NQ)": "NQ=F"}  (futuro C
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas"],
-    "EUR/USD": ["SMC", "Barrido", "Londres"],
-    "GBP/USD": ["SMC", "Barrido", "Londres"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91"],
     "NASDAQ 100 (NQ)": ["SMC", "Barrido"],
 }
 
@@ -105,18 +108,36 @@ KZ_DEFAULT = {"cripto": [],                          # BTC: 24/7
               "oro": [],                             # Oro: 24h de domingo 18:00 a viernes 17:00 NY
               "indice": ["Nueva York"]}
 
-# Tamano de contrato por lote estandar
-LOTE = {"forex": 100_000, "oro": 100}   # oro: 1 lote = 100 oz (igual que el futuro GC)
+# ================================================================= TU CUENTA (EDITA AQUI)
+# Copia estos datos de tu MT5/MT4: clic derecho en el simbolo -> "Especificacion" (Specification):
+#   "Tamano del contrato" (Contract size) y "Volumen minimo" (Minimum volume).
+# Valores por defecto = cuenta estandar habitual: forex 100.000 unidades por lote, oro 100 oz por lote.
+# Si tu cuenta es CENT, escribe aqui el tamano de contrato que muestre tu MT5 para ese simbolo.
+CUENTA = {
+    "banco": 10.0,              # capital en USD
+    "riesgo_pct": 2.0,          # % del capital que arriesgas por operacion ($0.20 con $10)
+    "riesgo_max_pct": 5.0,      # si el lote minimo obliga a arriesgar mas que esto, la senal se marca NO OPERABLE
+    "lote_min": 0.01,
+    "paso_lote": 0.01,
+    "contrato_forex": 100_000,
+    "contrato_oro": 100,
+    "apalancamiento_max": 20,   # BTC: si la posicion necesita mas apalancamiento que esto, NO OPERABLE
+    "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
+    "tfs": ["5m", "15m"],       # temporalidades de entrada que escanea el bot (alertas de 5m y de 15m)
+}
+
+LOTE = {"forex": CUENTA["contrato_forex"], "oro": CUENTA["contrato_oro"]}
 NQ_USD_PUNTO, MNQ_USD_PUNTO = 20.0, 2.0
 
 PARAMS_DEFAULT = {
     "min_score": 3,                 # de 4 confluencias reales
-    "banco": 10.0,
-    "riesgo": 2.0,                  # % del banco por operacion
+    "banco": CUENTA["banco"],
+    "riesgo": CUENTA["riesgo_pct"], # % del banco por operacion
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91"],
+    "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
 }
 
 
@@ -482,9 +503,55 @@ def tamano(nombre, tipo, riesgo_usd, dist, precio):
     if tipo == "forex" and nombre.startswith("USD/"):   # p. ej. USD/JPY: P&L en JPY -> USD
         usd_por_unidad = 1.0 / precio
     lotes = riesgo_usd / (dist * contrato * usd_por_unidad)
-    if lotes < 0.01:
-        return lotes, f"{lotes:.4f} lotes (menos del mínimo de 0.01: sube el bank o el riesgo)"
-    return lotes, f"{lotes:.2f} lotes ({lotes * 100:.0f} micro)"
+    return lotes, f"{lotes:.4f} lotes"
+
+
+def usd_por_punto_lote(nombre, tipo, precio):
+    """Cuantos USD gana/pierde 1 lote por cada 1.0 de movimiento del precio."""
+    if tipo == "indice":
+        return MNQ_USD_PUNTO
+    usd = 1.0 / precio if (tipo == "forex" and nombre.startswith("USD/")) else 1.0
+    return LOTE[tipo] * usd
+
+
+def viabilidad(s, p):
+    """Ajusta el tamano a TU cuenta (lote minimo, paso de lote, apalancamiento) y marca si es operable."""
+    banco, dist, px = p["banco"], abs(s["entrada"] - s["sl"]), s["entrada"]
+    s["viable"], s["aviso"] = True, ""
+    if dist <= 0:
+        s["viable"], s["aviso"] = False, "SL invalido"
+        return s
+    if s["tipo"] == "cripto":
+        unid = s["riesgo_usd"] / dist
+        nocional = unid * px
+        apal = nocional / banco
+        s["tamano_txt"] = f"{unid:.6f} unid. · nocional ${nocional:,.2f} (~{apal:.1f}x apalancamiento)"
+        if apal > CUENTA["apalancamiento_max"]:
+            s["viable"] = False
+            s["aviso"] = (f"⚠️ NO OPERABLE: necesitas ~{apal:.0f}x de apalancamiento "
+                          f"(tu máximo es {CUENTA['apalancamiento_max']}x).")
+        return s
+    lote_min, paso = CUENTA["lote_min"], CUENTA["paso_lote"]
+    if s["tipo"] == "indice":
+        lote_min, paso = 1, 1                       # 1 contrato MNQ
+    valor = usd_por_punto_lote(s["activo"], s["tipo"], px)
+    lotes = s["riesgo_usd"] / (dist * valor)
+    lotes_ok = np.floor(lotes / paso + 1e-9) * paso
+    unidad = "MNQ" if s["tipo"] == "indice" else "lotes"
+    if lotes_ok >= lote_min:
+        r_real = lotes_ok * dist * valor
+        s["tamano_txt"] = f"{lotes_ok:.2f} {unidad} (riesgo real ${r_real:.2f})"
+        return s
+    r_min = lote_min * dist * valor
+    pct = 100 * r_min / banco
+    s["tamano_txt"] = f"{lote_min:g} {unidad} (mínimo de tu cuenta)"
+    if pct > CUENTA["riesgo_max_pct"]:
+        s["viable"] = False
+        s["aviso"] = (f"⚠️ NO OPERABLE con ${banco:g}: el lote mínimo ({lote_min:g}) arriesga ${r_min:.2f} "
+                      f"({pct:.0f}% de tu cuenta). Opérala solo si tu cuenta permite lotes más pequeños (cent).")
+    else:
+        s["aviso"] = f"ℹ️ Con el lote mínimo arriesgas ${r_min:.2f} ({pct:.1f}% de tu cuenta)."
+    return s
 
 
 def evaluar_smc(nombre, tipo, df, d1, p, ahora, dd=None):
@@ -818,8 +885,97 @@ def evaluar_londres(nombre, tipo, df, d1, p, ahora, dd=None):
                   "id": f"LONDRES|{nombre}|{hoy:%Y-%m-%d}"}
 
 
+# ================================================================= ESTRATEGIA 5: SETUP 9.1 (Larry Williams / Brasil)
+def evaluar_setup91(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Setup 9.1 de Larry Williams, muy difundido en Brasil (Palex - Alexandre Fernandes; citado por
+    Alexandre Wolwacz, 2010). Reglas publicas:
+      Media    : exponencial de 9 periodos (MME9) sobre el cierre.
+      Compra   : la MME9 venia cayendo y GIRA hacia arriba en la vela cerrada (vela senal).
+                 Orden de compra stop por encima del maximo de la vela senal.
+      Venta    : espejo (la MME9 venia subiendo y gira hacia abajo; venta stop bajo el minimo).
+      Stop     : minimo (compra) / maximo (venta) de la vela senal.
+      Salida   : al cierre de la vela en que la MME9 gira en contra.
+      Anulacion: si la MME9 vuelve a girar en contra antes de activarse la orden.
+    """
+    diag = {"Estrategia": "Setup 9.1", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora):
+        diag["Estado"] = "Mercado cerrado"
+        return diag, None
+    if df is None or len(df) < 30:
+        diag["Estado"] = "Sin datos"
+        return diag, None
+    ema = df["close"].ewm(span=9, adjust=False).mean().to_numpy()
+    sube_ahora, subia_antes = ema[-1] > ema[-2], ema[-2] > ema[-3]
+    if sube_ahora and not subia_antes:
+        bias = 1
+    elif (not sube_ahora) and subia_antes and ema[-1] < ema[-2]:
+        bias = -1
+    else:
+        diag["Estado"] = "MME9 sin giro en la última vela"
+        return diag, None
+    diag["Dir"] = "LONG" if bias == 1 else "SHORT"
+    if p.get("s91_filtro_1h", True) and d1 is not None and len(d1) >= 60:
+        b1, _ = sesgo_ctx(d1.tail(VENTANA_CTX))         # filtro opcional: solo a favor del sesgo de 1H
+        diag["Sesgo 1H"] = {1: "Alcista", -1: "Bajista", 0: "Neutral"}[b1]
+        if b1 != bias:
+            diag["Estado"] = "Giro de MME9 contra el sesgo 1H: descartado"
+            return diag, None
+    if not en_killzone(tipo, p, ahora):
+        diag["Estado"] = "Giro de MME9 fuera de killzone"
+        return diag, None
+    v = df.iloc[-1]
+    tick = _pip(nombre) if tipo == "forex" else 0.0
+    gatillo = float(v["high"]) + tick if bias == 1 else float(v["low"]) - tick
+    sl = float(v["low"]) - tick if bias == 1 else float(v["high"]) + tick
+    if abs(gatillo - sl) <= 0:
+        diag["Estado"] = "Vela señal sin rango"
+        return diag, None
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, abs(gatillo - sl), gatillo)
+    diag["Estado"] = "🚨 SEÑAL"
+    lado = "COMPRA" if bias == 1 else "VENTA"
+    return diag, {"estrategia": "Setup 9.1 (Larry Williams)", "activo": nombre, "tipo": tipo,
+                  "dir": diag["Dir"], "bias": bias, "entrada": gatillo, "sl": sl, "tp1": None, "tp2": None,
+                  "orden": "stop", "salida": "mme9",
+                  "salida_txt": (f"Orden: {lado} STOP en {fmt(gatillo)} ({'máximo' if bias == 1 else 'mínimo'} "
+                                 f"de la vela señal). Se anula si la MME9 vuelve a girar en contra.\n"
+                                 f"Salida: al cierre de la vela en que la MME9 gire en contra."),
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": f"MME9 giró {'al alza' if bias == 1 else 'a la baja'}",
+                  "kz": killzone_actual(ahora) or "-", "vela": df.index[-1],
+                  "id": f"S91|{nombre}|{diag['Dir']}|{df.index[-1]}"}
+
+
+def simular_91(o, h, l, c, ema, k0, d, gatillo, sl, max_barras):
+    """Orden stop: se activa si el precio toca el gatillo antes de que la MME9 gire en contra.
+    Sale en el stop o al cierre de la vela en que la MME9 gira en contra. Devuelve (R, idx salida, motivo, entrada)."""
+    n = len(c)
+    k = None
+    for b in range(k0, min(k0 + 10, n)):
+        if (d == 1 and h[b] >= gatillo) or (d == -1 and l[b] <= gatillo):
+            k = b
+            break
+        if (ema[b] - ema[b - 1]) * d < 0:            # la media giro en contra: orden anulada
+            return None
+    if k is None:
+        return None
+    e = max(o[k], gatillo) if d == 1 else min(o[k], gatillo)   # si abre con gap, entra a la apertura
+    riesgo = (e - sl) * d
+    if riesgo <= 0:
+        return None
+    for b in range(k, min(k + max_barras, n)):
+        if (d == 1 and l[b] <= sl) or (d == -1 and h[b] >= sl):
+            return (sl - e) * d / riesgo, b, "SL", e
+        if b > k and (ema[b] - ema[b - 1]) * d < 0:
+            return (c[b] - e) * d / riesgo, b, "Giro MME9", e
+    b = min(k + max_barras, n) - 1
+    return (c[b] - e) * d / riesgo, b, "Tiempo", e
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
-               "Londres": evaluar_londres}
+               "Londres": evaluar_londres, "Setup91": evaluar_setup91}
 
 
 def estrategias_de(nombre, p):
@@ -835,6 +991,11 @@ def evaluar(nombre, tipo, df, d1, p, ahora, dd=None):
             d, s = ESTRATEGIAS[nm](nombre, tipo, df, d1, p, ahora, dd)
         except Exception as e:
             d, s = {"Estrategia": nm, "Activo": nombre, "Estado": f"Error: {e}"}, None
+        if s:
+            s = viabilidad(s, p)
+            if not s["viable"] and CUENTA["solo_operables"]:
+                d = {**d, "Estado": "Señal descartada: " + s["aviso"]}
+                s = None
         diags[nm] = d
         if s:
             senales.append(s)
@@ -864,7 +1025,8 @@ def texto_alerta(s, tf):
                + (f"TP2 (3R): {fmt(s['tp2'])}\n" if s.get("tp2") is not None else ""))
             + f"Riesgo: ${s['riesgo_usd']:.2f} | Tamaño: {s['tamano_txt']}\n"
             f"Score: {s['score']}/{s['score_max']} ({s['confluencias']})\n"
-            f"Killzone: {s['kz']} | Vela cerrada: {hora:%a %H:%M} NY")
+            f"Killzone: {s['kz']} | Vela cerrada: {hora:%a %H:%M} NY"
+            + (f"\n{s['aviso']}" if s.get("aviso") else ""))
 
 
 # ================================================================= ESTADO / ANTI-SPAM
@@ -891,7 +1053,7 @@ class Estado:
     def procesar(self, s, tf, enviar=True):
         """Una alerta por estrategia+activo+direccion cada COOLDOWN_H horas y nunca dos veces el mismo
         setup. El cooldown solo se activa si Telegram confirmo el envio."""
-        k = f"{s['estrategia']}|{s['activo']}|{s['dir']}"
+        k = f"{s['estrategia']}|{s['activo']}|{s['dir']}|{tf}"
         if s["id"] in self.d["ids"] or time.time() - self.d["enviadas"].get(k, 0) < COOLDOWN_H * 3600:
             return False
         ok, msg = enviar_telegram(texto_alerta(s, tf)) if enviar else (False, "Envio desactivado")
@@ -901,7 +1063,7 @@ class Estado:
         if ok:
             self.d["enviadas"][k] = time.time()
             self.d["ids"].append(s["id"])
-        self.d["log"].append({"Hora NY": f"{datetime.now(NY):%d/%m %H:%M}", "Estrategia": s["estrategia"],
+        self.d["log"].append({"Hora NY": f"{datetime.now(NY):%d/%m %H:%M}", "TF": tf, "Estrategia": s["estrategia"],
                               "Activo": s["activo"], "Dir": s["dir"], "Entrada": fmt(s["entrada"]),
                               "SL": fmt(s["sl"]), "TP1": fmt(s["tp1"]) if s.get("tp1") else "canal",
                               "Score": f"{s['score']}/{s['score_max']}", "Telegram": "OK" if ok else msg})
@@ -967,6 +1129,7 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
     lo10 = np.r_[np.nan, dia["low"].rolling(10).min().to_numpy()][nd_vela]
     hi10 = np.r_[np.nan, dia["high"].rolling(10).max().to_numpy()][nd_vela]
     o, h, l, c = (df[x].to_numpy() for x in ("open", "high", "low", "close"))
+    ema9 = df["close"].ewm(span=9, adjust=False).mean().to_numpy()
     paso = pd.Timedelta(minutes=TF_MIN[tf])
     ops, ultimo, ids, libre = [], {}, set(), {}
     n = len(df)
@@ -989,18 +1152,24 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
                     pd.Timedelta(hours=COOLDOWN_H):
                 continue
             mb = max_barras * 60 if s.get("salida") == "canal" else max_barras   # Tortugas: hasta 60 dias
-            r = simular(o, h, l, c, idx + 1, s["bias"], s["sl"], gestion, mb, s, lo10, hi10)
-            if r is None:
-                continue
-            r_bruto, salida, motivo = r
-            riesgo_px = abs(o[idx + 1] - s["sl"])
-            r_coste = 2 * coste_pct / 100 * o[idx + 1] / riesgo_px
+            if s.get("orden") == "stop":                      # Setup 9.1: orden stop pendiente
+                r = simular_91(o, h, l, c, ema9, idx + 1, s["bias"], s["entrada"], s["sl"], mb)
+                if r is None:
+                    continue
+                r_bruto, salida, motivo, e_px = r
+            else:
+                r = simular(o, h, l, c, idx + 1, s["bias"], s["sl"], gestion, mb, s, lo10, hi10)
+                if r is None:
+                    continue
+                (r_bruto, salida, motivo), e_px = r, o[idx + 1]
+            riesgo_px = abs(e_px - s["sl"])
+            r_coste = 2 * coste_pct / 100 * e_px / riesgo_px
             ultimo[clave] = ahora
             ids.add(s["id"])
             ops.append({"estrategia": s["estrategia"], "activo": nombre,
                         "senal_NY": ahora.tz_convert(NY).strftime("%Y-%m-%d %H:%M"), "dir": s["dir"],
                         "score": s["score"], "confluencias": s["confluencias"], "killzone": s["kz"],
-                        "entrada": o[idx + 1], "sl": s["sl"],
+                        "entrada": e_px, "sl": s["sl"],
                         "salida_NY": (df.index[salida] + paso).tz_convert(NY).strftime("%Y-%m-%d %H:%M"),
                         "motivo": motivo, "R_bruto": round(r_bruto, 3), "coste_R": round(r_coste, 3),
                         "R": round(r_bruto - r_coste, 3), "barras": salida - idx})
@@ -1088,14 +1257,28 @@ def escanear(tf, p, estado, verbose=True, cargar=obtener):
         except Exception as e:
             diags, senales = {"-": {"Estrategia": "-", "Activo": nm, "Estado": f"Error: {e}"}}, []
         for d in diags.values():
+            d["TF"] = tf
             filas.append(d)
             if verbose:
                 print(f"  {nm:<16} {d.get('Estrategia', '-'):<8} {d.get('Dir', '-'):<5} "
                       f"score {d.get('Score', 0)}  {d['Estado']}")
         for s in senales:
+            s["tf"] = tf
             if estado is not None and estado.procesar(s, tf):
                 nuevas += 1
     return nuevas, filas
+
+
+def escanear_varios(tfs, p, estado, verbose=True, cargar=obtener):
+    """Escanea cada temporalidad (p. ej. 5m y 15m). Cada alerta dice de que temporalidad viene."""
+    total, filas = 0, []
+    for tf in tfs:
+        if verbose:
+            print(f"  --- {tf} ---", flush=True)
+        n, f = escanear(tf, p, estado, verbose, cargar)
+        total += n
+        filas += f
+    return total, filas
 
 
 def explicar_error_telegram(msg):
@@ -1132,7 +1315,7 @@ def resumen_estado(filas):
     """Texto corto para Telegram: que esta haciendo cada estrategia en cada mercado."""
     lineas = []
     for f in filas:
-        lineas.append(f"• {f.get('Activo')} · {f.get('Estrategia', '-')}: {f.get('Estado', '-')}")
+        lineas.append(f"• {f.get('TF', '')} {f.get('Activo')} · {f.get('Estrategia', '-')}: {f.get('Estado', '-')}")
     return "\n".join(lineas)
 
 
@@ -1142,17 +1325,17 @@ def correr_bot(a, p):
     if ping:
         revisar_telegram()
         ok, msg = enviar_telegram(f"✅ Bot Pro activo · {datetime.now(NY):%a %d/%m %H:%M} NY\n"
-                                  f"Mercados: {', '.join(ACTIVOS)}\nTemporalidad: {a.tf}")
+                                  f"Mercados: {', '.join(ACTIVOS)}\nTemporalidades: {' y '.join(a.tf)}")
         print(f"Ping a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
-    print(f"🏛️ BOT PRO iniciado · estrategias: {', '.join(p['estrategias'])} · {a.tf} · "
+    print(f"🏛️ BOT PRO iniciado · estrategias: {', '.join(p['estrategias'])} · {' + '.join(a.tf)} · "
           f"{'una pasada' if a.una_vez else 'bucle 24/7'}", flush=True)
     while True:
         print(f"\n[{datetime.now(NY):%Y-%m-%d %H:%M:%S} NY] Escaneando {len(ACTIVOS)} activos", flush=True)
         try:
-            n, filas = escanear(a.tf, p, estado)
+            n, filas = escanear_varios(a.tf, p, estado)
             print(f"  -> {n} alertas nuevas enviadas", flush=True)
             if ping:                                   # en la prueba manual: manda tambien el diagnostico
-                ok, msg = enviar_telegram(f"📋 Estado del escaner ({a.tf}) · {n} señales nuevas\n"
+                ok, msg = enviar_telegram(f"📋 Estado del escaner ({' + '.join(a.tf)}) · {n} señales nuevas\n"
                                           + resumen_estado(filas)[:3800])
                 print(f"Resumen a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
                 ping = False
@@ -1161,7 +1344,7 @@ def correr_bot(a, p):
         estado.guardar()
         if a.una_vez:
             break
-        seg = TF_MIN[a.tf] * 60
+        seg = min(TF_MIN[t] for t in a.tf) * 60
         time.sleep(seg - (time.time() % seg) + 20)   # 20 s despues del cierre de la siguiente vela
 
 
@@ -1201,20 +1384,23 @@ def panel():
         def bucle():
             mem = memoria()
             ok, msg = enviar_telegram(f"✅ Bot Pro activo (motor 24/7 en Streamlit) · "
-                                      f"{datetime.now(NY):%a %d/%m %H:%M} NY\nMercados: {', '.join(ACTIVOS)}")
+                                      f"{datetime.now(NY):%a %d/%m %H:%M} NY\nMercados: {', '.join(ACTIVOS)}\n"
+                                      f"Temporalidades: {' y '.join(CUENTA['tfs'])}")
             info["error"] = "" if ok else explicar_error_telegram(msg)
             primera = True
             while True:
                 try:
-                    n, filas = escanear("15m", dict(PARAMS_DEFAULT), mem, verbose=False)
+                    n, filas = escanear_varios(CUENTA["tfs"], dict(PARAMS_DEFAULT), mem, verbose=False)
                     info["ultimo"], info["senales"] = datetime.now(NY), info["senales"] + n
                     if primera:
-                        enviar_telegram("📋 Estado del escaner (15m)\n" + resumen_estado(filas)[:3800])
+                        enviar_telegram(f"📋 Estado del escaner ({' + '.join(CUENTA['tfs'])})\n"
+                                        + resumen_estado(filas)[:3800])
                         primera = False
                 except Exception as e:
                     info["error"] = str(e)
                 mem.guardar()
-                time.sleep(900 - (time.time() % 900) + 20)     # 20 s despues de cada cierre de 15m
+                seg = min(TF_MIN[t] for t in CUENTA["tfs"]) * 60
+                time.sleep(seg - (time.time() % seg) + 20)    # 20 s despues de cada cierre de vela
 
         threading.Thread(target=bucle, daemon=True, name="motor-24-7").start()
         return info
@@ -1227,7 +1413,7 @@ def panel():
                                  help="SMC = Order Block + OTE + FVG + POC · Barrido = liquidez PDH/PDL/Asia + "
                                       "cambio de estructura, sin indicadores")
     activo = sb.selectbox("Activo (gráfico):", list(ACTIVOS))
-    tf = sb.selectbox("Temporalidad de entrada:", ["15m", "5m"])
+    tf = sb.selectbox("Temporalidad del gráfico y la tabla:", ["5m", "15m"])
     min_score = sb.slider("Score mínimo SMC (de 4)", 0, 4, PARAMS_DEFAULT["min_score"])
     banco = sb.number_input("Bank ($)", 1.0, 1_000_000.0, float(PARAMS_DEFAULT["banco"]))
     riesgo = sb.number_input("Riesgo por operación (%)", 0.1, 10.0, float(PARAMS_DEFAULT["riesgo"]))
@@ -1248,7 +1434,7 @@ def panel():
              estrategias=estrategias or list(ESTRATEGIAS))
 
     st.markdown("# 🏛️ BOT PRO · QUANT TERMINAL")
-    st.caption("SMC · Barrido · Tortugas · Ruptura de Londres · contexto 1H → entrada 15m · solo velas cerradas")
+    st.caption("SMC · Barrido · Tortugas · Ruptura de Londres · contexto 1H → entrada 5m · solo velas cerradas")
     ult = f"{fondo['ultimo']:%H:%M}" if fondo["ultimo"] else "escaneando..."
     (st.error if fondo["error"] else st.success)(
         f"🟢 Motor 24/7 activo desde {fondo['inicio']:%d/%m %H:%M} NY · último escaneo {ult} · "
@@ -1347,7 +1533,7 @@ WORKFLOW_YML = """name: Bot Pro
 
 on:
   schedule:
-    - cron: "1,16,31,46 * * * *"   # UTC, 1 min despues de cada cierre de vela de 15m (minimo de GitHub: 5 min)
+    - cron: "1-59/5 * * * *"       # UTC, 1 min despues de cada cierre de vela de 5m (minimo de GitHub: 5 min)
   workflow_dispatch: {}            # boton "Run workflow" para probarlo a mano
 
 concurrency:
@@ -1375,7 +1561,7 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
         # al pulsar "Run workflow" a mano tambien manda "✅ Bot activo" para comprobar Telegram
-        run: python bot_pro.py --una-vez --tf 15m ${{ github.event_name == 'workflow_dispatch' && '--ping' || '' }}
+        run: python bot_pro.py --una-vez --tf 5m 15m ${{ github.event_name == 'workflow_dispatch' && '--ping' || '' }}
       - name: Guardar memoria anti-spam
         if: always()
         uses: actions/cache/save@v4
@@ -1400,7 +1586,8 @@ def cli():
     ap.add_argument("--una-vez", action="store_true", help="Una sola pasada (cron / GitHub Actions)")
     ap.add_argument("--crear-github", action="store_true", help="Crea .github/workflows/bot.yml")
     ap.add_argument("--ping", action="store_true", help="Envia '✅ Bot activo' a Telegram al arrancar")
-    ap.add_argument("--tf", default="15m", choices=["5m", "15m", "1h"])
+    ap.add_argument("--tf", nargs="+", default=list(CUENTA["tfs"]), choices=["5m", "15m", "1h"],
+                    help="Una o varias temporalidades, p. ej. --tf 5m 15m")
     ap.add_argument("--estrategias", nargs="*", default=list(ESTRATEGIAS), choices=list(ESTRATEGIAS))
     ap.add_argument("--min-score", type=int, default=PARAMS_DEFAULT["min_score"])
     ap.add_argument("--banco", type=float, default=PARAMS_DEFAULT["banco"])
@@ -1432,7 +1619,11 @@ def cli():
     p = dict(PARAMS_DEFAULT, min_score=a.min_score, banco=a.banco, riesgo=a.riesgo, kz=kz,
              estrategias=a.estrategias)
     if a.modo == "backtest":
-        correr_backtest(a, p)
+        base_salida = a.salida
+        for tf in a.tf:
+            a.tf, a.salida = tf, os.path.join(base_salida, tf)
+            correr_backtest(a, p)
+            a.tf = None
     else:
         correr_bot(a, p)
 
