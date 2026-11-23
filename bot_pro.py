@@ -28,6 +28,8 @@ Estrategias y en que mercado corre cada una (ESTRATEGIAS_ACTIVO):
                             de la apertura (Londres, Tokio o Wall Street), stop en su otro extremo, 10R o fin de sesion.
   HolyGrail(todos)        : Holy Grail de Linda Raschke: ADX>30 subiendo + retroceso a la EMA 20, orden stop.
   VWAP     (todos)        : Confluencia VWAP + ADX + EMA9/21 + CVD + OB/FVG del Quant Terminal, TP 2,5R.
+  Ruido    (todos)        : Noise Area de Zarattini, Aziz y Barbon ("Beat the Market"): fuera de la zona de ruido
+                            de 14 dias y del lado del VWAP, control cada 30 min, stop dinamico, cierre fin de sesion.
   Gotobi   (USD/JPY)      : dias de pago en Japon (5, 10, 15...): compra 8:00 JST, cierre en el fixing 9:55 JST.
 
 Horario de alertas: BTC 24/7 · Oro 24h (dom 18:00 a vie 17:00 NY, pausa 17-18) ·
@@ -72,11 +74,11 @@ INDICES = {}                       # ej.: {"NASDAQ 100 (NQ)": "NQ=F"}  (futuro C
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP"],
-    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP"],
-    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido"],
     "NASDAQ 100 (NQ)": ["SMC", "Barrido"],
 }
 
@@ -141,7 +143,7 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
 }
 
@@ -1270,9 +1272,149 @@ def evaluar_vwap(nombre, tipo, df, d1, p, ahora, dd=None):
                   "id": f"VWAP|{nombre}|{diag['Dir']}|{d.index[-1]}"}
 
 
+# ================================================================= ESTRATEGIA 10: NOISE AREA (Zarattini, Aziz y Barbon)
+def _sigma_ruido(d1, t0, horas, dias=14):
+    """Movimiento medio absoluto desde la apertura, por hora de sesion, de los 14 dias previos (velas 1H)."""
+    base0 = t0.floor("1h")
+    movs = {k: [] for k in range(1, horas + 1)}
+    usados = 0
+    for n in range(1, 40):
+        if usados >= dias:
+            break
+        b = base0 - pd.Timedelta(days=n)
+        if b not in d1.index:
+            continue
+        o_d = float(d1.at[b, "open"])
+        usados += 1
+        for k in range(1, horas + 1):
+            t = b + pd.Timedelta(hours=k - 1)
+            if t in d1.index:
+                movs[k].append(abs(float(d1.at[t, "close"]) / o_d - 1))
+    if usados < 5:
+        return None
+    return {k: (float(np.mean(v)) if v else np.nan) for k, v in movs.items()}
+
+
+def _inicio_sesion(nombre, cierre):
+    ses = SESION_ORB.get(nombre)
+    if ses is None:
+        return None
+    zona, hh, mm, dur = ses
+    loc = cierre.tz_convert(ZoneInfo(zona))
+    t0 = loc.normalize() + pd.Timedelta(hours=hh, minutes=mm)
+    if loc.weekday() >= 5 or not (t0 < loc <= t0 + pd.Timedelta(hours=dur)):
+        return None
+    return t0.tz_convert("UTC"), dur
+
+
+def evaluar_ruido(nombre, tipo, df, d1, p, ahora, dd=None):
+    """
+    Intraday momentum 'Noise Area' (Zarattini, Aziz y Barbon 2024, "Beat the Market"):
+      - Zona de ruido: apertura (o cierre previo) +/- movimiento medio de los ultimos 14 dias a esa hora.
+      - Cada 30 minutos: si el precio cierra FUERA de la zona y del lado correcto del VWAP -> entra a favor.
+      - Stop dinamico: el mayor entre el limite de la zona y el VWAP (LONG); sale si una vela de 30 min
+        cierra al otro lado. Cierre obligatorio al final de la sesion.
+    Sesiones: Londres (EUR, GBP), Tokio (JPY), Wall Street 9:30 (Oro, BTC).
+    """
+    diag = {"Estrategia": "Ruido", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+            "Score": 0, "Confluencias": ""}
+    if not mercado_abierto(tipo, ahora) or df is None or d1 is None or len(df) < 30:
+        diag["Estado"] = "Mercado cerrado" if df is not None else "Sin datos"
+        return diag, None
+    tf_min = max(int(df.index.to_series().diff().tail(30).min().total_seconds() // 60), 1)
+    cierre = df.index[-1] + pd.Timedelta(minutes=tf_min)
+    ini = _inicio_sesion(nombre, cierre)
+    if ini is None:
+        diag["Estado"] = "Fuera de sesión"
+        return diag, None
+    t0, dur = ini
+    m = int((cierre - t0).total_seconds() // 60)
+    if m < 30 or m % 30 or m >= dur * 60:
+        diag["Estado"] = "Esperando control de cada 30 min"
+        return diag, None
+    ses, prev = df[df.index >= t0], df[df.index < t0]
+    if ses.empty or prev.empty or ses.index[0] != t0:
+        diag["Estado"] = "Sin apertura de sesión en los datos"
+        return diag, None
+    sig = _sigma_ruido(d1, t0, int(np.ceil(dur)))
+    k = int(np.ceil(m / 60))
+    if sig is None or not np.isfinite(sig.get(k, np.nan)):
+        diag["Estado"] = "Sin 14 días de historial"
+        return diag, None
+    o_d, c_prev = float(ses["open"].iloc[0]), float(prev["close"].iloc[-1])
+    hi_b, lo_b = max(o_d, c_prev), min(o_d, c_prev)
+    ub, lb = hi_b * (1 + sig[k]), lo_b * (1 - sig[k])
+    vol = ses["volume"] if ses["volume"].sum() > 0 else pd.Series(1.0, index=ses.index)
+    vwap = float(((ses["high"] + ses["low"] + ses["close"]) / 3 * vol).sum() / vol.sum())
+    px = float(ses["close"].iloc[-1])
+    diag["_niveles"] = {"Ruido sup": ub, "Ruido inf": lb, "VWAP": vwap}
+    if px > ub and px > vwap:
+        bias, trail = 1, max(ub, vwap)
+    elif px < lb and px < vwap:
+        bias, trail = -1, min(lb, vwap)
+    else:
+        diag["Estado"] = "Precio dentro de la zona de ruido"
+        return diag, None
+    # stop de emergencia a un 'ancho de ruido'; la salida normal es el stop dinamico cada 30 min
+    sl = px - bias * max(sig[k] * hi_b, abs(px - trail))
+    if abs(px - sl) <= 0:
+        diag["Estado"] = "SL invalido"
+        return diag, None
+    diag["Dir"] = "LONG" if bias == 1 else "SHORT"
+    riesgo_usd = p["banco"] * p["riesgo"] / 100
+    tam, tam_txt = tamano(nombre, tipo, riesgo_usd, abs(px - sl), px)
+    fin = (t0 + pd.Timedelta(hours=dur)).tz_convert(NY)
+    diag["Estado"] = "🚨 SEÑAL"
+    return diag, {"estrategia": "Noise Area (Zarattini/Aziz)", "activo": nombre, "tipo": tipo, "dir": diag["Dir"],
+                  "bias": bias, "entrada": px, "sl": sl, "tp1": None, "tp2": None, "orden": "ruido",
+                  "t0": t0, "dur": dur, "sig": sig, "base": hi_b if bias == 1 else lo_b,
+                  "salida_txt": (f"Stop dinámico: {'el mayor' if bias == 1 else 'el menor'} entre el límite de "
+                                 f"ruido y el VWAP (hoy {fmt(trail)}). Revisa cada 30 min: sal si una vela cierra al "
+                                 f"otro lado.\nSL de emergencia: {fmt(sl)}. Cierre obligatorio a las {fin:%H:%M} NY."),
+                  "riesgo_usd": riesgo_usd, "tamano": tam, "tamano_txt": tam_txt, "score": 1, "score_max": 1,
+                  "confluencias": f"fuera de la zona de ruido ({fmt(lb)} - {fmt(ub)}) · VWAP {fmt(vwap)}",
+                  "kz": killzone_actual(ahora) or "-", "vela": df.index[-1],
+                  "id": f"RUIDO|{nombre}|{diag['Dir']}|{t0:%Y-%m-%d}"}
+
+
+def simular_ruido(df, k, s, paso):
+    """Entra a la apertura de la vela k. Stop inicial fijo intravela; cada 30 min sale si el cierre cruza
+    el stop dinamico max(limite de ruido, VWAP); sale al final de la sesion."""
+    d, sl, t0 = s["bias"], s["sl"], s["t0"]
+    o, h, l, c = (df[x].to_numpy() for x in ("open", "high", "low", "close"))
+    v = df["volume"].to_numpy() if df["volume"].sum() > 0 else np.ones(len(df))
+    if k >= len(c):
+        return None
+    e = o[k]
+    riesgo = (e - sl) * d
+    if riesgo <= 0:
+        return None
+    i0 = int(df.index.searchsorted(t0))
+    tp_ = (h + l + c) / 3
+    pv, vv = np.cumsum(tp_ * v), np.cumsum(v)
+    fin_t = t0 + pd.Timedelta(hours=s["dur"])
+    b = k
+    for b in range(k, len(c)):
+        cierre = df.index[b] + paso
+        if (d == 1 and l[b] <= sl) or (d == -1 and h[b] >= sl):
+            return (sl - e) * d / riesgo, b, "SL", e
+        if cierre >= fin_t:
+            return (c[b] - e) * d / riesgo, b, "Fin sesión", e
+        m = int((cierre - t0).total_seconds() // 60)
+        if m % 30 == 0:
+            vw = (pv[b] - (pv[i0 - 1] if i0 > 0 else 0)) / (vv[b] - (vv[i0 - 1] if i0 > 0 else 0))
+            sg = s["sig"].get(int(np.ceil(m / 60)), np.nan)
+            lim = s["base"] * (1 + d * sg) if np.isfinite(sg) else vw
+            trail = max(lim, vw) if d == 1 else min(lim, vw)
+            if (c[b] - trail) * d < 0:
+                return (c[b] - e) * d / riesgo, b, "Stop dinámico", e
+    return (c[b] - e) * d / riesgo, b, "Tiempo", e
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
                "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
-               "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap}
+               "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap,
+               "Ruido": evaluar_ruido}
 
 
 def estrategias_de(nombre, p):
@@ -1450,7 +1592,12 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
                 continue
             mb = max_barras * 60 if s.get("salida") == "canal" else max_barras   # Tortugas: hasta 60 dias
             mb = s.get("max_barras") or mb                    # ORB / Gotobi: salida por tiempo propia
-            if s.get("orden") == "stop_tp":                   # Holy Grail: orden stop con TP fijo
+            if s.get("orden") == "ruido":                     # Noise Area: stop dinamico cada 30 min
+                r = simular_ruido(df, idx + 1, s, paso)
+                if r is None:
+                    continue
+                r_bruto, salida, motivo, e_px = r
+            elif s.get("orden") == "stop_tp":                   # Holy Grail: orden stop con TP fijo
                 r = simular_stop(o, h, l, c, idx + 1, s["bias"], s["entrada"], s["sl"], s["tp1"], mb)
                 if r is None:
                     continue
