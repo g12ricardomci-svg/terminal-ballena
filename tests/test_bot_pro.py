@@ -336,3 +336,16 @@ def test_hay_version_nueva(monkeypatch):
     monkeypatch.delenv("GITHUB_SHA")
     b._VERSION["ultima"] = 0
     assert b.hay_version_nueva() is False                 # fuera de GitHub Actions nunca corta
+
+
+def test_respuestas_con_grafico(monkeypatch):
+    pytest.importorskip("matplotlib")
+    df = _velas(800, deriva=0.0003, semilla=7)
+    monkeypatch.setattr(b, "noticia_cercana", lambda *a, **k: None)
+    cargar = lambda nm, tf: df
+    for q in ("¿pa dónde va el oro?", "/figuras oro", "/escenarios oro", "/plan oro", "/posicion oro long 100 99",
+              "/grafico oro 15m"):
+        txt, png = b.responder(q, None, cargar)
+        assert txt and png and png[:8] == b"\x89PNG\r\n\x1a\n", q
+    assert b.responder("/lectura oro solo texto", None, cargar)[1] is None
+    assert b.responder("hola", None, cargar)[1] is None
