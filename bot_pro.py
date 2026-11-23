@@ -169,6 +169,7 @@ CUENTA = {
     "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
     "filtro_noticias": True,    # no avisar 30 min antes ni 15 min despues de una noticia de ALTO impacto
     "reactivar": [],            # nombres de estrategias apagadas por el freno que quieres volver a activar
+    "filtro_estructura": "anotar",  # lectura de estructura: "anotar" (solo informa), "sin_contradice" o "solo_confirma"
     "tfs": ["5m", "15m"],       # temporalidades de entrada que escanea el bot (alertas de 5m y de 15m)
 }
 
@@ -2316,6 +2317,154 @@ def proximas_noticias(horas=24, ahora=None):
         f"• {e['t'].tz_convert(NY):%a %H:%M} NY · {e['moneda']} · {e['titulo']}" for e in ev[:12])
 
 
+# ================================================================= LECTURA DE ESTRUCTURA (motor propio, idea tipo "Aura")
+# Algoritmos deterministas leen la estructura del mercado y emiten un VEREDICTO para cada senal del bot.
+# La explicacion se arma SOLO con numeros calculados (nada inventado). Conceptos publicos de SMC:
+#   estructura HH/HL/LH/LL, BOS/CHoCH, zonas de oferta/demanda (fresca/testeada/rota), FVG, premium/descuento.
+# El veredicto se registra en cada senal, en el backtest y en el diario para MEDIR si mejora los resultados.
+def leer_estructura(df, k=3):
+    """Tendencia por swings (+1 HH+HL, -1 LH+LL, 0 mixta), ultimo evento (BOS/CHoCH) y rango de negociacion."""
+    n = len(df)
+    h, l, c = df["high"].to_numpy(), df["low"].to_numpy(), df["close"].to_numpy()
+    sh, sl = swings(df, k)
+    out = {"tendencia": 0, "etiquetas": "", "evento": None, "evento_dir": 0, "evento_hace": None,
+           "rango": None}
+    if len(sh) < 2 or len(sl) < 2:
+        return out
+    ult_h = "HH" if h[sh[-1]] > h[sh[-2]] else "LH"
+    ult_l = "HL" if l[sl[-1]] > l[sl[-2]] else "LL"
+    out["etiquetas"] = f"{ult_h}/{ult_l}"
+    out["tendencia"] = 1 if (ult_h, ult_l) == ("HH", "HL") else -1 if (ult_h, ult_l) == ("LH", "LL") else 0
+    ev = []
+    for idx_sw, d in ((sh, 1), (sl, -1)):
+        for j in reversed(idx_sw[-4:]):
+            nivel = h[j] if d == 1 else l[j]
+            rompe = np.where((c[j + k + 1:] > nivel) if d == 1 else (c[j + k + 1:] < nivel))[0]
+            if len(rompe):
+                b = j + k + 1 + int(rompe[0])
+                previos_h = [x for x in sh if x < j]
+                previos_l = [x for x in sl if x < j]
+                previa = 0
+                if len(previos_h) >= 1 and len(previos_l) >= 1:
+                    previa = 1 if (h[j] > h[previos_h[-1]] if d == 1 else l[j] > l[previos_l[-1]]) else -1
+                tipo = "BOS" if (previa == d or previa == 0) else "CHoCH"
+                ev.append((b, d, tipo, float(nivel)))
+                break
+    if ev:
+        b, d, tipo, nivel = max(ev)
+        out.update(evento=f"{tipo} {'alcista' if d == 1 else 'bajista'} en {fmt(nivel)}", evento_dir=d,
+                   evento_hace=n - 1 - b)
+    hi, lo = float(max(h[sh[-1]], h[sh[-1]:].max())), float(min(l[sl[-1]], l[sl[-1]:].min()))
+    if hi > lo:
+        out["rango"] = (lo, hi)
+    return out
+
+
+def zonas_oferta_demanda(df, mult=1.5, max_zonas=8):
+    """Zonas: ultima vela contraria antes de un desplazamiento >= mult*ATR en 3 velas.
+    Demanda = [minimo, maximo del cuerpo] de la ultima vela bajista antes del impulso alcista (oferta en espejo).
+    Estado: fresca (no revisitada), testeada (n visitas sin cierre mas alla de la distal) o rota."""
+    o, h, l, c = (df[x].to_numpy() for x in ("open", "high", "low", "close"))
+    a = atr(df, 14).to_numpy()
+    n, zonas, usadas = len(c), [], set()
+    for i in range(4, n - 3):
+        for d in (1, -1):
+            mov = (c[i:i + 3].max() - o[i]) if d == 1 else (o[i] - c[i:i + 3].min())
+            if not (a[i] > 0 and mov >= mult * a[i] and (c[i] - o[i]) * d > 0):
+                continue
+            j = next((q for q in range(i - 1, i - 4, -1) if (c[q] - o[q]) * d < 0), None)
+            if j is None or (j, d) in usadas:
+                continue
+            usadas.add((j, d))
+            prox = max(o[j], c[j]) if d == 1 else min(o[j], c[j])
+            dist = l[j] if d == 1 else h[j]
+            visitas, estado = 0, "fresca"
+            dentro = False
+            for b in range(i + 3, n):
+                toca = l[b] <= prox if d == 1 else h[b] >= prox
+                if (c[b] < dist) if d == 1 else (c[b] > dist):
+                    estado = "rota"
+                    break
+                if toca and not dentro:
+                    visitas += 1
+                dentro = toca
+            if estado != "rota" and visitas:
+                estado = "testeada" if visitas < 3 else "consumida"
+            if estado in ("fresca", "testeada"):
+                zonas.append({"tipo": "demanda" if d == 1 else "oferta", "d": d, "prox": float(prox),
+                              "dist": float(dist), "estado": estado, "visitas": visitas, "i": j})
+    return sorted(zonas, key=lambda z: -z["i"])[:max_zonas]
+
+
+def fvg_abiertos(df, ventana=60):
+    """FVG sin rellenar en las ultimas 'ventana' velas: (d, desde, hasta)."""
+    h, l = df["high"].to_numpy(), df["low"].to_numpy()
+    n, res = len(h), []
+    for q in range(max(2, n - ventana), n):
+        if l[q] > h[q - 2] and (q + 1 >= n or l[q + 1:].min() > h[q - 2]):
+            res.append((1, float(h[q - 2]), float(l[q])))
+        if h[q] < l[q - 2] and (q + 1 >= n or h[q + 1:].max() < l[q - 2]):
+            res.append((-1, float(h[q]), float(l[q - 2])))
+    return res
+
+
+def lectura_senal(s, df, d1):
+    """Veredicto de estructura para una senal: CONFIRMA (>= +2), NEUTRAL o CONTRADICE (<= -1).
+    Cada motivo usa solo numeros calculados."""
+    d, px, sl = int(s["bias"]), float(s["entrada"]), float(s["sl"])
+    r = abs(px - sl)
+    tp = s.get("tp1") if s.get("tp1") is not None else px + d * 2 * r
+    pts, mot = 0, []
+    lado = {1: "alcista", -1: "bajista", 0: "mixta"}
+    if d1 is not None and len(d1) >= 40:
+        e1 = leer_estructura(d1.tail(200))
+        if e1["tendencia"]:
+            pts += 1 if e1["tendencia"] == d else -1
+            mot.append(f"{'✓' if e1['tendencia'] == d else '✗'} estructura 1H {lado[e1['tendencia']]} ({e1['etiquetas']})")
+    ee = leer_estructura(df.tail(200))
+    if ee["tendencia"]:
+        pts += 1 if ee["tendencia"] == d else -1
+        mot.append(f"{'✓' if ee['tendencia'] == d else '✗'} estructura {lado[ee['tendencia']]} ({ee['etiquetas']})")
+    if ee["evento"] and ee["evento_hace"] is not None and ee["evento_hace"] <= 30:
+        pts += 1 if ee["evento_dir"] == d else -1
+        mot.append(f"{'✓' if ee['evento_dir'] == d else '✗'} {ee['evento']} (hace {ee['evento_hace']} velas)")
+    if ee["rango"]:
+        lo, hi = ee["rango"]
+        pos = (px - lo) / (hi - lo) if hi > lo else 0.5
+        pos_d = pos if d == 1 else 1 - pos
+        if pos_d <= 0.5:
+            pts += 1
+            mot.append(f"✓ precio en {'descuento' if d == 1 else 'premium'} ({100 * pos:.0f}% del rango)")
+        elif pos_d >= 0.75:
+            pts -= 1
+            mot.append(f"✗ precio en {'premium' if d == 1 else 'descuento'} ({100 * pos:.0f}% del rango)")
+    zonas = zonas_oferta_demanda(df.tail(200))
+    contra = [z for z in zonas if z["d"] == -d and min(px, tp) < z["prox"] < max(px, tp)]
+    if contra:
+        z = min(contra, key=lambda z: abs(z["prox"] - px))
+        pts -= 1
+        mot.append(f"✗ {z['tipo']} {z['estado']} en {fmt(z['prox'])} antes del objetivo")
+    apoyo = [z for z in zonas if z["d"] == d and min(sl, px) <= z["prox"] <= max(sl, px) + 0.25 * r]
+    gaps = [g for g in fvg_abiertos(df.tail(200)) if g[0] == d and min(sl, px) <= (g[1] + g[2]) / 2 <= max(sl, px)]
+    if apoyo:
+        z = apoyo[0]
+        pts += 1
+        mot.append(f"✓ {z['tipo']} {z['estado']} en {fmt(z['prox'])} protege el stop")
+    elif gaps:
+        pts += 1
+        mot.append(f"✓ FVG sin rellenar {fmt(gaps[-1][1])}-{fmt(gaps[-1][2])} protege el stop")
+    ver = "CONFIRMA" if pts >= 2 else "CONTRADICE" if pts <= -1 else "NEUTRAL"
+    return {"veredicto": ver, "puntos": pts, "motivos": mot}
+
+
+def texto_lectura(lec):
+    if not lec:
+        return ""
+    ic = {"CONFIRMA": "🟢", "NEUTRAL": "🟡", "CONTRADICE": "🔴"}[lec["veredicto"]]
+    return (f"\n🔮 Lectura de estructura: {ic} {lec['veredicto']} ({lec['puntos']:+d})\n"
+            + "\n".join("   " + m for m in lec["motivos"][:6]))
+
+
 ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evaluar_tortugas,
                "Londres": evaluar_londres, "Setup91": evaluar_setup91, "ORB": evaluar_orb,
                "HolyGrail": evaluar_holygrail, "Gotobi": evaluar_gotobi, "VWAP": evaluar_vwap,
@@ -2346,6 +2495,10 @@ def evaluar(nombre, tipo, df, d1, p, ahora, dd=None):
                 s = None
         diags[nm] = d
         if s:
+            try:
+                s["lectura"] = lectura_senal(s, df, d1)
+            except Exception as e:
+                s["lectura"] = {"veredicto": "NEUTRAL", "puntos": 0, "motivos": [f"lectura no disponible: {e}"]}
             senales.append(s)
     return diags, senales
 
@@ -2365,6 +2518,13 @@ def analizar(nombre, tf, p, ahora=None, cargar=obtener):
     d1 = solo_cerradas(cargar(nombre, "1h"), "1h", ahora)
     dd = solo_cerradas(cargar(nombre, "1d"), "1d", ahora) if {"Tortugas", "MaxHist"} & set(estrategias_de(nombre, p)) else None
     diags, senales = evaluar(nombre, meta["tipo"], df, d1, p, ahora, dd)
+    modo = CUENTA.get("filtro_estructura", "anotar")
+    if senales and modo in ("sin_contradice", "solo_confirma"):
+        permitidos = {"sin_contradice": ("CONFIRMA", "NEUTRAL"), "solo_confirma": ("CONFIRMA",)}[modo]
+        fuera = [s for s in senales if s.get("lectura", {}).get("veredicto") not in permitidos]
+        for s in fuera:
+            print(f"  🔮 {nombre} {s['estrategia']}: descartada por lectura ({s['lectura']['veredicto']})", flush=True)
+        senales = [s for s in senales if s not in fuera]
     if senales and CUENTA.get("filtro_noticias"):
         e = noticia_cercana(nombre, ahora)
         if e is not None:
@@ -2402,7 +2562,8 @@ def texto_alerta(s, tf):
             + f"Riesgo: ${s['riesgo_usd']:.2f} | Tamaño: {s['tamano_txt']}\n"
             f"Score: {s['score']}/{s['score_max']} ({s['confluencias']})\n"
             f"Killzone: {s['kz']} | Vela cerrada: {hora:%a %H:%M} NY"
-            + (f"\n{s['aviso']}" if s.get("aviso") else "") + _nota_noticias(s["activo"]))
+            + (f"\n{s['aviso']}" if s.get("aviso") else "") + texto_lectura(s.get("lectura"))
+            + _nota_noticias(s["activo"]))
 
 
 # ================================================================= ESTADO / ANTI-SPAM
@@ -2569,7 +2730,9 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
                         "entrada": e_px, "sl": s["sl"],
                         "salida_NY": (df.index[salida] + paso).tz_convert(NY).strftime("%Y-%m-%d %H:%M"),
                         "motivo": motivo, "R_bruto": round(r_bruto, 3), "coste_R": round(r_coste, 3),
-                        "R": round(r_bruto - r_coste, 3), "barras": salida - idx})
+                        "R": round(r_bruto - r_coste, 3), "barras": salida - idx,
+                        "lectura": (s.get("lectura") or {}).get("veredicto", "-"),
+                        "lectura_pts": (s.get("lectura") or {}).get("puntos", 0)})
             libre[s["estrategia"]] = salida + 1
     if progreso:
         progreso(1.0)
@@ -2665,6 +2828,7 @@ def registrar_senal(estado, s, tf):
     op = {k: s.get(k) for k in _CAMPOS_SEG}
     op["tf"], op["t"] = tf, str(pd.Timestamp(s["vela"]) + pd.Timedelta(minutes=TF_MIN[tf]))
     op["enviada"] = f"{datetime.now(NY):%Y-%m-%d %H:%M}"
+    op["lectura"] = (s.get("lectura") or {}).get("veredicto", "-")
     estado.d.setdefault("abiertas", []).append(op)
 
 
@@ -2732,7 +2896,7 @@ def seguir_abiertas(estado, cargar=obtener, enviar=True, ahora=None):
             continue
         res = res or {"R": None, "motivo": "Caducada", "salida": ""}
         estado.d.setdefault("diario", []).append({**{k: op.get(k) for k in ("estrategia", "activo", "dir", "tf",
-                                                                             "enviada")}, **res})
+                                                                             "enviada", "lectura")}, **res})
         cerradas += 1
         if enviar:
             if res["R"] is None:
@@ -2807,7 +2971,13 @@ def informe_diario(estado, dias=None):
         filas.append(f"• {est}: {len(rs)} ops · {100 * (rs > 0).mean():.0f}% aciertos · "
                      f"{rs.mean():+.2f}R prom · {rs.sum():+.1f}R total")
     todo = np.array([x["R"] for x in diario])
-    return "\n".join(filas) + f"\nTOTAL: {len(todo)} ops · {todo.sum():+.1f}R"
+    lect = []
+    for v in ("CONFIRMA", "NEUTRAL", "CONTRADICE"):
+        rs = np.array([x["R"] for x in diario if x.get("lectura") == v])
+        if len(rs):
+            lect.append(f"   🔮 {v}: {len(rs)} ops · {rs.mean():+.2f}R prom")
+    return ("\n".join(filas) + f"\nTOTAL: {len(todo)} ops · {todo.sum():+.1f}R"
+            + ("\nSegún la lectura de estructura:\n" + "\n".join(lect) if lect else ""))
 
 
 def informe_semanal(estado):

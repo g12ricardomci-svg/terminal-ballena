@@ -3,7 +3,7 @@ name: Backtest 6 meses
 # Backtest de ~6 meses en 5m y 15m con pruebas de robustez.
 # Forex y oro: velas de Dukascopy (Yahoo solo da 60 dias en 5m/15m). BTC: exchanges via ccxt.
 # Se lanza al subir cambios a este archivo, o a mano con "Run workflow".
-# Estrategias incluidas: todas las de bot_pro.py (incluye la guia de sesiones, Hyenuk Chu y Dr. Inversor).
+# Estrategias incluidas: todas las de bot_pro.py (incluye la guia de sesiones, Hyenuk Chu, Dr. Inversor, Judas y la lectura de estructura).
 on:
   workflow_dispatch: {}
   push:
@@ -128,6 +128,38 @@ jobs:
               s.write("## Backtest 6 meses - robustez\n\n" + r.to_markdown(index=False) + "\n")
           r.to_csv("robustez_6m.csv", index=False)
           ops.to_csv("operaciones_6m.csv", index=False)
+          # --- Lectura de estructura: ¿filtrar por el veredicto mejora la robustez? ---
+          if "lectura" in ops:
+              print("\n=== LECTURA DE ESTRUCTURA: todas las operaciones por veredicto ===")
+              gl = ops.groupby("lectura")["R"].agg(ops="size", R_prom="mean",
+                                                    winrate=lambda x: round(100 * (x > 0).mean(), 1)).round(3)
+              print(gl.to_string())
+              FILTROS = {"todas": ("CONFIRMA", "NEUTRAL", "CONTRADICE", "-"),
+                         "sin_contradice": ("CONFIRMA", "NEUTRAL"), "solo_confirma": ("CONFIRMA",)}
+              fl = []
+              for (e, a, tf), g0 in ops.groupby(["estrategia", "activo", "TF"]):
+                  for nf, perm in FILTROS.items():
+                      g = g0[g0["lectura"].isin(perm)].sort_values("senal_NY")
+                      if len(g) < 10:
+                          continue
+                      R = g["R"].to_numpy()
+                      gan, per = R[R > 0].sum(), -R[R < 0].sum()
+                      mitad = len(g) // 2
+                      rob = (len(g) >= 30 and R.mean() > 0 and g["R_x2"].mean() > 0 and
+                             g["R"].iloc[:mitad].mean() > 0 and g["R"].iloc[mitad:].mean() > 0)
+                      fl.append({"Estrategia": e, "Activo": a, "TF": tf, "Filtro": nf, "Ops": len(g),
+                                 "R prom": round(R.mean(), 3), "PF": round(gan / per, 2) if per > 0 else np.inf,
+                                 "Costes x2": round(g["R_x2"].mean(), 3), "ROBUSTA": "SI" if rob else ""})
+              lf = pd.DataFrame(fl)
+              mejora = lf.pivot_table(index=["Estrategia", "Activo", "TF"], columns="Filtro", values="R prom")
+              print("\n=== R promedio segun el filtro de lectura (combinaciones con 10+ ops) ===")
+              print(mejora.round(3).to_string())
+              print("\n=== ROBUSTAS con algun filtro de lectura ===")
+              print(lf[lf["ROBUSTA"] == "SI"].sort_values("R prom", ascending=False).to_string(index=False))
+              with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as s:
+                  s.write("\n## Lectura de estructura\n\n" + gl.to_markdown() + "\n\n### Robustas con filtro\n\n"
+                          + lf[lf["ROBUSTA"] == "SI"].to_markdown(index=False) + "\n")
+              lf.to_csv("lectura_6m.csv", index=False)
       - uses: actions/upload-artifact@v4
         with:
           name: resultados-6m
