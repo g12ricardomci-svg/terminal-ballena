@@ -2902,7 +2902,8 @@ def texto_alerta(s, tf):
                  if s.get("experimental") else "🅰️ NIVEL A · robusta a 2 años\n")
     conf = "" if s.get("puntaje") is not None else (f"⭐ CONFLUENCIA: {len(s['confluye']) + 1} estrategias de acuerdo "
             f"({', '.join([s['estrategia']] + s['confluye'])})\n" if s.get("confluye") else "")
-    return (conf + nivel
+    avisos = "".join(a + "\n" for a in s.get("avisos", []))
+    return (avisos + conf + nivel
             + f"{ic} {s['activo']} ({tf}) · {s['estrategia']}\n"
             f"Entrada: {fmt(s['entrada'])}\nSL: {fmt(s['sl'])}\n"
             + (f"{s['salida_txt']}\n" if s.get("salida_txt") else
@@ -2950,7 +2951,8 @@ class Estado:
             self.d["enviadas"][k] = time.time()
             self.d["ids"].append(s["id"])
             try:
-                registrar_senal(self, s, tf)              # el diario en vivo la seguira hasta su cierre
+                if s.get("registrar", True):
+                    registrar_senal(self, s, tf)          # el diario en vivo la seguira hasta su cierre
             except Exception as e:
                 print(f"  ! No se pudo registrar en el diario: {e}", flush=True)
         self.d["log"].append({"Hora NY": f"{datetime.now(NY):%d/%m %H:%M}", "TF": tf, "Estrategia": s["estrategia"],
@@ -3432,43 +3434,37 @@ def peso_estrategia(clave, activo, tf):
 
 
 def votar(senales, activo):
-    """Agrupa las senales de un mercado (todas las temporalidades) y devuelve las que pasan el umbral, con su
-    puntaje, nivel y aliados. Una por direccion; si hay votos en ambas direcciones, se restan."""
-    por_dir = {}
+    """Da a CADA senal de un mercado su puntaje de comite: su peso + 1 por cada otra estrategia en la misma
+    direccion (cualquier temporalidad) + lectura 🔮 (+1/-1) - 2 si hay estrategias en la direccion contraria.
+    Devuelve TODAS las senales (cada estrategia individual tiene su alerta), ordenadas por puntaje."""
     for s in senales:
         s["peso"] = peso_estrategia(s.get("clave"), activo, s.get("tf"))
-        por_dir.setdefault(s["bias"], []).append(s)
-    salida = []
-    for d, g in por_dir.items():
-        g.sort(key=lambda x: (-x["peso"], -(x.get("lectura") or {}).get("puntos", 0), x.get("tf") != "15m"))
-        lider = g[0]
-        puntos, motivos = lider["peso"], [f"{lider['estrategia']} ({lider['tf']}): {lider['peso']}"]
-        nombres = {lider["estrategia"]}
-        for x in g[1:]:
-            if x["estrategia"] not in nombres:
-                puntos += COMITE["aliado"]
-                nombres.add(x["estrategia"])
-                motivos.append(f"+1 aliado {x['estrategia']} ({x['tf']})")
-        ver = (lider.get("lectura") or {}).get("veredicto")
+    for s in senales:
+        aliados = sorted({x["estrategia"] + f" ({x['tf']})" for x in senales
+                          if x is not s and x["bias"] == s["bias"] and x["estrategia"] != s["estrategia"]})
+        contrarias = [x for x in senales if x["bias"] == -s["bias"]]
+        puntos, motivos = s["peso"], [f"peso propio {s['peso']}"]
+        if aliados:
+            puntos += COMITE["aliado"] * len(aliados)
+            motivos.append(f"+{len(aliados)} aliados: {', '.join(aliados[:4])}")
+        ver = (s.get("lectura") or {}).get("veredicto")
         if ver == "CONFIRMA":
             puntos += COMITE["lectura"]
             motivos.append("+1 lectura 🔮 confirma")
         elif ver == "CONTRADICE":
             puntos -= COMITE["lectura"]
             motivos.append("−1 lectura 🔮 contradice")
-        contrarias = por_dir.get(-d, [])
         if contrarias:
             puntos += COMITE["conflicto"]
             motivos.append(f"−2 conflicto con {contrarias[0]['estrategia']} ({contrarias[0]['tf']})")
-        lider["puntaje"], lider["votos"] = puntos, motivos
-        lider["confluye"] = [x["estrategia"] + f" ({x['tf']})" for x in g[1:]]
-        lider["experimental"] = lider["peso"] < 3
-        if puntos >= COMITE["umbral"]:
-            salida.append(lider)
-    return salida
+        s["puntaje"], s["votos"], s["confluye"] = puntos, motivos, aliados
+        s["experimental"] = s["peso"] < 3
+    return sorted(senales, key=lambda x: -x["puntaje"])
 
 
 def nivel_comite(puntos):
+    if puntos < COMITE["umbral"]:
+        return "🅲 NIVEL C · señal individual sin respaldo suficiente", "solo demo / observar"
     if puntos >= 5:
         return "⭐ NIVEL A+ · muy fuerte", "riesgo normal (2%)"
     if puntos >= 3:
@@ -3495,27 +3491,25 @@ def escanear_comite(tfs, p, estado, verbose=True, cargar=obtener):
                 s["tf"] = tf
             brutas += senales
         n_senales += len(brutas)
-        aprobadas = votar(brutas, nm)
+        todas = votar(brutas, nm)
         if verbose and brutas:
-            print(f"  🗳️ {nm}: {len(brutas)} votos -> {len(aprobadas)} aprobadas "
-                  + "; ".join(f"{s['dir']} {s['puntaje']:+d}" for s in aprobadas), flush=True)
-        for s in aprobadas:
+            print(f"  🗳️ {nm}: " + "; ".join(f"{s['clave']} {s['dir']} {s['puntaje']:+d}" for s in todas), flush=True)
+        for s in todas:
             tf = s["tf"]
             if estado is None:
                 continue
+            avisos = []
             abiertas = estado.d.get("abiertas", [])
-            if len(abiertas) >= CUENTA.get("max_abiertas", 3):
-                print(f"  🛡️ {nm}: cartera llena ({len(abiertas)} abiertas)", flush=True)
-                continue
-            if CUENTA.get("una_por_mercado", True) and any(o.get("activo") == nm for o in abiertas):
-                print(f"  🛡️ {nm}: ya hay una operacion abierta", flush=True)
-                continue
+            if len(abiertas) >= CUENTA.get("max_abiertas", 4):
+                avisos.append(f"🛡️ Cartera llena ({len(abiertas)} abiertas): solo informativa")
+            elif CUENTA.get("una_por_mercado", True) and any(o.get("activo") == nm for o in abiertas):
+                avisos.append(f"🛡️ Ya tienes una operación abierta en {nm}: solo informativa")
             if estado.d.get("freno_hasta") == _hoy_ny():
-                print(f"  🛑 {nm}: freno activo ({estado.d.get('freno_motivo')})", flush=True)
-                continue
+                avisos.append(f"🛑 FRENO ACTIVO hoy ({estado.d.get('freno_motivo')}): no la operes")
             if s["estrategia"] in estado.d.get("apagadas", {}):
-                print(f"  🧯 {nm} {s['estrategia']}: apagada por resultados en vivo", flush=True)
-                continue
+                avisos.append("🧯 Estrategia apagada por resultados en vivo: no la operes")
+            s["avisos"] = avisos
+            s["registrar"] = not avisos and s["puntaje"] >= COMITE["umbral"]
             if estado.procesar(s, tf):
                 nuevas += 1
     if verbose:
@@ -3588,7 +3582,8 @@ def texto_perfil(p):
         n_est = len({e for m in MIS_MERCADOS for e in ESTRATEGIAS_ACTIVO.get(m, [])})
         return (f"🗳️ MODO COMITÉ: {n_est} estrategias votan en {len(MIS_MERCADOS)} mercados (5m y 15m).\n"
                 f"Peso: 3 = robusta 2 años · 2 = experimental · 1 = con evidencia · 0 = solo apoya.\n"
-                f"+1 por aliado · +1 si la lectura 🔮 confirma · −2 si hay señal contraria. Envío desde 2 votos.\n"
+                f"+1 por aliado · +1 si la lectura 🔮 confirma · −2 si hay señal contraria.\n"
+                f"Te llega CADA señal: A+/A/B (2+ votos) para operar · C (menos de 2) solo para observar.\n"
                 f"Mercados: {', '.join(sorted(MIS_MERCADOS))}")
     if not p.get("solo_ganadoras"):
         return f"Modo TODAS las estrategias · mercados: {', '.join(ACTIVOS)}"
