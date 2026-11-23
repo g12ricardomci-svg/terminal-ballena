@@ -2,10 +2,7 @@ name: Prueba noticias
 
 # Comprueba que el bot puede leer el calendario economico (noticias de alto impacto) desde GitHub.
 on:
-  workflow_dispatch: {}
-  push:
-    paths:
-      - ".github/workflows/prueba-noticias.yml"
+  workflow_dispatch: {}            # se lanza a mano: Actions -> este workflow -> Run workflow
 
 jobs:
   noticias:

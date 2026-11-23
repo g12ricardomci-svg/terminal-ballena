@@ -5,10 +5,7 @@ name: Backtest 6 meses
 # Se lanza al subir cambios a este archivo, o a mano con "Run workflow".
 # Estrategias incluidas: todas las de bot_pro.py (incluye la guia de sesiones, Hyenuk Chu, Dr. Inversor, Judas y la lectura de estructura).
 on:
-  workflow_dispatch: {}
-  push:
-    paths:
-      - ".github/workflows/backtest6m.yml"
+  workflow_dispatch: {}            # se lanza a mano: Actions -> este workflow -> Run workflow
 
 jobs:
   backtest:

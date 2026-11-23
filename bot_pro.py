@@ -101,37 +101,30 @@ ESTRATEGIAS_ACTIVO = {
 }
 
 # ================================================================= PERFIL GANADOR
-# Combinaciones (mercado, temporalidad) -> estrategias que PASARON la prueba de 6 meses (Dukascopy/ccxt, costes
-# incluidos): positivas, siguen positivas con costes x2 y ganan en la 1a y la 2a mitad del periodo.
-# En vivo el bot solo avisa de estas. El backtest sigue probando todas.
-#   Confluencia VWAP Oro 15m: 162 ops, +0,14 R, PF 1,26, costes x2 +0,08 R  -> ROBUSTA
-#   Tortugas Oro / BTC (15m): pocas operaciones pero positivas en 58 dias y en 6 meses (sistema diario clasico)
-# Descartadas a los 6 meses (habian salido bien en 58 dias): ORB Oro, Ruptura de Londres, VWAP GBP/USD,
-# Tortugas USD/JPY.
-#   ORB + Retest DAX 15m (guia de sesiones): 30 ops, +0,26 R, PF 1,53, 5/6 meses positivos -> ROBUSTA
-#   ORB apertura DAX 15m: 112 ops, +0,24 R, PF 1,34, 5/7 meses -> ROBUSTA
-#   ORB apertura S&P 500 15m: 116 ops, +0,18 R, PF 1,25, 5/7 meses -> ROBUSTA
-#   EMA 20/200 (Dr. Inversor) DAX 15m: 44 ops, +0,15 R, PF 1,26, 5/6 meses -> ROBUSTA
-#   Ruptura de Londres EUR/USD 15m + filtro "sin_contradice": 68 ops, +0,23 R, PF 1,46 -> ROBUSTA (vigilada)
+# Combinaciones que PASARON el backtest de 2 ANOS en 15m (Dukascopy/ccxt, costes incluidos): positivas, siguen
+# positivas con costes x2 y ganan en la 1a y la 2a mitad. En vivo el bot solo avisa de estas.
+#   ORB apertura S&P 500 + "solo_confirma": 62 ops, +0,35 R, PF 1,47, costes x2 +0,20
+#   Divergencia RSI (Dr. Inversor) S&P 500: 32 ops, +0,22 R, PF 1,48
+#   EMA 20/200 (Dr. Inversor) S&P 500 + "solo_confirma": 52 ops, +0,09 R, PF 1,18
+#   ORB + Retest Dow 30: 101 ops, +0,16 R, PF 1,30
+#   ORB apertura DAX + "sin_contradice": 227 ops, +0,16 R, PF 1,22
+#   Confluencia VWAP Oro + "sin_contradice": 520 ops, +0,09 R, PF 1,15
+#   Tortugas Oro: 24 ops, +0,44 R, PF 1,99 (sistema diario clasico, pocas operaciones)
+# Descartadas a 2 anos (iban bien a 6 meses): ORB + Retest DAX, EMA 20/200 DAX, Ruptura de Londres EUR/USD,
+# Tortugas BTC (1a mitad negativa).
 GANADORAS = {
-    ("EUR/USD", "15m"): ["Londres"],
+    ("S&P 500 (ES)", "15m"): ["ORB", "DI_RSI", "DI_EMA"],
+    ("DAX 40", "15m"): ["ORB"],
+    ("DOW 30 (YM)", "15m"): ["ORBRetest"],
     ("XAU/USD (Oro)", "15m"): ["VWAP", "Tortugas"],
-    ("BTC/USDT", "15m"): ["Tortugas"],
-    ("DAX 40", "15m"): ["ORBRetest", "ORB", "DI_EMA"],
-    ("S&P 500 (ES)", "15m"): ["ORB"],
 }
 
-# Filtro de LECTURA DE ESTRUCTURA por combinacion (backtest 6 meses). Solo donde mejoro los resultados:
-#   ORB S&P 500 15m:  todas +0,18 R (PF 1,25) -> sin_contradice +0,68 R (PF 2,01), costes x2 +0,54
-#   ORB DAX 15m:      todas +0,24 R (PF 1,34) -> sin_contradice +0,56 R (PF 1,92), costes x2 +0,47
-#   VWAP Oro 15m:     todas +0,14 R (PF 1,26) -> sin_contradice +0,20 R (PF 1,38), costes x2 +0,13
-#   Londres EUR 15m:  todas -0,01 R           -> sin_contradice +0,23 R (PF 1,46)
-# En ORB + Retest y EMA 20/200 del DAX el filtro EMPEORABA: ahi no se aplica.
+# Filtro de LECTURA DE ESTRUCTURA por combinacion (confirmado a 2 anos). Solo donde mejora.
 FILTRO_LECTURA = {
-    ("S&P 500 (ES)", "15m", "ORB"): "sin_contradice",
+    ("S&P 500 (ES)", "15m", "ORB"): "solo_confirma",
+    ("S&P 500 (ES)", "15m", "DI_EMA"): "solo_confirma",
     ("DAX 40", "15m", "ORB"): "sin_contradice",
     ("XAU/USD (Oro)", "15m", "VWAP"): "sin_contradice",
-    ("EUR/USD", "15m", "Londres"): "sin_contradice",
 }
 
 ACTIVOS = {}

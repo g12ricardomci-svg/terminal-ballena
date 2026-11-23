@@ -3,11 +3,7 @@ name: Backtest
 # Corre el backtest con datos reales (ultimos ~58 dias) en 5m y 15m para los 5 mercados.
 # Se lanza solo al subir cambios a este archivo, o a mano con "Run workflow".
 on:
-  workflow_dispatch: {}
-  push:
-    paths:
-      - ".github/workflows/backtest.yml"
-      - "bot_pro.py"
+  workflow_dispatch: {}            # se lanza a mano: Actions -> este workflow -> Run workflow
 
 jobs:
   backtest:
