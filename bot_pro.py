@@ -177,6 +177,7 @@ CUENTA = {
     "solo_operables": False,    # True = no envia las senales que tu cuenta no puede operar
     "filtro_noticias": True,    # no avisar 30 min antes ni 15 min despues de una noticia de ALTO impacto
     "reactivar": [],            # nombres de estrategias apagadas por el freno que quieres volver a activar
+    "motor_streamlit": False,   # True = el panel de Streamlit TAMBIEN envia alertas (duplica a GitHub Actions)
     "filtro_estructura": "anotar",  # lectura de estructura: "anotar" (solo informa), "sin_contradice" o "solo_confirma"
     "tfs": ["5m", "15m"],       # temporalidades de entrada que escanea el bot (alertas de 5m y de 15m)
 }
@@ -2562,6 +2563,9 @@ def _nota_noticias(nombre, horas=3):
     return ""
 
 
+VERSION_BOT = "v3 · perfil 2 años"
+
+
 def texto_alerta(s, tf):
     ic = "🟢 LONG" if s["dir"] == "LONG" else "🔴 SHORT"
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[tf])
@@ -2574,7 +2578,7 @@ def texto_alerta(s, tf):
             f"Score: {s['score']}/{s['score_max']} ({s['confluencias']})\n"
             f"Killzone: {s['kz']} | Vela cerrada: {hora:%a %H:%M} NY"
             + (f"\n{s['aviso']}" if s.get("aviso") else "") + texto_lectura(s.get("lectura"))
-            + _nota_noticias(s["activo"]))
+            + _nota_noticias(s["activo"]) + f"\n🤖 Bot Pro {VERSION_BOT}")
 
 
 # ================================================================= ESTADO / ANTI-SPAM
@@ -3101,7 +3105,7 @@ def correr_bot(a, p):
     ping = getattr(a, "ping", False)
     if ping:
         revisar_telegram()
-        ok, msg = enviar_telegram(f"✅ Bot Pro activo · {datetime.now(NY):%a %d/%m %H:%M} NY\n"
+        ok, msg = enviar_telegram(f"✅ Bot Pro {VERSION_BOT} activo (GitHub) · {datetime.now(NY):%a %d/%m %H:%M} NY\n"
                                   f"Mercados: {', '.join(ACTIVOS)}\nTemporalidades: {' y '.join(a.tf)}")
         print(f"Ping a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
     print(f"🏛️ BOT PRO iniciado · estrategias: {', '.join(p['estrategias'])} · {' + '.join(a.tf)} · "
@@ -3207,7 +3211,9 @@ def panel():
         threading.Thread(target=bucle, daemon=True, name="motor-24-7").start()
         return info
 
-    fondo = motor_fondo()
+    fondo = motor_fondo() if CUENTA.get("motor_streamlit") else {
+        "inicio": datetime.now(NY), "ultimo": None, "senales": 0,
+        "error": "Motor apagado: las alertas las envía GitHub Actions (CUENTA['motor_streamlit'] = False)"}
 
     sb = st.sidebar
     sb.title("🌐 Configuración")
