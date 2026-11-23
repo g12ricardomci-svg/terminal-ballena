@@ -97,23 +97,23 @@ PUNTO_MICRO = {"NASDAQ 100 (NQ)": 2.0, "S&P 500 (ES)": 5.0, "DOW 30 (YM)": 0.5, 
 
 # Que estrategias corre cada mercado (ver la cabecera del archivo)
 ESTRATEGIAS_ACTIVO = {
-    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "USD/CAD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "FTSE 100": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "NIKKEI 225": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "EURO STOXX 50": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "CAC 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "XAG/USD (Plata)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "WTI (Petróleo)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
-    "BRENT (Petróleo)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
+    "BTC/USDT": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "HoraBTC", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "EUR/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "GBP/USD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "USD/JPY": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "USD/CAD": ["SMC", "Barrido", "Londres", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "XAU/USD (Oro)": ["SMC", "Barrido", "Tortugas", "Setup91", "ORB", "HolyGrail", "VWAP", "Ruido", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "NASDAQ 100 (NQ)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "S&P 500 (ES)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "DOW 30 (YM)": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "DAX 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "AsiaSweep", "EMAVWAP", "Medias", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "FTSE 100": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "NIKKEI 225": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "EURO STOXX 50": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "CAC 40": ["SMC", "Barrido", "ORB", "VWAP", "Ruido", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "XAG/USD (Plata)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "WTI (Petróleo)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
+    "BRENT (Petróleo)": ["SMC", "Barrido", "Tortugas", "ORB", "VWAP", "ORBRetest", "EMAVWAP", "DI_EMA", "DI_Ruptura", "DI_RSI", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
 }
 
 # ================================================================= PERFIL GANADOR
@@ -230,7 +230,7 @@ PARAMS_DEFAULT = {
     "kz": dict(KZ_DEFAULT),         # tipo -> lista de killzones ([] = sin filtro)
     "fib": (0.5, 0.79),             # zona OTE (retroceso del impulso)
     "ventana_bos": 40,              # el BOS debe estar dentro de las ultimas N velas
-    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado"],
+    "estrategias": ["SMC", "Barrido", "Tortugas", "Londres", "Setup91", "ORB", "HolyGrail", "Gotobi", "VWAP", "Ruido", "HoraBTC", "NocheOro", "ORBRetest", "AsiaSweep", "EMAVWAP", "ORB15", "MaxHist", "Medias", "Gap", "DI_EMA", "DI_Ruptura", "DI_RSI", "Judas", "RSI2", "Squeeze", "ZonaBOS", "BOSFVG", "AuraPlus", "BOSMercado", "AuraPlusEQ"],
     "s91_filtro_1h": True,          # Setup 9.1 solo a favor del sesgo 1H (False = reglas puras)
     "solo_ganadoras": True,         # en vivo: solo las combinaciones de GANADORAS (python bot_pro.py --todas = todas)
 }
@@ -2634,6 +2634,48 @@ def _zona_bos_long(d, buscar=40, k=3):
     return {"entrada": prox, "dist": dist, "liquidez": float(h[j:n].max()), "bos": float(nivel)}
 
 
+def _liquidez_iguales(d, bias, entrada, atr14, k=3, ventana=120):
+    """Grupos de MINIMOS iguales (SHORT) o MAXIMOS iguales (LONG): >= 2 swings a <= 0,2 ATR entre si, mas alla de la
+    entrada en la direccion del trade y todavia SIN barrer (ninguna vela posterior paso del nivel). Es la 'liquidez
+    de minimos iguales' a la que apunta Aura. Devuelve [{'nivel','tp','n'}] de la mas cercana a la mas lejana; el TP
+    queda 0,05 ATR antes del nivel para llenarse antes de la barrida."""
+    d = d.tail(ventana)
+    if atr14 is None or not atr14 > 0 or len(d) < 20:
+        return []
+    h, l = d["high"].to_numpy(), d["low"].to_numpy()
+    sh, sl = swings(d, k)
+    idxs, vals = (sl, l) if bias == -1 else (sh, h)
+    unicos = []                                              # un valle con velas empatadas cuenta UNA vez
+    for i in sorted(idxs):
+        if not unicos or i - unicos[-1] > 2 * k:
+            unicos.append(i)
+    idxs = unicos
+    tol = 0.2 * atr14
+    pts = sorted(((float(vals[i]), i) for i in idxs), key=lambda x: x[0])
+    grupos, cur = [], []
+    for v, i in pts:
+        if cur and v - cur[-1][0] > tol:
+            grupos.append(cur)
+            cur = []
+        cur.append((v, i))
+    if cur:
+        grupos.append(cur)
+    out = []
+    for g in grupos:
+        if len(g) < 2:
+            continue
+        nivel = float(np.mean([v for v, _ in g]))
+        if (nivel - entrada) * bias <= 0:
+            continue                                         # no esta mas alla de la entrada
+        ultimo = max(i for _, i in g)
+        despues = l[ultimo + 1:] if bias == -1 else h[ultimo + 1:]
+        if len(despues) and ((despues.min() < nivel - tol) if bias == -1 else (despues.max() > nivel + tol)):
+            continue                                         # ya fue barrido
+        tp = nivel + 0.05 * atr14 if bias == -1 else nivel - 0.05 * atr14
+        out.append({"nivel": nivel, "tp": float(tp), "n": len(g)})
+    return sorted(out, key=lambda x: abs(x["nivel"] - entrada))
+
+
 def evaluar_zona_bos(nombre, tipo, df, d1, p, ahora, dd=None):
     """
     Escenario de "zona del BOS" (la idea que dibuja Aura, programada con reglas propias y medible):
@@ -2744,14 +2786,16 @@ def evaluar_bos_fvg(nombre, tipo, df, d1, p, ahora, dd=None):
                   "id": f"BFVG|{nombre}|{diag['Dir']}|{d.index[-1]}"}
 
 
-def evaluar_aura_plus(nombre, tipo, df, d1, p, ahora, dd=None):
+def evaluar_aura_plus(nombre, tipo, df, d1, p, ahora, dd=None, tp_modo="tramo"):
     """
     "Aura+": el escenario de Aura (BOS -> limite en el 50% del FVG en OTE o, si no hay, en el borde de la zona ->
     stop bajo la zona -> TP liquidez) con los dos filtros que Aura muestra en pantalla:
       1) la estructura de 1H va en la misma direccion (HH/HL para compras, LH/LL para ventas);
       2) la entrada queda en DESCUENTO para compras (<= 50% del rango) o en PREMIUM para ventas (>= 50%).
+    tp_modo="iguales" (AuraPlusEQ): el TP1 va al grupo mas cercano de minimos/maximos iguales (entre 1,5R y 10R) y el
+    TP2 al siguiente; si no hay ninguno valido se usa el objetivo de siempre (liquidez del tramo, 2R-5R).
     """
-    diag = {"Estrategia": "AuraPlus", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
+    diag = {"Estrategia": "AuraPlusEQ" if tp_modo == "iguales" else "AuraPlus", "Activo": nombre, "Estado": "", "Sesgo 1H": "-", "Dir": "-",
             "Score": 0, "Confluencias": ""}
     if d1 is None or len(d1) < 40:
         diag["Estado"] = "Sin datos 1H"
@@ -2775,11 +2819,33 @@ def evaluar_aura_plus(nombre, tipo, df, d1, p, ahora, dd=None):
             diag["Estado"] = f"Entrada en {'premium' if s['bias'] == 1 else 'descuento'} ({100 * pos:.0f}%): descartada"
             return diag, None
         s["confluencias"] += f" · 1H {diag['Sesgo 1H'].lower()} · entrada al {100 * pos:.0f}% del rango"
-    s["estrategia"] = "Aura+ (BOS + 1H + descuento)"
+    s["tp_tipo"] = "tramo"
+    if tp_modo == "iguales":
+        ent, sl, bias = float(s["entrada"]), float(s["sl"]), s["bias"]
+        r = abs(ent - sl)
+        a14 = float(atr(df.tail(100)).iloc[-1])
+        cands = [c for c in _liquidez_iguales(df, bias, ent, a14)
+                 if 1.5 * r <= (c["tp"] - ent) * bias <= 10 * r]
+        if cands:
+            c1 = cands[0]
+            r1 = (c1["tp"] - ent) * bias / r
+            s["tp1"], s["tp_r"], s["r1"], s["tp_tipo"] = c1["tp"], r1, round(r1, 1), "iguales"
+            lado = "COMPRA" if bias == 1 else "VENTA"
+            nom = "máximos" if bias == 1 else "mínimos"
+            tp2 = (f" · TP2 ({(cands[1]['tp'] - ent) * bias / r:.1f}R): {fmt(cands[1]['tp'])}"
+                   if len(cands) > 1 and (cands[1]["tp"] - ent) * bias <= 20 * r else "")
+            s["salida_txt"] = (f"Orden: {lado} LIMIT en {fmt(ent)}. Stop: {fmt(sl)} (debajo de la zona). "
+                               f"TP1 ({r1:.1f}R): {fmt(c1['tp'])} (liquidez de {nom} iguales ×{c1['n']}){tp2}. Válida 30 velas.")
+    s["estrategia"] = ("Aura+ EQ (TP en iguales)" if tp_modo == "iguales" else "Aura+ (BOS + 1H + descuento)")
     s["salida_txt"] = s.get("salida_txt", "") + "\n💡 Solo rentable con cuenta de spread bajo (Raw/ECN) según el backtest."
-    s["id"] = "AURAP|" + s["id"]
+    s["id"] = ("AURAPEQ|" if tp_modo == "iguales" else "AURAP|") + s["id"]
     diag["Dir"], diag["Estado"] = s["dir"], "🚨 SEÑAL"
     return diag, s
+
+
+def evaluar_aura_plus_eq(nombre, tipo, df, d1, p, ahora, dd=None):
+    """Aura+ con el TP en minimos/maximos iguales (como el escenario de Aura en BTC)."""
+    return evaluar_aura_plus(nombre, tipo, df, d1, p, ahora, dd, tp_modo="iguales")
 
 
 def evaluar_bos_mercado(nombre, tipo, df, d1, p, ahora, dd=None):
@@ -2839,7 +2905,7 @@ ESTRATEGIAS = {"SMC": evaluar_smc, "Barrido": evaluar_barrido, "Tortugas": evalu
                "DI_EMA": evaluar_di_ema, "DI_Ruptura": evaluar_di_ruptura, "DI_RSI": evaluar_di_rsi,
                "Judas": evaluar_judas, "RSI2": evaluar_rsi2, "Squeeze": evaluar_squeeze,
                "ZonaBOS": evaluar_zona_bos, "BOSFVG": evaluar_bos_fvg,
-               "AuraPlus": evaluar_aura_plus, "BOSMercado": evaluar_bos_mercado}
+               "AuraPlus": evaluar_aura_plus, "AuraPlusEQ": evaluar_aura_plus_eq, "BOSMercado": evaluar_bos_mercado}
 
 
 def estrategias_de(nombre, p):
@@ -3138,7 +3204,8 @@ def backtest_activo(nombre, tipo, df, tf, p, ctx_tf="1h", gestion="parcial", cos
                         "motivo": motivo, "R_bruto": round(r_bruto, 3), "coste_R": round(r_coste, 3),
                         "R": round(r_bruto - r_coste, 3), "barras": salida - idx,
                         "lectura": (s.get("lectura") or {}).get("veredicto", "-"),
-                        "lectura_pts": (s.get("lectura") or {}).get("puntos", 0)})
+                        "lectura_pts": (s.get("lectura") or {}).get("puntos", 0),
+                        "tp_tipo": s.get("tp_tipo", "-")})
             libre[s["estrategia"]] = salida + 1
     if progreso:
         progreso(1.0)
