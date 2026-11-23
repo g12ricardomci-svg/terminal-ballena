@@ -1,0 +1,225 @@
+# -*- coding: utf-8 -*-
+"""Tests de bot_pro.py con datos sinteticos: sin red y sin Telegram real.  Correr:  python -m pytest -q"""
+import os
+import sys
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import bot_pro as b  # noqa: E402
+
+
+# ----------------------------------------------------------------- utilidades
+class RespuestaFalsa:
+    def __init__(self, ok=True, status=200, js=None):
+        self.ok, self.status_code, self._js, self.text = ok, status, js or {}, ""
+
+    def json(self):
+        return self._js
+
+
+@pytest.fixture
+def telegram(monkeypatch):
+    """Sustituye la API de Telegram: guarda cada mensaje enviado y no duerme."""
+    enviados = []
+    monkeypatch.setenv("TELEGRAM_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_CHAT_IDS", "1")
+    monkeypatch.setattr(b, "_dormir", lambda s: None)
+    monkeypatch.setattr(b.requests, "post", lambda url, json, timeout: enviados.append(json["text"]) or RespuestaFalsa())
+    return enviados
+
+
+@pytest.fixture
+def estado(tmp_path):
+    e = b.Estado(str(tmp_path / "estado.json"))
+    e.agrupar = True
+    return e
+
+
+def senal(activo="EUR/USD", bias=1, ent=1.1000, sl=1.0980, tp=1.1040, est="Barrido", puntaje=3, ident=None):
+    return {"estrategia": est, "clave": est, "activo": activo, "tipo": b.ACTIVOS[activo]["tipo"], "bias": bias,
+            "dir": "LONG" if bias > 0 else "SHORT", "entrada": ent, "sl": sl, "tp1": tp, "tp2": None,
+            "riesgo_usd": 0.2, "tamano_txt": "0.01 lotes", "score": 1, "score_max": 1, "confluencias": "-",
+            "kz": "Londres", "vela": pd.Timestamp("2026-11-23 08:00", tz="UTC"), "puntaje": puntaje,
+            "votos": ["peso propio 1"], "id": ident or f"{est}|{activo}|{bias}|{ent}"}
+
+
+P = dict(b.PARAMS_DEFAULT)
+
+
+# ----------------------------------------------------------------- Telegram
+def test_trozos_respeta_el_limite():
+    texto = "\n".join(f"linea {i} " + "x" * 80 for i in range(200))
+    partes = b.trozos_telegram(texto)
+    assert len(partes) > 1
+    assert all(len(p) <= b.TG_MAX for p in partes)
+    assert "".join(p.replace("\n", "") for p in partes) == texto.replace("\n", "")
+
+
+def test_trozos_linea_gigante():
+    partes = b.trozos_telegram("y" * (b.TG_MAX * 2 + 10))
+    assert [len(p) for p in partes] == [b.TG_MAX, b.TG_MAX, 10]
+
+
+def test_reintenta_si_telegram_pide_esperar(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_CHAT_IDS", "1")
+    esperas, respuestas = [], [RespuestaFalsa(False, 429, {"parameters": {"retry_after": 3}}), RespuestaFalsa()]
+    monkeypatch.setattr(b, "_dormir", esperas.append)
+    monkeypatch.setattr(b.requests, "post", lambda *a, **k: respuestas.pop(0))
+    ok, _ = b.enviar_telegram("hola")
+    assert ok and 3.5 in esperas
+
+
+# ----------------------------------------------------------------- comite y cartera
+def test_letras_de_nivel():
+    assert [b.letra_nivel(x) for x in (0, 1, 2, 3, 4, 5, 9)] == ["C", "C", "B", "A", "A", "A+", "A+"]
+
+
+def test_ratio_rr():
+    assert b.ratio_rr(senal()) == pytest.approx(2.0)
+    assert b.ratio_rr({**senal(), "tp1": None}) is None
+
+
+def test_exposicion_detecta_la_misma_apuesta():
+    assert b.exposicion("EUR/USD", 1) == ["USD-"]
+    assert b.exposicion("GBP/USD", 1) == ["USD-"]
+    assert b.exposicion("USD/JPY", -1) == ["USD-"]
+    assert b.exposicion("USD/JPY", 1) == ["USD+"]
+    assert b.exposicion("S&P 500 (ES)", 1) == b.exposicion("DOW 30 (YM)", 1) == ["INDICES_USA+"]
+
+
+def test_nivel_c_va_a_observacion(telegram, estado):
+    assert b.decidir_senal(senal(puntaje=1), "15m", P, estado) == "observar"
+    assert estado.cola == [] and len(estado.d["observadas"]) == 1
+    assert b.decidir_senal(senal(puntaje=1), "15m", P, estado) == "repetida"     # no se duplica
+
+
+def test_ratio_bajo_va_a_observacion(telegram, estado):
+    s = senal(tp=1.1010)                                  # 1:0,5
+    assert b.decidir_senal(s, "15m", P, estado) == "observar"
+    assert "ratio bajo" in estado.d["observadas"][0]["motivo"]
+
+
+def test_riesgo_segun_nivel(telegram, estado):
+    for pts, letra in ((5, "A+"), (3, "A"), (2, "B")):
+        s = senal(puntaje=pts, activo="BTC/USDT", ent=90000, sl=89500, tp=91000, est=f"E{pts}")
+        estado.d["abiertas"] = []
+        b.decidir_senal(s, "15m", P, estado)
+        assert s["nivel"] == letra
+        assert s["riesgo_pct"] == b.CUENTA["riesgo_nivel"][letra]
+        assert s["riesgo_usd"] == pytest.approx(P["banco"] * s["riesgo_pct"] / 100)
+
+
+def test_un_solo_mensaje_por_escaneo(telegram, estado):
+    activos = ["EUR/USD", "BTC/USDT", "XAU/USD (Oro)"]
+    for i, a in enumerate(activos):
+        px = {"EUR/USD": 1.1, "BTC/USDT": 90000.0, "XAU/USD (Oro)": 4000.0}[a]
+        s = senal(activo=a, ent=px, sl=px * 0.998, tp=px * 1.004, puntaje=3, est=f"E{i}")
+        assert b.decidir_senal(s, "15m", P, estado) == "enviar"
+    assert telegram == []                                  # nada sale hasta vaciar la cola
+    assert estado.vaciar_cola() == 3
+    assert len(telegram) == 1 and telegram[0].startswith("🚨 3 señales nuevas")
+    assert len(estado.d["abiertas"]) == 3
+    assert b.decidir_senal(senal(activo="EUR/USD", est="E0", ent=1.1, sl=1.1 * 0.998, tp=1.1 * 1.004),
+                           "15m", P, estado) == "repetida"
+
+
+def test_si_telegram_falla_se_deshace_el_registro(monkeypatch, estado):
+    monkeypatch.setenv("TELEGRAM_TOKEN", "x")
+    monkeypatch.setenv("TELEGRAM_CHAT_IDS", "1")
+    monkeypatch.setattr(b, "_dormir", lambda s: None)
+    monkeypatch.setattr(b.requests, "post", lambda *a, **k: RespuestaFalsa(False, 500))
+    assert b.decidir_senal(senal(), "15m", P, estado) == "enviar"
+    assert len(estado.d["abiertas"]) == 1
+    assert estado.vaciar_cola() == 0
+    assert estado.d["abiertas"] == [] and estado.d["ids"] == []     # podra reenviarse en la siguiente pasada
+
+
+def test_cola_grande_se_parte_en_varios_mensajes(telegram, estado, monkeypatch):
+    monkeypatch.setitem(b.CUENTA, "max_abiertas", 99)
+    monkeypatch.setitem(b.CUENTA, "cupos", {"A+": 99, "A": 99, "B": 99})
+    monkeypatch.setitem(b.CUENTA, "riesgo_total_max_pct", 999)
+    monkeypatch.setitem(b.CUENTA, "max_por_exposicion", 0)
+    monkeypatch.setitem(b.CUENTA, "una_por_mercado", False)
+    for i in range(30):
+        s = senal(est=f"E{i}", ident=f"id{i}")
+        s["votos"] = ["voto largo " + "z" * 150] * 6
+        b.decidir_senal(s, "15m", P, estado)
+    assert estado.vaciar_cola() == 30
+    assert len(telegram) > 1 and all(len(m) <= 4096 for m in telegram)
+
+
+def test_cupo_por_nivel(telegram, estado, monkeypatch):
+    monkeypatch.setitem(b.CUENTA, "cupos", {"A+": 5, "A": 1, "B": 5})
+    monkeypatch.setitem(b.CUENTA, "una_por_mercado", False)
+    assert b.decidir_senal(senal(est="E1", activo="BTC/USDT", ent=90000, sl=89500, tp=91000), "15m", P, estado) == "enviar"
+    assert b.decidir_senal(senal(est="E2", activo="XAU/USD (Oro)", ent=4000, sl=3990, tp=4020), "15m", P,
+                           estado) == "observar"
+    assert "cupo del nivel A" in estado.d["observadas"][-1]["motivo"]
+
+
+def test_tope_de_riesgo_total(telegram, estado, monkeypatch):
+    monkeypatch.setitem(b.CUENTA, "riesgo_total_max_pct", 3.0)          # 2% (A+) + 2% (A+) > 3%
+    s1 = senal(est="E1", activo="BTC/USDT", ent=90000, sl=89500, tp=91000, puntaje=5)
+    s2 = senal(est="E2", activo="XAU/USD (Oro)", ent=4000, sl=3990, tp=4020, puntaje=5)
+    assert b.decidir_senal(s1, "15m", P, estado) == "enviar"
+    assert b.decidir_senal(s2, "15m", P, estado) == "observar"
+    assert "riesgo total" in estado.d["observadas"][-1]["motivo"]
+
+
+def test_exposicion_correlacionada(telegram, estado, monkeypatch):
+    monkeypatch.setitem(b.CUENTA, "max_por_exposicion", 1)
+    assert b.decidir_senal(senal(est="E1", activo="EUR/USD"), "15m", P, estado) == "enviar"
+    s = senal(est="E2", activo="GBP/USD", ent=1.30, sl=1.298, tp=1.304)
+    assert b.decidir_senal(s, "15m", P, estado) == "observar"        # tambien apuesta contra el USD
+    assert "USD-" in estado.d["observadas"][-1]["motivo"]
+
+
+def test_resumen_de_observacion(telegram, estado):
+    b.decidir_senal(senal(puntaje=1, est="E1"), "15m", P, estado)
+    b.decidir_senal(senal(tp=1.1005, est="E2"), "15m", P, estado)
+    txt = b.texto_observadas(estado)
+    assert "2 señales" in txt and "nivel C: 1" in txt
+
+
+# ----------------------------------------------------------------- horarios
+@pytest.mark.parametrize("cuando,tipo,abierto", [
+    ("2026-11-21 12:00", "forex", False),     # sabado
+    ("2026-11-22 16:00", "forex", False),     # domingo antes de las 17 NY
+    ("2026-11-22 17:30", "forex", True),
+    ("2026-11-23 17:30", "oro", False),       # pausa diaria CME 17-18 NY
+    ("2026-11-23 18:30", "oro", True),
+    ("2026-11-21 12:00", "cripto", True),
+])
+def test_mercado_abierto(cuando, tipo, abierto):
+    t = pd.Timestamp(cuando, tz="America/New_York").to_pydatetime()
+    assert b.mercado_abierto(tipo, t) is abierto
+
+
+# ----------------------------------------------------------------- maquina del tiempo
+def _velas(n=2000, deriva=0.0, semilla=1):
+    rng = np.random.default_rng(semilla)
+    idx = pd.date_range("2026-09-01", periods=n, freq="15min", tz="UTC")
+    c = 100 * np.exp(np.cumsum(rng.normal(deriva, 0.002, n)))
+    o = np.r_[100, c[:-1]]
+    h = np.maximum(o, c) * (1 + abs(rng.normal(0, 0.001, n)))
+    l = np.minimum(o, c) * (1 - abs(rng.normal(0, 0.001, n)))
+    return pd.DataFrame(dict(open=o, high=h, low=l, close=c), index=idx)
+
+
+def test_maquina_del_tiempo_proporciones():
+    df = _velas()
+    px = df["close"].iloc[-1]
+    tm = b.maquina_del_tiempo(df, {"bias": 1, "entrada": px, "sl": px * 0.996, "tp1": px * 1.004, "max_barras": 96},
+                              n=2000)
+    assert tm["tp"] + tm["sl"] + tm["abierta"] == pytest.approx(1.0, abs=1e-9)
+    assert 0.35 < tm["tp"] < 0.65                         # 1:1 sin tendencia ~ moneda al aire
+    assert b.veredicto_tm(tm) == "MONEDA"
+
+
+def test_maquina_del_tiempo_sin_datos():
+    assert b.maquina_del_tiempo(_velas(100), {"bias": 1, "entrada": 1, "sl": 0.9}) is None
