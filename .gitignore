@@ -4,3 +4,6 @@ resultados_backtest/
 __pycache__/
 noticias.json
 .pytest_cache/
+estado_emas.json
+estado_pips.json
+*.json.tmp
