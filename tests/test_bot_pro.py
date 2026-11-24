@@ -130,7 +130,8 @@ def test_un_solo_mensaje_por_escaneo(telegram, estado):
         assert b.decidir_senal(s, "15m", P, estado) == "enviar"
     assert telegram == []                                  # nada sale hasta vaciar la cola
     assert estado.vaciar_cola() == 3
-    assert len(telegram) == 1 and telegram[0].startswith("🚨 3 señales nuevas")
+    assert len(telegram) == 1 and telegram[0].splitlines()[0] == "🏛️ TERMINAL BALLENA"
+    assert telegram[0].splitlines()[1].startswith("🚨 3 señales nuevas")
     assert len(estado.d["abiertas"]) == 3
     assert b.decidir_senal(senal(activo="EUR/USD", est="E0", ent=1.1, sl=1.1 * 0.998, tp=1.1 * 1.004),
                            "15m", P, estado) == "repetida"
@@ -415,7 +416,8 @@ def test_modo_todas_envia_todo_y_marca_observacion(telegram, estado, monkeypatch
     assert c["s"]["compacta"] and not c["s"]["operable"] and "nivel C" in c["s"]["motivo_obs"]
     assert op["s"]["operable"] and not op["s"]["compacta"]
     assert estado.vaciar_cola() == 2
-    assert len(telegram) == 2 and telegram[-1].startswith("👀 1 señales en observación")
+    assert len(telegram) == 2 and telegram[-1].splitlines()[1].startswith("👀 1 señales en observación")
+    assert all(m.splitlines()[0] == "🏛️ TERMINAL BALLENA" for m in telegram)
     ab = {o["activo"]: o["operable"] for o in estado.d["abiertas"]}
     assert ab == {"EUR/USD": False, "BTC/USDT": True}                     # el diario sigue las dos
 
