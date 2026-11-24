@@ -242,6 +242,9 @@ CUENTA = {
                                   # (el mismo setup nunca se repite; el backtest sigue usando COOLDOWN_H)
     "formato": "corto",           # "corto" = senal estilo canal (activo, direccion, tiempo, ejecucion, niveles)
                                   # "completo" = ficha con votos, lectura de estructura y maquina del tiempo
+    "solo_senales": True,         # True = a Telegram SOLO llegan las senales operables (sin lista de observacion,
+                                  # cierres del diario, noticias, informes ni avisos de freno). Todo se sigue
+                                  # registrando y se consulta en el chat con /diario y /estado.
     "imagen_alertas": False,      # True = cada alerta operable llega con su grafico (ahora: solo mensaje resumido)
 }
 
@@ -314,6 +317,14 @@ def _post_telegram(token, chat_id, texto):
             continue
         return r
     return r
+
+
+def avisar(texto):
+    """Mensajes informativos (diario, noticias, informes, freno): no se envian si CUENTA['solo_senales']."""
+    if CUENTA.get("solo_senales"):
+        print(f"  (no enviado: solo señales) {str(texto).splitlines()[0][:80]}", flush=True)
+        return True, "Omitido (solo señales)"
+    return enviar_telegram(texto)
 
 
 def enviar_telegram(texto):
@@ -3425,6 +3436,9 @@ class Estado:
                 largo += len(x["txt"]) + 1
             lotes.append(actual)
             for lote in lotes:
+                if CUENTA.get("solo_senales"):           # solo senales operables: la observacion no se envia
+                    _resultado(lote, True, "Omitido (solo señales)")
+                    continue
                 ok, msg = enviar_telegram(cab + "\n" + "\n".join(x["txt"] for x in lote))
                 enviadas += _resultado(lote, ok, msg)
         self.guardar()
@@ -3869,7 +3883,7 @@ def seguir_abiertas(estado, cargar=obtener, enviar=True, ahora=None):
             lineas.append(f"{ic} {op['activo']} ({op['tf']}) · {op['estrategia']} · {op['dir']}: "
                           f"{res['motivo']} · {res['R']:+.2f}R · {res['salida']} NY")
     if enviar and lineas:                          # UN mensaje con todos los cierres de esta pasada
-        enviar_telegram("📒 Diario: operaciones cerradas\n" + "\n".join(lineas))
+        avisar("📒 Diario: operaciones cerradas\n" + "\n".join(lineas))
     estado.d["abiertas"] = quedan
     estado.d["diario"] = estado.d.get("diario", [])[-1000:]
     return cerradas
@@ -3903,20 +3917,20 @@ def revisar_freno(estado, enviar=True):
         if motivo:
             estado.d["freno_hasta"], estado.d["freno_motivo"] = hoy, motivo
             if enviar:
-                enviar_telegram(f"🛑 FRENO ACTIVADO: {motivo}.\nNo envío más señales hoy. "
+                avisar(f"🛑 FRENO ACTIVADO: {motivo}.\nNo envío más señales hoy. "
                                 f"Mañana empezamos de cero. Protege tu capital y tu cabeza 🧠")
     apagadas = estado.d.setdefault("apagadas", {})
     for est in CUENTA.get("reactivar", []):              # reactivacion manual desde el codigo
         if apagadas.pop(est, None) is not None:
             estado.d["diario"] = [x for x in estado.d.get("diario", []) if x.get("estrategia") != est]
             if enviar:
-                enviar_telegram(f"♻️ Estrategia reactivada: {est} (su historial en vivo empieza de cero).")
+                avisar(f"♻️ Estrategia reactivada: {est} (su historial en vivo empieza de cero).")
     for est in {x["estrategia"] for x in todo_diario}:            # el apagado mide TODAS las senales
         rs = [x["R"] for x in todo_diario if x["estrategia"] == est]
         if est not in apagadas and len(rs) >= FRENO["min_ops_apagado"] and np.mean(rs[-30:]) < FRENO["r_min_apagado"]:
             apagadas[est] = hoy
             if enviar:
-                enviar_telegram(f"🧯 Estrategia APAGADA: {est}\nEn vivo lleva {len(rs)} operaciones con "
+                avisar(f"🧯 Estrategia APAGADA: {est}\nEn vivo lleva {len(rs)} operaciones con "
                                 f"{np.mean(rs[-30:]):+.2f}R de promedio (últimas 30). Ya no enviaré sus señales.\n"
                                 f"Para reactivarla: agrega \"{est}\" a CUENTA['reactivar'] en bot_pro.py.")
     return estado.d.get("freno_motivo") if estado.d.get("freno_hasta") == hoy else None
@@ -4475,7 +4489,7 @@ def correr_bot(a, p):
                 n = estado.vaciar_cola()
             print(f"  -> {n} alertas nuevas enviadas", flush=True)
             if ping:                                   # en la prueba manual: manda tambien el diagnostico
-                ok, msg = enviar_telegram(f"📋 Estado del escaner ({' + '.join(a.tf)}) · {n} señales nuevas\n"
+                ok, msg = avisar(f"📋 Estado del escaner ({' + '.join(a.tf)}) · {n} señales nuevas\n"
                                           + (resumen_comite(filas) if CUENTA.get("modo") in ("comite", "todas")
                                              else resumen_estado(filas))[:3000] + "\n\n" + proximas_noticias())
                 print(f"Resumen a Telegram: {'OK' if ok else explicar_error_telegram(msg)}", flush=True)
@@ -4486,12 +4500,12 @@ def correr_bot(a, p):
             hoy = f"{datetime.now(NY):%Y-%m-%d}"
             semana = f"{datetime.now(NY):%G-%V}"
             if datetime.now(NY).weekday() == 0 and datetime.now(NY).hour >= 6 and estado.d.get("informe_sem") != semana:
-                ok, _ = enviar_telegram(informe_semanal(estado))
+                ok, _ = avisar(informe_semanal(estado))
                 if ok:
                     estado.d["informe_sem"] = semana
             if datetime.now(NY).hour >= 6 and estado.d.get("noticias_dia") != hoy:
                 obs = texto_observadas(estado)
-                ok, _ = enviar_telegram(f"🗓️ Buenos días · {datetime.now(NY):%a %d/%m}\n" + proximas_noticias()
+                ok, _ = avisar(f"🗓️ Buenos días · {datetime.now(NY):%a %d/%m}\n" + proximas_noticias()
                                         + (f"\n\n{obs}" if obs else ""))
                 if ok:
                     estado.d["noticias_dia"] = hoy

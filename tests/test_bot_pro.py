@@ -406,6 +406,7 @@ def test_chat_capital(monkeypatch):
 # ----------------------------------------------------------------- modo todas + imagen en cada alerta
 def test_modo_todas_envia_todo_y_marca_observacion(telegram, estado, monkeypatch):
     monkeypatch.setitem(b.CUENTA, "modo", "todas")
+    monkeypatch.setitem(b.CUENTA, "solo_senales", False)          # aqui se prueba la lista de observacion
     assert len(b.mercados_vivos()) == len(b.ACTIVOS)
     assert b.decidir_senal(senal(puntaje=1, est="E1"), "15m", P, estado) == "enviar"          # nivel C tambien
     assert b.decidir_senal(senal(puntaje=3, est="E2", activo="BTC/USDT", ent=90000, sl=89500, tp=91000),
@@ -483,3 +484,15 @@ def test_formato_corto(monkeypatch):
                   "✅ TP1: 3,965.80", "SIN VENTAJA PROBADA"):
         assert trozo in txt, trozo
     assert len(txt.splitlines()) == 5
+
+
+def test_solo_senales_operables(telegram, estado, monkeypatch):
+    """Con solo_senales: llega la operable; la de observacion y los avisos informativos no se envian."""
+    monkeypatch.setitem(b.CUENTA, "modo", "todas")
+    monkeypatch.setitem(b.CUENTA, "solo_senales", True)
+    b.decidir_senal(senal(puntaje=1, est="E1"), "15m", P, estado)                       # nivel C -> observacion
+    b.decidir_senal(senal(puntaje=3, est="E2", activo="BTC/USDT", ent=90000, sl=89500, tp=91000), "15m", P, estado)
+    estado.vaciar_cola()
+    assert len(telegram) == 1 and "BTC/USDT" in telegram[0]
+    assert len(estado.d["abiertas"]) == 2                                                # el diario sigue las dos
+    assert b.avisar("📒 Diario: cierres")[0] and len(telegram) == 1
