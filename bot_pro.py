@@ -210,6 +210,7 @@ KZ_DEFAULT = {"cripto": [],                          # BTC: 24/7
 # Valores por defecto = cuenta estandar habitual: forex 100.000 unidades por lote, oro 100 oz por lote.
 # Si tu cuenta es CENT, escribe aqui el tamano de contrato que muestre tu MT5 para ese simbolo.
 CUENTA = {
+    "activo": False,            # False = bot APAGADO: termina al arrancar sin escanear ni enviar nada
     "banco": 50.0,              # capital en USD
     "riesgo_pct": 2.0,          # % del capital que arriesgas por operacion ($0.20 con $10)
     "riesgo_max_pct": 5.0,      # si el lote minimo obliga a arriesgar mas que esto, la senal se marca NO OPERABLE
@@ -4470,6 +4471,9 @@ def hay_version_nueva(cada_min=10):
 
 
 def correr_bot(a, p):
+    if not CUENTA.get("activo", True):
+        print("🔌 Bot Pro APAGADO (CUENTA['activo'] = False): no escanea ni envía mensajes.", flush=True)
+        return
     estado = Estado(a.estado)
     estado.agrupar = bool(CUENTA.get("agrupar_alertas", True))
     t_ini = time.time()
