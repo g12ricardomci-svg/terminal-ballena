@@ -327,7 +327,17 @@ def avisar(texto):
     return enviar_telegram(texto)
 
 
+ENCABEZADO = "🏛️ TERMINAL BALLENA"
+
+
+def con_encabezado(texto):
+    """Nombre del bot en la primera linea de cada mensaje (para distinguirlo de Ballena EMAs)."""
+    texto = str(texto)
+    return texto if texto.startswith(ENCABEZADO) else f"{ENCABEZADO}\n{texto}"
+
+
 def enviar_telegram(texto):
+    texto = con_encabezado(texto)
     token = secreto("TELEGRAM_TOKEN")
     ids = [i.strip() for i in secreto("TELEGRAM_CHAT_IDS").replace(";", ",").split(",") if i.strip()]
     if not token or not ids:
@@ -5092,6 +5102,7 @@ def enviar_foto(png, texto):
     if not token or not ids:
         return False, "Faltan TELEGRAM_TOKEN / TELEGRAM_CHAT_IDS"
     errores = []
+    texto = con_encabezado(texto)
     for chat_id in ids:
         try:
             pie = texto if len(texto) <= 1024 else texto.split("\n")[0]
@@ -5211,9 +5222,10 @@ def atender_telegram(estado, cargar=obtener):
         if chat not in permitidos or not msg.get("text"):
             continue
         txt, png = responder(msg["text"], estado, cargar)
+        txt = con_encabezado(txt) if txt else txt
         if png:
             try:
-                enviar_foto_telegram(token, chat, png)
+                enviar_foto_telegram(token, chat, png, ENCABEZADO)
             except Exception as e:
                 print(f"  ! Foto al chat: {e}", flush=True)
         if txt:
