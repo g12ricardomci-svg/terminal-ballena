@@ -96,7 +96,16 @@ DEFAULT_SECRETS = {      # repositorio PUBLICO: sin credenciales en el codigo. S
 
 
 def secreto(n):
-    return str(os.environ.get(n) or DEFAULT_SECRETS.get(n, "")).strip()
+    """Secreto de GitHub (variable de entorno) o, si no hay, la misma configuracion de Telegram que usa el bot
+    Terminal Ballena (bot_pro.py, en este mismo repositorio)."""
+    valor = os.environ.get(n) or DEFAULT_SECRETS.get(n, "")
+    if not valor:
+        try:
+            import bot_pro
+            valor = bot_pro.DEFAULT_SECRETS.get(n, "")
+        except Exception:
+            valor = ""
+    return str(valor).strip()
 
 
 def _chats():
