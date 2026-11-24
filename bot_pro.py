@@ -210,7 +210,7 @@ KZ_DEFAULT = {"cripto": [],                          # BTC: 24/7
 # Valores por defecto = cuenta estandar habitual: forex 100.000 unidades por lote, oro 100 oz por lote.
 # Si tu cuenta es CENT, escribe aqui el tamano de contrato que muestre tu MT5 para ese simbolo.
 CUENTA = {
-    "banco": 10.0,              # capital en USD
+    "banco": 50.0,              # capital en USD
     "riesgo_pct": 2.0,          # % del capital que arriesgas por operacion ($0.20 con $10)
     "riesgo_max_pct": 5.0,      # si el lote minimo obliga a arriesgar mas que esto, la senal se marca NO OPERABLE
     "lote_min": 0.01,
@@ -242,7 +242,7 @@ CUENTA = {
                                   # (el mismo setup nunca se repite; el backtest sigue usando COOLDOWN_H)
     "formato": "corto",           # "corto" = senal estilo canal (activo, direccion, tiempo, ejecucion, niveles)
                                   # "completo" = ficha con votos, lectura de estructura y maquina del tiempo
-    "imagen_alertas": True,       # True = cada alerta operable llega con su grafico (entrada, stop y objetivo)
+    "imagen_alertas": False,      # True = cada alerta operable llega con su grafico (ahora: solo mensaje resumido)
 }
 
 LOTE = {"forex": CUENTA["contrato_forex"], "oro": CUENTA["contrato_oro"]}
@@ -3237,37 +3237,30 @@ def texto_linea_obs(s, tf):
 
 
 def texto_alerta_corto(s, tf):
-    """Senal corta: activo, direccion, tiempo, ejecucion, niveles, y en una linea su nivel y su confianza."""
+    """Mensaje RESUMIDO (igual que Ballena EMAs): direccion, mercado y TF · estrategia, confianza y nivel ·
+    entrada · stop · objetivos. Los avisos de cartera, si los hay, van en una linea mas."""
     compra = s["dir"] == "LONG"
     minutos = TF_MIN[tf]
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=minutos)
     lado = "COMPRA" if compra else "VENTA"
     if s.get("orden") == "limite":
-        ejec = f"orden {lado} LÍMITE en {fmt(s['entrada'])} (válida {s.get('espera', 12)} velas)"
+        entrada = f"{fmt(s['entrada'])} (orden {lado} LÍMITE)"
     elif s.get("orden") in ("stop", "stop_tp"):
-        ejec = f"orden {lado} STOP en {fmt(s['entrada'])} (se activa si el precio llega)"
+        entrada = f"{fmt(s['entrada'])} (orden {lado} STOP)"
     else:
-        ejec = f"al inicio de la siguiente vela de {minutos} minutos ({hora:%H:%M} NY)"
+        entrada = f"{fmt(s['entrada'])} ({hora:%H:%M} NY)"
     if s.get("tp1") is not None:
-        objetivos = f"✅ TP1: {fmt(s['tp1'])}" + (f"\n✅ TP2: {fmt(s['tp2'])}" if s.get("tp2") is not None else "")
+        tps = f"✅ TP1: {fmt(s['tp1'])}" + (f" · TP2: {fmt(s['tp2'])}" if s.get("tp2") is not None else "")
     else:
-        objetivos = f"✅ Salida: {s.get('salida_txt') or 'según la estrategia'}"
-    nivel = ""
-    if s.get("puntaje") is not None:
-        niv, riesgo = nivel_comite(s["puntaje"])
-        nivel = f"{niv.split(' · ')[0]} · {riesgo}\n"
-    avisos = "".join(a + "\n" for a in s.get("avisos", []))
-    return (f"🚨 NUEVA SEÑAL DE TRADING 🚨\n\n"
-            f"💎 Activo: {s['activo']}\n"
-            f"📊 Dirección: {'🟢 COMPRA ⬆️' if compra else '🔴 VENTA ⬇️'}\n"
-            f"⏱️ Tiempo: {minutos} MINUTOS\n\n"
-            f"🎯 Ejecución: {ejec}\n\n"
-            f"📍 Entrada: {fmt(s['entrada'])}\n"
-            f"🛑 Stop: {fmt(s['sl'])}\n"
-            f"{objetivos}\n\n"
-            f"{avisos}{nivel}{etiqueta_prueba(s)}\n"
-            f"📐 {s['estrategia']}" + (f" · {s['aviso']}" if s.get("aviso") else "")
-            + _nota_noticias(s["activo"]) + f"\n🤖 Bot Pro {VERSION_BOT}")
+        tps = "✅ Salida: según la estrategia"
+    etq = etiqueta_prueba(s).split(" (")[0].replace(" en este mercado", "")
+    nivel = f" · nivel {letra_nivel(s['puntaje'])}" if s.get("puntaje") is not None else ""
+    avisos = "".join("\n" + a for a in s.get("avisos", []))
+    return (f"🚨 {'🟢' if compra else '🔴'} {lado} {s['activo']} · {minutos}M\n"
+            f"📐 {s['estrategia']} · {etq}{nivel}\n"
+            f"🎯 Entrada: {entrada}\n"
+            f"🛑 SL: {fmt(s['sl'])}\n"
+            f"{tps}{avisos}")
 
 
 def texto_alerta(s, tf):
