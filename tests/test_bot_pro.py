@@ -479,6 +479,7 @@ def test_formato_corto(monkeypatch):
     s = {**senal(activo="XAU/USD (Oro)", ent=4020.0, sl=4031.2, tp=3965.8, est="CT"), "dir": "SHORT", "bias": -1,
          "orden": "limite", "espera": 40, "peso": 0}
     txt = b.texto_alerta(s, "15m")
-    for trozo in ("🚨 NUEVA SEÑAL DE TRADING 🚨", "💎 Activo: XAU/USD (Oro)", "🔴 VENTA", "⏱️ Tiempo: 15 MINUTOS",
-                  "VENTA LÍMITE en 4,020.00", "🛑 Stop: 4,031.20", "✅ TP1: 3,965.80", "SIN VENTAJA PROBADA"):
+    for trozo in ("🚨 🔴 VENTA XAU/USD (Oro) · 15M", "4,020.00 (orden VENTA LÍMITE)", "🛑 SL: 4,031.20",
+                  "✅ TP1: 3,965.80", "SIN VENTAJA PROBADA"):
         assert trozo in txt, trozo
+    assert len(txt.splitlines()) == 5
