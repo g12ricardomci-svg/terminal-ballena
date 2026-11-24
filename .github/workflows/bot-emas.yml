@@ -1,0 +1,56 @@
+name: Ballena EMAs
+
+# Bot encendido en tramos de ~5,5 h (limite de GitHub: 6 h) analizando cada 5 min; al terminar se relanza solo.
+# Si se sube una version nueva a la rama, el bucle la detecta (<= 10 min) y se relanza con ella.
+# El horario de cada hora es solo un respaldo por si la cadena se corta.
+on:
+  schedule:
+    - cron: "41 * * * *"
+  workflow_dispatch:
+    inputs:
+      ping:
+        description: "Enviar '✅ activa' a Telegram al arrancar"
+        type: boolean
+        default: true
+
+concurrency:
+  group: ballena-emas-publico
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  escanear:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - name: Restaurar memoria
+        uses: actions/cache/restore@v4
+        with:
+          path: estado_emas.json
+          key: estado-emas-${{ github.run_id }}
+          restore-keys: estado-emas-
+      - name: Escanear en bucle (~5,5 h)
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
+          GH_TOKEN: ${{ github.token }}
+        run: python ballena_emas.py --estado estado_emas.json --minutos 330 ${{ (github.event_name == 'workflow_dispatch' && inputs.ping) && '--ping' || '' }}
+      - name: Guardar memoria
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: estado_emas.json
+          key: estado-emas-${{ github.run_id }}
+      - name: Relanzarse
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run bot-emas.yml --ref ${{ github.ref_name }} -f ping=false

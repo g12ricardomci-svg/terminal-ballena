@@ -1,11 +1,11 @@
 name: Estado
 
-# Envia "✅ activo y analizando" a Telegram y termina (no interrumpe al bot).
+# Envia "✅ activo y analizando" de Ballena EMAs y Ballena Pips a Telegram y termina (no interrumpe a los bots).
 on:
   workflow_dispatch: {}
 
 concurrency:
-  group: bot-pro-estado
+  group: ballenas-estado
 
 permissions:
   contents: read
@@ -24,13 +24,6 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_IDS: ${{ secrets.TELEGRAM_CHAT_IDS }}
-        shell: python
         run: |
-          import bot_pro as b
-          from datetime import datetime
-          ok, msg = b.enviar_telegram(
-              f"✅ ACTIVO Y ANALIZANDO · Bot Pro {b.VERSION_BOT}\n"
-              f"Modo {b.CUENTA['modo']} · {len(b.mercados_vivos())} mercados · escaneo cada 5 minutos\n"
-              f"Solo te llegan las señales operables.")
-          print("Estado a Telegram:", "OK" if ok else msg)
-          raise SystemExit(0 if ok else 1)
+          python ballena_emas.py --avisar-estado
+          python ballena_pips.py --avisar-estado
