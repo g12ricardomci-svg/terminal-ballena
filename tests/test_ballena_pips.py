@@ -157,7 +157,7 @@ def test_mensaje_de_prueba():
 def test_analiza_24_7_y_los_3_mercados():
     assert bp.CONFIG["solo_sesiones"] is False and bp.en_ventana(pd.Timestamp("2026-11-24 20:30", tz="UTC"))
     assert list(bp.MERCADOS) == ["XAU/USD (Oro)", "BTC/USD", "NASDAQ 100"]
-    assert bp.CONFIG["confluencia"] == ("15M", "1H")
+    assert bp.CONFIG["confluencia"] is None                               # cada modelo envia lo suyo
 
 
 def test_el_programa_arranca():
@@ -170,7 +170,8 @@ def test_el_programa_arranca():
 
 
 def test_crt_sin_confluencia_no_se_envia(monkeypatch):
-    """El modelo 15M da entrada de VENTA pero el sesgo H4 del modelo 1H es alcista: no se envia."""
+    """Con la confluencia ACTIVADA: el 15M da VENTA pero el sesgo H4 del modelo 1H es alcista -> no se envia."""
+    monkeypatch.setitem(bp.CONFIG, "confluencia", ("15M", "1H"))
     monkeypatch.setattr(bp, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
     m5, h1 = escenario_venta(True)
     m1, m15 = escenario_venta(True, f_rango="15min", f_conf="1min")

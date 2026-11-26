@@ -76,7 +76,7 @@ CONFIG = {
                                   # "combinadas" = parejas fijas (OB+S/R, ruptura+retest, cruce+MTF, OB+cruce)
                                   # "sueltas" = cada estrategia envia su propia senal
     "min_estrategias": 3,         # MAS de dos estrategias unidas en la misma direccion
-    "confluencia_1h_15m": True,   # ademas, 1H y 15M alineadas en la direccion de la senal (obligatorio)
+    "confluencia_1h_15m": False,  # True = ademas, 1H y 15M alineadas en la direccion de la senal
     "combinaciones": ["ob_sr", "ruptura_retest", "cruce_mtf", "ob_cruce"],
     "combo_ventana": 3,           # el cruce del combo "OB + Cruce" debe estar en las ultimas 3 velas
     "estrategias": ["cruce", "retest", "orderblock", "confluencia", "sr", "ruptura_sr"],

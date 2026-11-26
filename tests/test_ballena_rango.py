@@ -102,7 +102,7 @@ def test_mensaje_y_sin_repetir(monkeypatch, tmp_path):
 def test_nombre_del_bot_y_3_mercados():
     assert br.ENCABEZADO == "📦 BALLENA RANGO"
     assert list(br.MERCADOS) == ["XAU/USD (Oro)", "BTC/USD", "NASDAQ 100"]
-    assert br.CONFIG["confluencia"] == ("15M", "1H")
+    assert br.CONFIG["confluencia"] is None                               # cada modelo envia lo suyo
     assert set(br.CONFIG["modelos"]) == {"5M", "15M", "1H"}
 
 
@@ -123,6 +123,7 @@ def _datos_confluencia(d1_alcista=True, h4_filtro=None):
 
 
 def test_confluencia_15m_con_bias_1h_se_envia(monkeypatch):
+    monkeypatch.setitem(br.CONFIG, "confluencia", ("15M", "1H"))           # (desactivada por defecto)
     datos = _datos_confluencia(d1_alcista=True)
     monkeypatch.setattr(br, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
     ahora = datos["15m"].index[-1] + pd.Timedelta(minutes=15)
@@ -133,6 +134,7 @@ def test_confluencia_15m_con_bias_1h_se_envia(monkeypatch):
 
 
 def test_sin_confluencia_no_se_envia(monkeypatch):
+    monkeypatch.setitem(br.CONFIG, "confluencia", ("15M", "1H"))
     datos = _datos_confluencia(d1_alcista=False)                       # D1 bajista: el 1H no acompana
     monkeypatch.setattr(br, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
     ahora = datos["15m"].index[-1] + pd.Timedelta(minutes=15)
@@ -140,5 +142,12 @@ def test_sin_confluencia_no_se_envia(monkeypatch):
     assert senales == [] and "sin confluencia del modelo 1H" in motivos["rango 15M"]
 
 
-def test_el_modelo_5m_no_se_envia_con_confluencia():
-    assert "5M" not in br.CONFIG["confluencia"]
+def test_sin_confluencia_se_envia_cada_modelo(monkeypatch):
+    """Por defecto (sin confluencia) el 15M envia su senal aunque el D1 del modelo 1H vaya en contra."""
+    assert set(br.CONFIG["modelos"]) == {"5M", "15M", "1H"}
+    datos = _datos_confluencia(d1_alcista=False)
+    datos["5m"] = datos["15m"]
+    monkeypatch.setattr(br, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
+    ahora = datos["15m"].index[-1] + pd.Timedelta(minutes=15)
+    senales, _ = br.analizar_todas("EUR/USD", None, lambda nm, tf: datos[tf], ahora)
+    assert any(s["modelo"] == "15M" and not s.get("confluencia") for s in senales)

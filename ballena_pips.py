@@ -61,7 +61,8 @@ CONFIG = {
     "modelos": {"1H": {"sesgo": "4h", "rango": "1h", "conf": "5m"},
                 "15M": {"sesgo": "1h", "rango": "15m", "conf": "1m"}},
     "ventanas_ny": [(2.0, 5.0), (8.0, 11.5)],   # sesiones de Londres y Nueva York (hora NY)
-    "confluencia": ("15M", "1H"), # solo se envia si un modelo da la entrada y el sesgo del otro apunta igual
+    "confluencia": None,          # None = cada modelo envia lo suyo. ("15M", "1H") = solo si un modelo da la
+                                  # entrada y el sesgo del otro apunta igual
     "solo_sesiones": False,       # False = analiza 24/7 (si el mercado esta abierto); True = solo en las sesiones
     "swing_k": 2,                 # swings de M5 para la ruptura de estructura
     "tp1_r": 2.0,                 # TP1 a 2R; TP2 = extremo opuesto de la vela H1 de referencia (objetivo CRT)
