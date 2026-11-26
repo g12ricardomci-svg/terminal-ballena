@@ -135,7 +135,8 @@ def test_alerta_con_imagen_y_sin_repetir(monkeypatch, tmp_path):
     assert be.escanear(e, cargar, ahora, verbose=False) == 0      # la misma senal no se repite
 
 
-def test_backtest_corre():
+def test_backtest_corre(monkeypatch):
+    monkeypatch.setattr(be, "MERCADOS", {**be.MERCADOS, "EUR/USD": {"tipo": "forex", "yf": "EURUSD=X"}})
     rng = np.random.default_rng(3)
     c = 1.1 * np.exp(np.cumsum(rng.normal(0.00005, 0.0012, 3000)))
     df = velas(c, freq="5min", inicio="2026-09-01")
@@ -195,7 +196,8 @@ def test_hueco_sobre_el_stop_no_cuenta():
     assert be.simular(df, 5, {"bias": 1, "sl": 0.995, "riesgo_px": 0.005}) is None
 
 
-def test_backtest_con_csv(tmp_path):
+def test_backtest_con_csv(tmp_path, monkeypatch):
+    monkeypatch.setattr(be, "MERCADOS", {**be.MERCADOS, "EUR/USD": {"tipo": "forex", "yf": "EURUSD=X"}})
     rng = np.random.default_rng(3)
     df = velas(1.1 * np.exp(np.cumsum(rng.normal(0.00005, 0.0012, 3000))), freq="5min", inicio="2026-09-01")
     df.to_csv(tmp_path / "EUR_USD_5m.csv")
@@ -412,10 +414,9 @@ def test_nivel_con_dos_toques_no_es_fuerte():
     assert s is None
 
 
-def test_solo_los_8_mercados_elegidos():
-    assert list(be.MERCADOS) == ["EUR/USD", "AUD/USD", "GBP/USD", "USD/JPY", "GBP/JPY", "XAU/USD (Oro)",
-                                 "BTC/USD", "NASDAQ 100"]
-    assert be.MERCADOS["GBP/JPY"]["yf"] == "GBPJPY=X" and be.MERCADOS["BTC/USD"]["ccxt"] == "BTC/USDT"
+def test_solo_los_3_mercados_elegidos():
+    assert list(be.MERCADOS) == ["XAU/USD (Oro)", "BTC/USD", "NASDAQ 100"]
+    assert be.MERCADOS["BTC/USD"]["ccxt"] == "BTC/USDT" and be.MERCADOS["NASDAQ 100"]["yf"] == "NQ=F"
     assert be.fmt(198.4567) == "198.457" and be.fmt(1.085674) == "1.08567"
 
 

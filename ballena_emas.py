@@ -49,17 +49,16 @@ except Exception:  # pragma: no cover
 
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
-VERSION = "v11 · consenso 3+ · 8 mercados"
+VERSION = "v12 · consenso 3+ · 3 mercados"
 
 # ----------------------------------------------------------------- CONFIGURACION (EDITA AQUI)
-# Mercados elegidos: 5 pares de forex + oro, BTC y Nasdaq 100 (en 5m y 15m con todas las estrategias).
-PARES_FOREX = ["EUR/USD", "AUD/USD", "GBP/USD", "USD/JPY", "GBP/JPY"]
-MERCADOS = {par: {"tipo": "forex", "yf": par.replace("/", "") + "=X"} for par in PARES_FOREX}
-MERCADOS.update({   # nombre -> tipo, ticker de Yahoo y, si existe, simbolo de exchange (ccxt)
+# Mercados elegidos: solo oro, BTC y Nasdaq 100 (en 5m y 15m con todas las estrategias).
+PARES_FOREX = []
+MERCADOS = {   # nombre -> tipo, ticker de Yahoo y, si existe, simbolo de exchange (ccxt)
     "XAU/USD (Oro)": {"tipo": "oro", "yf": "GC=F", "ccxt": "PAXG/USDT"},
     "BTC/USD": {"tipo": "cripto", "yf": "BTC-USD", "ccxt": "BTC/USDT"},
     "NASDAQ 100": {"tipo": "indice", "yf": "NQ=F"},
-})
+}
 CONFIG = {
     "tfs": ["5m", "15m"],         # temporalidades de entrada
     "tf_tendencia": "1h",         # la "marea" de Elder
