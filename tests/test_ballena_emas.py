@@ -590,3 +590,26 @@ def test_el_programa_arranca():
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run([sys.executable, os.path.join(raiz, "ballena_emas.py"), "--help"], capture_output=True, text=True)
     assert r.returncode == 0 and "--avisar-estado" in r.stdout
+
+
+# ----------------------------------------------------------------- confluencia 1H + 15M obligatoria (consenso)
+def test_consenso_sin_confluencia_1h_15m_no_se_envia(monkeypatch):
+    df = _preparar(monkeypatch, _ventana(orderblock=[(0, _s(1))], sr=[(0, _s(1))], retest=[(0, _s(1))]),
+                   mtf=False)                                              # 3 votos, pero 1H/15M no acompanan
+    out, motivo = be.senales_consenso(df, None, "5m")
+    assert out == [] and "sin confluencia 1H + 15M" in motivo
+
+
+def test_consenso_con_confluencia_lleva_la_etiqueta(monkeypatch):
+    df = _preparar(monkeypatch, _ventana(orderblock=[(0, _s(1))]), mtf=True, cruce=True)
+    s = be.senales_consenso(df, None, "5m")[0][0]
+    s.update(activo="BTC/USD", tf="5m", tipo="cripto")
+    assert "⭐ CONFLUENCIA 1H + 15M" in be.texto_alerta(s).splitlines()[0]
+
+
+def test_en_15m_tambien_cuenta_la_propia_vela(monkeypatch):
+    monkeypatch.setattr(be, "_mtf_alineado", lambda df, d1, m, tf: True)    # 1H alineada
+    sube = velas(np.linspace(1.00, 1.05, 80), freq="15min")
+    baja = velas(np.linspace(1.05, 1.00, 80), freq="15min")
+    assert be.confluencia_1h_15m(sube, None, 1, "15m") is True
+    assert be.confluencia_1h_15m(baja, None, 1, "15m") is False             # 15M en contra

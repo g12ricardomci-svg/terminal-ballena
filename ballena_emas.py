@@ -49,7 +49,7 @@ except Exception:  # pragma: no cover
 
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
-VERSION = "v12 · consenso 3+ · 3 mercados"
+VERSION = "v13 · consenso 3+ · confluencia 1H + 15M · 3 mercados"
 
 # ----------------------------------------------------------------- CONFIGURACION (EDITA AQUI)
 # Mercados elegidos: solo oro, BTC y Nasdaq 100 (en 5m y 15m con todas las estrategias).
@@ -76,6 +76,7 @@ CONFIG = {
                                   # "combinadas" = parejas fijas (OB+S/R, ruptura+retest, cruce+MTF, OB+cruce)
                                   # "sueltas" = cada estrategia envia su propia senal
     "min_estrategias": 3,         # MAS de dos estrategias unidas en la misma direccion
+    "confluencia_1h_15m": True,   # ademas, 1H y 15M alineadas en la direccion de la senal (obligatorio)
     "combinaciones": ["ob_sr", "ruptura_retest", "cruce_mtf", "ob_cruce"],
     "combo_ventana": 3,           # el cruce del combo "OB + Cruce" debe estar en las ultimas 3 velas
     "estrategias": ["cruce", "retest", "orderblock", "confluencia", "sr", "ruptura_sr"],
@@ -816,6 +817,14 @@ def _senales_en_ventana(df, d1, velas):
     return out
 
 
+def confluencia_1h_15m(df, d1, m, tf):
+    """1H y 15M alineadas en la direccion m (EMA 9 sobre la 21 y cierre sobre la 21; en ventas al reves).
+    En 5m se mira la 15M remuestreada; en 15m, la propia vela de 15M."""
+    if not _mtf_alineado(df, d1, m, tf):          # 1H (y la 15M remuestreada si se opera en 5m)
+        return False
+    return tf != "15m" or bool(_alineada(df, m).iloc[-1])
+
+
 def senales_consenso(df, d1, tf):
     """Senal solo si >= CONFIG['min_estrategias'] estrategias DISTINTAS apuntan en la misma direccion.
     Devuelve ([senal], motivo)."""
@@ -846,11 +855,13 @@ def senales_consenso(df, d1, tf):
     if len(mejores) > 1:
         return [], "consenso en las dos direcciones: no operar"
     m, votos, actuales = mejores[0]
+    if CONFIG.get("confluencia_1h_15m") and not confluencia_1h_15m(df, d1, m, tf):
+        return [], f"{len(votos)} estrategias de acuerdo pero sin confluencia 1H + 15M"
     gatillo = actuales[0]
     sl_lejano = min((s["sl"] for s in actuales), key=lambda x: x * m)   # el stop mas protegido
     nombres = [VOTOS_NOMBRE[v] for v in ("orderblock", "sr", "retest", "ruptura_sr", "cruce", "mtf") if v in votos]
     s = _combo(gatillo, "consenso", " + ".join(nombres), sl=sl_lejano)
-    s.update(votos=len(votos))
+    s.update(votos=len(votos), confluencia="1H + 15M" if CONFIG.get("confluencia_1h_15m") else None)
     return [s], ""
 
 
@@ -911,7 +922,8 @@ def texto_alerta(s):
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=minutos)
     if s.get("combo"):
         estrellas = f"{'⭐' * min(s['votos'], 5)} CONFIRMADA x{s['votos']}" if s.get("votos") else "⭐ CONFIRMADA"
-        return (f"🚨 {estrellas} {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · {minutos}M\n"
+        cfl = f" · ⭐ CONFLUENCIA {s['confluencia']}" if s.get("confluencia") else ""
+        return (f"🚨 {estrellas} {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · {minutos}M{cfl}\n"
                 f"📐 {s['combo_txt']}\n"
                 f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)\n"
                 f"🛑 SL: {fmt(s['sl'])}\n"
