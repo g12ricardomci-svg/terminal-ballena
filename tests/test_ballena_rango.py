@@ -86,6 +86,7 @@ def test_mensaje_y_sin_repetir(monkeypatch, tmp_path):
     ent, h4 = entrada_m15(), mayor_h4()
     monkeypatch.setattr(br, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
     monkeypatch.setitem(br.CONFIG, "modelos", {"15M": {"mayor": "4h", "entrada": "15m"}})
+    monkeypatch.setitem(br.CONFIG, "confluencia", None)
     enviados = []
     monkeypatch.setattr(br, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
     ahora = ent.index[-1] + pd.Timedelta(minutes=15)
@@ -98,10 +99,10 @@ def test_mensaje_y_sin_repetir(monkeypatch, tmp_path):
     assert br.escanear(e, cargar, ahora, verbose=False) == 0
 
 
-def test_nombre_del_bot_y_8_mercados():
+def test_nombre_del_bot_y_3_mercados():
     assert br.ENCABEZADO == "📦 BALLENA RANGO"
-    assert list(br.MERCADOS) == ["EUR/USD", "AUD/USD", "GBP/USD", "USD/JPY", "GBP/JPY", "XAU/USD (Oro)",
-                                 "BTC/USD", "NASDAQ 100"]
+    assert list(br.MERCADOS) == ["XAU/USD (Oro)", "BTC/USD", "NASDAQ 100"]
+    assert br.CONFIG["confluencia"] == ("15M", "1H")
     assert set(br.CONFIG["modelos"]) == {"5M", "15M", "1H"}
 
 
@@ -109,3 +110,35 @@ def test_el_programa_arranca():
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run([sys.executable, os.path.join(raiz, "ballena_rango.py"), "--help"], capture_output=True, text=True)
     assert r.returncode == 0 and "--avisar-estado" in r.stdout
+
+
+
+# ----------------------------------------------------------------- confluencia 1H + 15M
+def _datos_confluencia(d1_alcista=True, h4_filtro=None):
+    """15M da la entrada (bias H4 alcista); el modelo 1H aporta su bias D1 (sin entrada propia)."""
+    d1 = mayor_h4() if d1_alcista else mayor_h4(o_ult=1.1040, c_ult=1.1000)
+    d1 = d1.set_axis(pd.date_range(T0 - pd.Timedelta(days=10), periods=len(d1), freq="1D", tz="UTC"))
+    h1 = velas([(1.1040, 1.1045, 1.1035, 1.1040)] * 40, T0 - pd.Timedelta(hours=40), "1h")
+    return {"15m": entrada_m15(), "4h": h4_filtro if h4_filtro is not None else mayor_h4(), "1d": d1, "1h": h1}
+
+
+def test_confluencia_15m_con_bias_1h_se_envia(monkeypatch):
+    datos = _datos_confluencia(d1_alcista=True)
+    monkeypatch.setattr(br, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
+    ahora = datos["15m"].index[-1] + pd.Timedelta(minutes=15)
+    senales, motivos = br.analizar_todas("EUR/USD", None, lambda nm, tf: datos[tf], ahora)
+    assert len(senales) == 1 and senales[0]["modelo"] == "15M" and senales[0]["confluencia"] == "1H + 15M"
+    senales[0].update(activo="EUR/USD")
+    assert "⭐ CONFLUENCIA 1H + 15M" in br.texto_alerta(senales[0]).splitlines()[0]
+
+
+def test_sin_confluencia_no_se_envia(monkeypatch):
+    datos = _datos_confluencia(d1_alcista=False)                       # D1 bajista: el 1H no acompana
+    monkeypatch.setattr(br, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
+    ahora = datos["15m"].index[-1] + pd.Timedelta(minutes=15)
+    senales, motivos = br.analizar_todas("EUR/USD", None, lambda nm, tf: datos[tf], ahora)
+    assert senales == [] and "sin confluencia del modelo 1H" in motivos["rango 15M"]
+
+
+def test_el_modelo_5m_no_se_envia_con_confluencia():
+    assert "5M" not in br.CONFIG["confluencia"]

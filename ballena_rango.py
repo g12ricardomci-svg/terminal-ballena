@@ -39,15 +39,10 @@ except Exception:  # pragma: no cover
 
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
-VERSION = "v1 · Bias + DOL · 5M, 15M y 1H"
+VERSION = "v2 · confluencia 1H + 15M · 3 mercados"
 
 # ----------------------------------------------------------------- CONFIGURACION (EDITA AQUI)
-MERCADOS = {   # los 8 mercados elegidos: nombre -> tipo, ticker de Yahoo y, si existe, simbolo de exchange (ccxt)
-    "EUR/USD": {"tipo": "forex", "yf": "EURUSD=X"},
-    "AUD/USD": {"tipo": "forex", "yf": "AUDUSD=X"},
-    "GBP/USD": {"tipo": "forex", "yf": "GBPUSD=X"},
-    "USD/JPY": {"tipo": "forex", "yf": "USDJPY=X"},
-    "GBP/JPY": {"tipo": "forex", "yf": "GBPJPY=X"},
+MERCADOS = {   # solo 3 mercados: oro, BTC y Nasdaq 100 (nombre -> tipo, ticker de Yahoo y simbolo de exchange)
     "XAU/USD (Oro)": {"tipo": "oro", "yf": "GC=F", "ccxt": "PAXG/USDT"},
     "BTC/USD": {"tipo": "cripto", "yf": "BTC-USD", "ccxt": "BTC/USDT"},
     "NASDAQ 100": {"tipo": "indice", "yf": "NQ=F"},
@@ -58,6 +53,8 @@ CONFIG = {
                 "15M": {"mayor": "4h", "entrada": "15m"},
                 "1H": {"mayor": "1d", "entrada": "1h", "filtro": "4h"}},   # en 1H, H4 no puede contradecir a D1
     "rr_min": 2.5,                # filtro riesgo-beneficio: solo entradas con ratio >= 1:2,5 hasta el DOL
+    "confluencia": ("15M", "1H"), # solo se envia si los DOS modelos apuntan igual: uno da la entrada y el bias del
+                                  # otro coincide (None = cada modelo envia lo suyo, incluido el 5M)
     "pendientes": 12,             # velas menores hacia atras donde buscar rangos pendientes sin mitigar
     "stop_min_atr": 0.3,          # stop minimo: 0,3 ATR de la temporalidad de entrada
     "pausa_min": 60,              # minutos entre dos alertas del mismo mercado, modelo y direccion
@@ -371,26 +368,50 @@ def senal_rango(ent, mayor, modelo, filtro=None, ahora=None):
     return None, f"bias {nm} {'alcista' if bias > 0 else 'bajista'} · DOL {fmt(dol)} · {motivo}"
 
 
+def bias_modelo(mayor, filtro=None):
+    """Direccion de un modelo: bias de su vela mayor cerrada (0 si H4 lo contradice en el modelo 1H)."""
+    b, _ = bias_dol(mayor)
+    if b and filtro is not None and bias_dol(filtro)[0] == -b:
+        return 0
+    return b
+
+
 def analizar_todas(nombre, tf=None, cargar=obtener, ahora=None):
-    """Corre los 3 modelos (5M, 15M, 1H) en un mercado. Cada modelo da su propia senal."""
+    """Corre los modelos en un mercado. Con CONFIG['confluencia'] = ('15M', '1H') solo se envia una senal si uno de
+    los dos modelos da la entrada y el bias del otro apunta en la misma direccion."""
     meta = MERCADOS[nombre]
     if not mercado_abierto(meta["tipo"], ahora):
         return [], {m: "mercado cerrado" for m in CONFIG["modelos"]}
-    senales, motivos = [], {}
-    for modelo, cfg in CONFIG["modelos"].items():
+    conf = CONFIG.get("confluencia")
+    modelos = list(conf) if conf else list(CONFIG["modelos"])
+    senales, motivos, sesgos = [], {}, {}
+    for modelo in modelos:
+        cfg = CONFIG["modelos"][modelo]
         try:
             ent = solo_cerradas(cargar(nombre, cfg["entrada"]), cfg["entrada"], ahora)
             mayor = solo_cerradas(cargar(nombre, cfg["mayor"]), cfg["mayor"], ahora)
             filtro = (solo_cerradas(cargar(nombre, cfg["filtro"]), cfg["filtro"], ahora)
                       if cfg.get("filtro") else None)
+            sesgos[modelo] = bias_modelo(mayor, filtro)
             s, motivo = senal_rango(ent, mayor, modelo, filtro, ahora)
         except Exception as e:
             s, motivo = None, f"error: {e}"
+            sesgos[modelo] = 0
         motivos[f"rango {modelo}"] = motivo
         if s:
             s.update(activo=nombre, tipo=meta["tipo"], tf=cfg["entrada"], estrategia=f"rango_{modelo}",
                      id=f"rango|{modelo}|{nombre}|{s['dir']}|{s['vela']}")
             senales.append(s)
+    if conf:
+        validas = []
+        for s in senales:
+            otro = conf[1] if s["modelo"] == conf[0] else conf[0]
+            if sesgos.get(otro) == s["bias"]:
+                s["confluencia"] = f"{conf[1]} + {conf[0]}"
+                validas.append(s)
+            else:
+                motivos[f"rango {s['modelo']}"] = f"entrada {s['dir']} sin confluencia del modelo {otro}"
+        senales = validas
     return senales, motivos
 
 
@@ -404,7 +425,8 @@ def texto_alerta(s):
     compra = s["bias"] > 0
     nm, ne = NOMBRE_TF[s["tf_mayor"]], NOMBRE_TF[s["tf_entrada"]]
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[s["tf_entrada"]])
-    return (f"🚨 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · RANGO {s['modelo']}\n"
+    conf = f" · ⭐ CONFLUENCIA {s['confluencia']}" if s.get("confluencia") else ""
+    return (f"🚨 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · RANGO {s['modelo']}{conf}\n"
             f"📐 Bias {nm} {'alcista' if compra else 'bajista'} · DOL {fmt(s['dol'])} · barrió el rango pendiente "
             f"{ne} {fmt(s['nivel'])} y cerró {'encima' if compra else 'debajo'}\n"
             f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)\n"

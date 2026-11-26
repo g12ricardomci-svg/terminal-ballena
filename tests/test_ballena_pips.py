@@ -97,6 +97,7 @@ def test_mensaje_resumido_con_nombre_y_una_vez(monkeypatch, tmp_path):
         ok, status_code, text = True, 200, ""
     monkeypatch.setattr(bp.requests, "post", lambda url, json=None, data=None, files=None, timeout=None:
                         textos.append(json["text"]) or R())
+    monkeypatch.setitem(bp.CONFIG, "confluencia", None)                  # aqui se prueba el formato del modelo 1H
     cargar = lambda nm, tf: {"5m": m5, "1h": h1, "4h": d1}[tf]          # el modelo 15M no tiene datos aqui
     ahora = m5.index[-1] + pd.Timedelta(minutes=5)
     e = bp.Estado(str(tmp_path / "e.json"))
@@ -128,7 +129,8 @@ def test_modelo_15m_rango_m15_confirmacion_m1():
     assert "CRT 15M" in txt and "barrió el máximo M15" in txt and "confirmación M1" in txt
 
 
-def test_cada_modelo_da_su_propia_senal(tmp_path):
+def test_cada_modelo_da_su_propia_senal(tmp_path, monkeypatch):
+    monkeypatch.setattr(bp, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
     m5, h1 = escenario_venta(True)
     m1, m15 = escenario_venta(True, f_rango="15min", f_conf="1min")
     datos = {"5m": m5, "1h": h1, "4h": diario_bajista(), "1m": m1, "15m": m15}
@@ -152,10 +154,10 @@ def test_mensaje_de_prueba():
 
 
 
-def test_analiza_24_7_y_los_8_mercados():
+def test_analiza_24_7_y_los_3_mercados():
     assert bp.CONFIG["solo_sesiones"] is False and bp.en_ventana(pd.Timestamp("2026-11-24 20:30", tz="UTC"))
-    assert list(bp.MERCADOS) == ["EUR/USD", "AUD/USD", "GBP/USD", "USD/JPY", "GBP/JPY", "XAU/USD (Oro)",
-                                 "BTC/USD", "NASDAQ 100"]
+    assert list(bp.MERCADOS) == ["XAU/USD (Oro)", "BTC/USD", "NASDAQ 100"]
+    assert bp.CONFIG["confluencia"] == ("15M", "1H")
 
 
 def test_el_programa_arranca():
@@ -164,3 +166,16 @@ def test_el_programa_arranca():
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run([sys.executable, os.path.join(raiz, "ballena_pips.py"), "--help"], capture_output=True, text=True)
     assert r.returncode == 0 and "--avisar-estado" in r.stdout
+
+
+
+def test_crt_sin_confluencia_no_se_envia(monkeypatch):
+    """El modelo 15M da entrada de VENTA pero el sesgo H4 del modelo 1H es alcista: no se envia."""
+    monkeypatch.setattr(bp, "MERCADOS", {"EUR/USD": {"tipo": "forex", "yf": "x"}})
+    m5, h1 = escenario_venta(True)
+    m1, m15 = escenario_venta(True, f_rango="15min", f_conf="1min")
+    alcista = df_de([1.10, 1.098], [1.110, 1.106], [1.095, 1.090], [1.105, 1.100], "2026-11-01", "1D")
+    datos = {"5m": m5, "1h": h1, "4h": alcista, "1m": m1, "15m": m15}
+    senales, motivos = bp.analizar_todas("EUR/USD", "1m", lambda nm, tf: datos[tf],
+                                         m5.index[-1] + pd.Timedelta(minutes=5))
+    assert senales == [] and "sin confluencia del modelo 1H" in motivos["crt 15M"]

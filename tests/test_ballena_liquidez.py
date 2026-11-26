@@ -74,16 +74,50 @@ def test_una_senal_por_dia(monkeypatch, tmp_path):
     enviados = []
     monkeypatch.setattr(bl, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
     e = bl.Estado(str(tmp_path / "e.json"))
-    cargar = lambda nm, tf: {"5m": datos, "1d": d1}[tf]
+    monkeypatch.setattr(bl, "confluencia_1h_15m", lambda h1, m15, ini, nivel, bias: (True, True))
+    cargar = lambda nm, tf: {"5m": datos, "1d": d1, "1h": datos, "15m": datos}[tf]
     ahora = datos.index[-1] + pd.Timedelta(minutes=5)
     assert bl.escanear(e, cargar, ahora, verbose=False) == 1
-    assert enviados[0].startswith("🚨 🔴 VENTA GBP/USD · LIQUIDEZ 5M") and "tomó el PDH 1.32450" in enviados[0]
+    assert enviados[0].startswith("🚨 🔴 VENTA GBP/USD · LIQUIDEZ 5M · ⭐ CONFLUENCIA 1H + 15M")
+    assert "tomó el PDH 1.32450" in enviados[0]
     assert bl.escanear(e, cargar, ahora, verbose=False) == 0
 
 
 def test_nombre_y_arranque():
-    assert bl.ENCABEZADO == "💧🔁 BALLENA LIQUIDEZ" and len(bl.MERCADOS) == 8
+    assert bl.ENCABEZADO == "💧🔁 BALLENA LIQUIDEZ"
+    assert list(bl.MERCADOS) == ["XAU/USD (Oro)", "BTC/USD", "NASDAQ 100"]
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run([sys.executable, os.path.join(raiz, "ballena_liquidez.py"), "--help"],
                        capture_output=True, text=True)
     assert r.returncode == 0 and "--avisar-estado" in r.stdout
+
+
+
+# ----------------------------------------------------------------- confluencia 1H + 15M
+def _v(filas, inicio, freq):
+    o, h, l, c = (np.array(x, float) for x in zip(*filas))
+    return pd.DataFrame(dict(open=o, high=h, low=l, close=c, volume=1.0),
+                        index=pd.date_range(inicio, periods=len(filas), freq=freq, tz="UTC"))
+
+
+def test_confluencia_1h_rechazo_y_15m_estructura():
+    h1 = _v([(1.320, 1.3248, 1.3195, 1.3240)], INI, "1h")                       # supero el PDH y cerro debajo
+    m15 = _v([(1.3200, 1.3212, 1.3198, 1.3210), (1.3210, 1.3215, 1.3205, 1.3212), (1.3212, 1.3222, 1.3208, 1.3220),
+              (1.3220, 1.3224, 1.3203, 1.3215),                                     # minimo de la subida 1.3203
+              (1.3215, 1.3232, 1.3212, 1.3230), (1.3230, 1.3240, 1.3226, 1.3238), (1.3238, 1.3258, 1.3236, 1.3250),
+              (1.3250, 1.3251, 1.3215, 1.3218), (1.3218, 1.3220, 1.3195, 1.3198)],   # cierra bajo 1.3203
+             INI, "15min")
+    assert bl.confluencia_1h_15m(h1, m15, INI, 1.3245, -1) == (True, True)
+    h1_sigue = _v([(1.320, 1.3248, 1.3195, 1.3247)], INI, "1h")                 # cerro ENCIMA del PDH
+    assert bl.confluencia_1h_15m(h1_sigue, m15, INI, 1.3245, -1)[0] is False
+    assert bl.confluencia_1h_15m(espejo(h1), espejo(m15), INI, 2.6 - 1.3245, 1) == (True, True)
+
+
+def test_liquidez_sin_confluencia_no_se_envia(monkeypatch):
+    datos, d1 = m5(), diario()
+    monkeypatch.setattr(bl, "MERCADOS", {"GBP/USD": {"tipo": "forex", "yf": "x"}})
+    monkeypatch.setattr(bl, "confluencia_1h_15m", lambda h1, m15, ini, nivel, bias: (True, False))
+    senales, motivos = bl.analizar_todas("GBP/USD", None, lambda nm, tf: {"5m": datos, "1d": d1, "1h": datos,
+                                                                         "15m": datos}[tf],
+                                         datos.index[-1] + pd.Timedelta(minutes=5))
+    assert senales == [] and "sin confluencia de 15M" in motivos["liquidez"]

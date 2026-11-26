@@ -46,15 +46,10 @@ except Exception:  # pragma: no cover
 
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
-VERSION = "v3 · CRT 1H y 15M · 24/7 · 8 mercados"
+VERSION = "v4 · CRT confluencia 1H + 15M · 3 mercados"
 
 # ----------------------------------------------------------------- CONFIGURACION (EDITA AQUI)
-MERCADOS = {   # los 8 mercados elegidos: nombre -> tipo, ticker de Yahoo y, si existe, simbolo de exchange (ccxt)
-    "EUR/USD": {"tipo": "forex", "yf": "EURUSD=X"},
-    "AUD/USD": {"tipo": "forex", "yf": "AUDUSD=X"},
-    "GBP/USD": {"tipo": "forex", "yf": "GBPUSD=X"},
-    "USD/JPY": {"tipo": "forex", "yf": "USDJPY=X"},
-    "GBP/JPY": {"tipo": "forex", "yf": "GBPJPY=X"},
+MERCADOS = {   # solo 3 mercados: oro, BTC y Nasdaq 100 (nombre -> tipo, ticker de Yahoo y simbolo de exchange)
     "XAU/USD (Oro)": {"tipo": "oro", "yf": "GC=F", "ccxt": "PAXG/USDT"},
     "BTC/USD": {"tipo": "cripto", "yf": "BTC-USD", "ccxt": "BTC/USDT"},
     "NASDAQ 100": {"tipo": "indice", "yf": "NQ=F"},
@@ -66,6 +61,7 @@ CONFIG = {
     "modelos": {"1H": {"sesgo": "4h", "rango": "1h", "conf": "5m"},
                 "15M": {"sesgo": "1h", "rango": "15m", "conf": "1m"}},
     "ventanas_ny": [(2.0, 5.0), (8.0, 11.5)],   # sesiones de Londres y Nueva York (hora NY)
+    "confluencia": ("15M", "1H"), # solo se envia si un modelo da la entrada y el sesgo del otro apunta igual
     "solo_sesiones": False,       # False = analiza 24/7 (si el mercado esta abierto); True = solo en las sesiones
     "swing_k": 2,                 # swings de M5 para la ruptura de estructura
     "tp1_r": 2.0,                 # TP1 a 2R; TP2 = extremo opuesto de la vela H1 de referencia (objetivo CRT)
@@ -429,20 +425,33 @@ def analizar_todas(nombre, tf=None, cargar=obtener, ahora=None):
     meta = MERCADOS[nombre]
     if not mercado_abierto(meta["tipo"], ahora):
         return [], {m: "mercado cerrado" for m in CONFIG["modelos"]}
-    senales, motivos = [], {}
+    senales, motivos, sesgos = [], {}, {}
     for modelo, cfg in CONFIG["modelos"].items():
         try:
             conf = solo_cerradas(cargar(nombre, cfg["conf"]), cfg["conf"], ahora)
             rango = solo_cerradas(cargar(nombre, cfg["rango"]), cfg["rango"], ahora)
             sesgo_df = solo_cerradas(cargar(nombre, cfg["sesgo"]), cfg["sesgo"], ahora)
+            sesgos[modelo] = sesgo_rango(sesgo_df)[0]
             s, motivo = senal_crt(conf, rango, sesgo_df, ahora, modelo)
         except Exception as e:
             s, motivo = None, f"error: {e}"
+            sesgos[modelo] = 0
         motivos[f"crt {modelo}"] = motivo
         if s:
             s.update(activo=nombre, tipo=meta["tipo"], tf=cfg["conf"], estrategia=f"crt_{modelo}",
                      id=f"crt|{modelo}|{nombre}|{s['dir']}|{s['vela_ruptura']}")
             senales.append(s)
+    cf = CONFIG.get("confluencia")
+    if cf:
+        validas = []
+        for s in senales:
+            otro = cf[1] if s["modelo"] == cf[0] else cf[0]
+            if sesgos.get(otro) == s["bias"]:
+                s["confluencia"] = f"{cf[1]} + {cf[0]}"
+                validas.append(s)
+            else:
+                motivos[f"crt {s['modelo']}"] = f"entrada {s['dir']} sin confluencia del modelo {otro}"
+        senales = validas
     return senales, motivos
 
 
@@ -459,7 +468,8 @@ def texto_alerta(s):
     diario = CONFIG["banco"] * CONFIG["riesgo_diario_pct"] / 100
     n = CONFIG["contratos"]
     nr, nc = NOMBRE_TF[s.get("tf_rango", "1h")], NOMBRE_TF[s.get("tf_conf", "5m")]
-    return (f"🚨 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · CRT {s.get('modelo', '1H')}\n"
+    cfl = f" · ⭐ CONFLUENCIA {s['confluencia']}" if s.get("confluencia") else ""
+    return (f"🚨 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · CRT {s.get('modelo', '1H')}{cfl}\n"
             f"📐 Sesgo {s['sesgo_txt']} · barrió el {'mínimo' if compra else 'máximo'} {nr} {fmt(s['manipulado'])} · "
             f"confirmación {nc}\n"
             f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)\n"

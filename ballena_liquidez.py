@@ -35,21 +35,17 @@ except Exception:  # pragma: no cover
 
 NY = ZoneInfo("America/New_York")
 UTC = timezone.utc
-VERSION = "v1 · PDH/PDL · 5M"
+VERSION = "v2 · PDH/PDL · confluencia 1H + 15M · 3 mercados"
 
 # ----------------------------------------------------------------- CONFIGURACION (EDITA AQUI)
-MERCADOS = {   # los 8 mercados elegidos: nombre -> tipo, ticker de Yahoo y, si existe, simbolo de exchange (ccxt)
-    "EUR/USD": {"tipo": "forex", "yf": "EURUSD=X"},
-    "AUD/USD": {"tipo": "forex", "yf": "AUDUSD=X"},
-    "GBP/USD": {"tipo": "forex", "yf": "GBPUSD=X"},
-    "USD/JPY": {"tipo": "forex", "yf": "USDJPY=X"},
-    "GBP/JPY": {"tipo": "forex", "yf": "GBPJPY=X"},
+MERCADOS = {   # solo 3 mercados: oro, BTC y Nasdaq 100 (nombre -> tipo, ticker de Yahoo y simbolo de exchange)
     "XAU/USD (Oro)": {"tipo": "oro", "yf": "GC=F", "ccxt": "PAXG/USDT"},
     "BTC/USD": {"tipo": "cripto", "yf": "BTC-USD", "ccxt": "BTC/USDT"},
     "NASDAQ 100": {"tipo": "indice", "yf": "NQ=F"},
 }
 CONFIG = {
     "rr_min": 1.5,                # R:R minimo hasta la siguiente liquidez (lo ideal: 1:2 o mas)
+    "confluencia_1h_15m": True,   # ademas de la entrada en 5M: 1H rechaza el PDH/PDL y 15M rompe estructura
     "exigir_estructura": True,    # ademas de la linea, cerrar bajo el ultimo minimo estructural (mas seguro)
     "velas_subida": 36,           # velas de 5m antes del barrido donde buscar los minimos de la subida
     "swing_k": 2,                 # swings de 5m
@@ -392,6 +388,28 @@ def senal_liquidez(m5, d1, ahora=None):
     return None, f"{txt} · {motivo}"
 
 
+def confluencia_1h_15m(h1, m15, ini_dia, nivel, bias):
+    """Confluencia de temporalidades para una senal de liquidez (en ventas; las compras se miran en espejo):
+      1H : hoy una vela de 1H supero el PDH y la ULTIMA vela de 1H cerrada cerro de nuevo por debajo
+           (la manipulacion fracaso);
+      15M: la ULTIMA vela de 15M cerrada cerro por debajo del ultimo minimo de la subida previo al maximo de hoy
+           (cambio de estructura). Devuelve (ok_1h, ok_15m)."""
+    if bias > 0:
+        h1, m15, nivel = _espejo(h1), _espejo(m15), -nivel
+    hoy1 = h1[h1.index >= ini_dia]
+    ok1 = len(hoy1) >= 1 and float(hoy1["high"].max()) > nivel and float(hoy1["close"].iloc[-1]) < nivel
+    hoy15 = m15[m15.index >= ini_dia]
+    ok15 = False
+    if len(hoy15) >= 3:
+        h, l, c = (m15[x].to_numpy(float) for x in ("high", "low", "close"))
+        desde = len(m15) - len(hoy15)
+        pico = desde + int(np.argmax(h[desde:]))
+        k = 2
+        bajos = [j for j in range(max(pico - 24, k), pico) if j + k < len(l) and l[j] == l[j - k:j + k + 1].min()]
+        ok15 = bool(bajos) and pico < len(c) - 1 and c[-1] < l[bajos[-1]]
+    return ok1, ok15
+
+
 def analizar_todas(nombre, tf=None, cargar=obtener, ahora=None):
     meta = MERCADOS[nombre]
     if not mercado_abierto(meta["tipo"], ahora):
@@ -404,6 +422,17 @@ def analizar_todas(nombre, tf=None, cargar=obtener, ahora=None):
         s, motivo = None, f"error: {e}"
     if not s:
         return [], {"liquidez": motivo}
+    if CONFIG.get("confluencia_1h_15m"):
+        try:
+            h1 = solo_cerradas(cargar(nombre, "1h"), "1h", ahora)
+            m15 = solo_cerradas(cargar(nombre, "15m"), "15m", ahora)
+            ok1, ok15 = confluencia_1h_15m(h1, m15, d1.index[-1] + pd.Timedelta(days=1), s["nivel"], s["bias"])
+        except Exception as e:
+            return [], {"liquidez": f"entrada {s['dir']} en 5M pero sin datos de 1H/15M ({e})"}
+        if not (ok1 and ok15):
+            falta = " y ".join(x for x, ok in (("1H", ok1), ("15M", ok15)) if not ok)
+            return [], {"liquidez": f"entrada {s['dir']} en 5M sin confluencia de {falta}"}
+        s["confluencia"] = "1H + 15M"
     s.update(activo=nombre, tipo=meta["tipo"], tf="5m", estrategia="liquidez",
              id=f"liquidez|{nombre}|{s['dir']}|{s['dia']}")         # una senal por mercado, direccion y dia
     return [s], {}
@@ -418,7 +447,8 @@ def texto_alerta(s):
     """Mensaje RESUMIDO de la senal de liquidez."""
     compra = s["bias"] > 0
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=5)
-    return (f"🚨 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · LIQUIDEZ 5M\n"
+    cfl = f" · ⭐ CONFLUENCIA {s['confluencia']}" if s.get("confluencia") else ""
+    return (f"🚨 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · LIQUIDEZ 5M{cfl}\n"
             f"📐 {s['tendencia_txt']} · tomó el {'PDL' if compra else 'PDH'} {fmt(s['nivel'])} · rompió la "
             f"línea de tendencia en M5\n"
             f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)\n"
