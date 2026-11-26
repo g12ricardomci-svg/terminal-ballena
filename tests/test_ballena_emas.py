@@ -594,6 +594,7 @@ def test_el_programa_arranca():
 
 # ----------------------------------------------------------------- confluencia 1H + 15M obligatoria (consenso)
 def test_consenso_sin_confluencia_1h_15m_no_se_envia(monkeypatch):
+    monkeypatch.setitem(be.CONFIG, "confluencia_1h_15m", True)            # (desactivada por defecto)
     df = _preparar(monkeypatch, _ventana(orderblock=[(0, _s(1))], sr=[(0, _s(1))], retest=[(0, _s(1))]),
                    mtf=False)                                              # 3 votos, pero 1H/15M no acompanan
     out, motivo = be.senales_consenso(df, None, "5m")
@@ -601,6 +602,7 @@ def test_consenso_sin_confluencia_1h_15m_no_se_envia(monkeypatch):
 
 
 def test_consenso_con_confluencia_lleva_la_etiqueta(monkeypatch):
+    monkeypatch.setitem(be.CONFIG, "confluencia_1h_15m", True)
     df = _preparar(monkeypatch, _ventana(orderblock=[(0, _s(1))]), mtf=True, cruce=True)
     s = be.senales_consenso(df, None, "5m")[0][0]
     s.update(activo="BTC/USD", tf="5m", tipo="cripto")
@@ -613,3 +615,10 @@ def test_en_15m_tambien_cuenta_la_propia_vela(monkeypatch):
     baja = velas(np.linspace(1.05, 1.00, 80), freq="15min")
     assert be.confluencia_1h_15m(sube, None, 1, "15m") is True
     assert be.confluencia_1h_15m(baja, None, 1, "15m") is False             # 15M en contra
+
+
+def test_consenso_sin_exigir_confluencia_por_defecto(monkeypatch):
+    assert be.CONFIG["confluencia_1h_15m"] is False
+    df = _preparar(monkeypatch, _ventana(orderblock=[(0, _s(1))], sr=[(0, _s(1))], retest=[(0, _s(1))]), mtf=False)
+    out, _ = be.senales_consenso(df, None, "5m")
+    assert out and out[0]["votos"] == 3 and not out[0].get("confluencia")

@@ -74,6 +74,7 @@ def test_una_senal_por_dia(monkeypatch, tmp_path):
     enviados = []
     monkeypatch.setattr(bl, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
     e = bl.Estado(str(tmp_path / "e.json"))
+    monkeypatch.setitem(bl.CONFIG, "confluencia_1h_15m", True)            # (desactivada por defecto)
     monkeypatch.setattr(bl, "confluencia_1h_15m", lambda h1, m15, ini, nivel, bias: (True, True))
     cargar = lambda nm, tf: {"5m": datos, "1d": d1, "1h": datos, "15m": datos}[tf]
     ahora = datos.index[-1] + pd.Timedelta(minutes=5)
@@ -116,8 +117,18 @@ def test_confluencia_1h_rechazo_y_15m_estructura():
 def test_liquidez_sin_confluencia_no_se_envia(monkeypatch):
     datos, d1 = m5(), diario()
     monkeypatch.setattr(bl, "MERCADOS", {"GBP/USD": {"tipo": "forex", "yf": "x"}})
+    monkeypatch.setitem(bl.CONFIG, "confluencia_1h_15m", True)
     monkeypatch.setattr(bl, "confluencia_1h_15m", lambda h1, m15, ini, nivel, bias: (True, False))
     senales, motivos = bl.analizar_todas("GBP/USD", None, lambda nm, tf: {"5m": datos, "1d": d1, "1h": datos,
                                                                          "15m": datos}[tf],
                                          datos.index[-1] + pd.Timedelta(minutes=5))
     assert senales == [] and "sin confluencia de 15M" in motivos["liquidez"]
+
+
+def test_liquidez_sin_exigir_confluencia_por_defecto(monkeypatch):
+    assert bl.CONFIG["confluencia_1h_15m"] is False
+    datos, d1 = m5(), diario()
+    monkeypatch.setattr(bl, "MERCADOS", {"GBP/USD": {"tipo": "forex", "yf": "x"}})
+    senales, _ = bl.analizar_todas("GBP/USD", None, lambda nm, tf: {"5m": datos, "1d": d1}[tf],
+                                   datos.index[-1] + pd.Timedelta(minutes=5))
+    assert len(senales) == 1 and not senales[0].get("confluencia")

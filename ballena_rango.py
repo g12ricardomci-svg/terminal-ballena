@@ -53,7 +53,8 @@ CONFIG = {
                 "15M": {"mayor": "4h", "entrada": "15m"},
                 "1H": {"mayor": "1d", "entrada": "1h", "filtro": "4h"}},   # en 1H, H4 no puede contradecir a D1
     "rr_min": 2.5,                # filtro riesgo-beneficio: solo entradas con ratio >= 1:2,5 hasta el DOL
-    "confluencia": ("15M", "1H"), # solo se envia si los DOS modelos apuntan igual: uno da la entrada y el bias del
+    "confluencia": None,          # None = cada modelo envia lo suyo (5M, 15M y 1H). ("15M", "1H") = solo si
+                                  # los DOS modelos apuntan igual: uno da la entrada y el bias del
                                   # otro coincide (None = cada modelo envia lo suyo, incluido el 5M)
     "pendientes": 12,             # velas menores hacia atras donde buscar rangos pendientes sin mitigar
     "stop_min_atr": 0.3,          # stop minimo: 0,3 ATR de la temporalidad de entrada

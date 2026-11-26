@@ -45,7 +45,7 @@ MERCADOS = {   # solo 3 mercados: oro, BTC y Nasdaq 100 (nombre -> tipo, ticker 
 }
 CONFIG = {
     "rr_min": 1.5,                # R:R minimo hasta la siguiente liquidez (lo ideal: 1:2 o mas)
-    "confluencia_1h_15m": True,   # ademas de la entrada en 5M: 1H rechaza el PDH/PDL y 15M rompe estructura
+    "confluencia_1h_15m": False,  # True = ademas de la entrada en 5M: 1H rechaza el PDH/PDL y 15M rompe estructura
     "exigir_estructura": True,    # ademas de la linea, cerrar bajo el ultimo minimo estructural (mas seguro)
     "velas_subida": 36,           # velas de 5m antes del barrido donde buscar los minimos de la subida
     "swing_k": 2,                 # swings de 5m
