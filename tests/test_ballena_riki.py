@@ -179,3 +179,11 @@ def test_tp_inteligente_usa_todas_las_rupturas_si_el_grupo_tiene_pocos_casos():
     m = {"alcance": {"5|-1": {"n": 3, "tp": 9.0, "sl": 1.0}, "base|-1": {"n": 50, "tp": 1.5, "sl": 1.0}}}
     p = br.plan_inteligente(e, m)
     assert p["fuente"] == "todas las rupturas" and p["tp"] == pytest.approx(97.0) and p["sl"] == pytest.approx(102.0)
+
+
+def test_practica_activada_por_defecto_y_marcada(monkeypatch, btc):
+    assert br.CONFIG["practica"] is True
+    df, _ = escenario(despues=False)
+    monkeypatch.setattr(br, "MODELOS", {"BTC/USD|5m": _modelo(df, aprobado=False)})
+    s, _ = br.senal_riki("BTC/USD", "5m", df)
+    assert s["practica"] and "🧪 PRÁCTICA" in br.texto_alerta(s).splitlines()[0]
