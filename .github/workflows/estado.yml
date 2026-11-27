@@ -1,6 +1,6 @@
 name: Estado
 
-# Envia "✅ activo y analizando" de Ballena EMAs, Ballena Pips, Ballena Rango y Ballena Liquidez a Telegram y termina (no interrumpe a los bots).
+# Envia "✅ activo y analizando" de Ballena EMAs, Ballena Pips, Ballena Rango, Ballena Liquidez y Ballena Riki CRT a Telegram y termina (no interrumpe a los bots).
 on:
   workflow_dispatch: {}
 
@@ -29,3 +29,4 @@ jobs:
           python ballena_pips.py --avisar-estado
           python ballena_rango.py --avisar-estado
           python ballena_liquidez.py --avisar-estado
+          python ballena_riki.py --avisar-estado
