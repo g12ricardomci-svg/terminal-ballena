@@ -66,6 +66,9 @@ CONFIG = {
     "ventana_ruptura": 6,         # velas despues de la hija para que un cuerpo cierre fuera de la madre
     "rr": 1.5,                    # TP a R:R 1:1,5 (SL en el 50 % de la madre)
     "max_velas_op": 48,           # si no toca SL ni TP en 48 velas, se cierra al precio
+    # TAKE PROFIT INTELIGENTE (como el indicador): hasta donde llego el precio en las 5 velas siguientes
+    "alcance_tp": 60,             # TP = altura a la que llego el 60 % de los casos de su grupo
+    "alcance_sl": 80,             # SL = solo el 20 % de los casos fue mas alla en contra
     "ema_mayor": 21,
     # examen y memoria de errores
     "parte_examen": 0.25, "min_ops": 30, "min_ops_examen": 8, "min_r_op": 0.15,
@@ -412,7 +415,12 @@ def eventos(df, tf, spread=0.0, desde=0):
                     amb.append("gigante")
                 if er[j_rup] < 0.25:
                     amb.append("lateral")
-                caso.update(j=j_rup, dir=dir_, mayor=int(mayor[j_rup]), entrada=px, sl=sl, tp=tp, riesgo=riesgo,
+                fin = min(j_rup + nf, n - 1)
+                if j_rup + nf < n and a[j_rup] > 0:                    # alcance en ATR en las N velas siguientes
+                    fav = (h[j_rup + 1:fin + 1].max() - px) if dir_ > 0 else (px - l[j_rup + 1:fin + 1].min())
+                    adv = (px - l[j_rup + 1:fin + 1].min()) if dir_ > 0 else (h[j_rup + 1:fin + 1].max() - px)
+                    caso.update(fav=max(0.0, fav) / a[j_rup], adv=max(0.0, adv) / a[j_rup])
+                caso.update(j=j_rup, atr=float(a[j_rup]), dir=dir_, mayor=int(mayor[j_rup]), entrada=px, sl=sl, tp=tp, riesgo=riesgo,
                             r=(None if r is None else r - spread / riesgo), salida=salida, amb=amb,
                             madre_h=float(h[m]), madre_l=float(l[m]), vela=idx[j_rup])
         casos.append(caso)
@@ -465,6 +473,32 @@ def operables(casos, grupos, base, vetos, desde=None, hasta=None):
             and direccion_grupo(e["g"], grupos, base) == e["dir"] and not set(e["amb"]) & set(vetos)]
 
 
+def alcances(casos):
+    """Por grupo y direccion: hasta donde llego el precio (TP) y lo que casi nunca fue en contra (SL), en ATR."""
+    bolsas = {}
+    for e in casos:
+        if "fav" in e and e["mayor"] == e["dir"]:
+            for k in (f"{e['g']}|{e['dir']}", f"base|{e['dir']}"):
+                bolsas.setdefault(k, ([], []))
+                bolsas[k][0].append(e["fav"])
+                bolsas[k][1].append(e["adv"])
+    return {k: {"n": len(f), "tp": round(float(np.percentile(f, 100 - CONFIG["alcance_tp"])), 4),
+                "sl": round(float(np.percentile(a, CONFIG["alcance_sl"])), 4)} for k, (f, a) in bolsas.items()}
+
+
+def plan_inteligente(e, mod):
+    """TP y SL inteligentes desde la entrada: su grupo si tiene casos suficientes, si no todas las rupturas."""
+    al = mod.get("alcance") or {}
+    x, fuente = al.get(f"{e['g']}|{e['dir']}"), "su grupo"
+    if not x or x["n"] < CONFIG["min_casos"]:
+        x, fuente = al.get(f"base|{e['dir']}"), "todas las rupturas"
+    if not x or x["n"] < CONFIG["min_casos"] or x["tp"] <= 0:
+        return None
+    tp = e["entrada"] + e["dir"] * x["tp"] * e["atr"]
+    sl = e["entrada"] - e["dir"] * x["sl"] * e["atr"]
+    return {"tp": tp, "sl": sl, "n": x["n"], "fuente": fuente, "rr": x["tp"] / x["sl"] if x["sl"] > 0 else None}
+
+
 def entrenar_df(df, tf, spread):
     """Examen 75/25 y modelo final con todo el historial. Devuelve el modelo (dict serializable)."""
     casos = eventos(df, tf, spread)
@@ -482,7 +516,7 @@ def entrenar_df(df, tf, spread):
                 and r_ex >= CONFIG["min_r_op"] and r_tr > 0 and r_ex > r_base)
     grupos, base = contar_grupos(casos)                                  # modelo final: todo el historial
     vetos = trampas(operables(casos, grupos, base, []))
-    return {"aprobado": bool(aprobado), "grupos": grupos, "base": base, "vetos": vetos,
+    return {"aprobado": bool(aprobado), "grupos": grupos, "base": base, "vetos": vetos, "alcance": alcances(casos),
             "examen": {"ops": len(fin_ex), "r_op": round(r_ex, 3), "ganadas": round(100 * _media(
                 [1.0 if e["r"] > 0 else 0.0 for e in fin_ex]), 1), "base_r_op": round(r_base, 3)},
             "aprendizaje": {"ops": len(fin_tr), "r_op": round(r_tr, 3)},
@@ -567,7 +601,7 @@ def senal_riki(nombre, tf, df):
     return {**e, "activo": nombre, "tipo": MERCADOS[nombre]["tipo"], "tf": tf, "estrategia": f"riki_{tf}",
             "bias": e["dir"], "practica": not mod["aprobado"], "casos": u + d,
             "prob": round(100 * (u if e["dir"] > 0 else d) / max(u + d, 1)), "examen": mod.get("examen", {}),
-            "id": f"riki|{tf}|{nombre}|{e['dir']}|{e['vela']}"}, ""
+            "plan": plan_inteligente(e, mod), "id": f"riki|{tf}|{nombre}|{e['dir']}|{e['vela']}"}, ""
 
 
 # ----------------------------------------------------------------- MENSAJE
@@ -589,7 +623,19 @@ def texto_alerta(s):
             f"{ex.get('r_op', 0):+.2f} R/op ({ex.get('ops', 0)} ops)\n"
             f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)\n"
             f"🛑 SL: {fmt(s['sl'])} (50% de la madre · {fmt(s['riesgo'])})\n"
-            f"✅ TP: {fmt(s['tp'])} · R:R 1:{CONFIG['rr']:g} · {fmt(abs(s['tp'] - s['entrada']))}")
+            f"✅ TP: {fmt(s['tp'])} · R:R 1:{CONFIG['rr']:g} · {fmt(abs(s['tp'] - s['entrada']))}"
+            + _linea_plan(s))
+
+
+def _linea_plan(s):
+    p = s.get("plan")
+    if not p:
+        return ""
+    nv = CONFIG["velas_adelante"]
+    return (f"\n📍 TP inteligente: {fmt(p['tp'])} (el {CONFIG['alcance_tp']}% de {p['fuente']} llegó hasta ahí en "
+            f"{nv} velas · {p['n']} casos)\n"
+            f"⚠️ SL inteligente: {fmt(p['sl'])} (solo el {100 - CONFIG['alcance_sl']}% fue más allá en contra)"
+            + (f" · R:R 1:{p['rr']:.1f}" if p.get("rr") else ""))
 
 
 # ----------------------------------------------------------------- MEMORIA (anti-repeticion)
@@ -676,7 +722,8 @@ def mensaje_prueba():
     """Ejemplo de senal con el formato real, marcado como PRUEBA (no es una operacion)."""
     s = {"dir": 1, "activo": "NASDAQ 100", "tf": "5m", "madre_l": 21450.0, "madre_h": 21490.0, "dentro": 100,
          "ocupa": 32, "prob": 61, "casos": 148, "examen": {"r_op": 0.27, "ops": 41}, "entrada": 21496.25,
-         "sl": 21470.0, "riesgo": 26.25, "tp": 21535.63, "vela": pd.Timestamp.now("UTC").floor("5min")}
+         "sl": 21470.0, "riesgo": 26.25, "tp": 21535.63, "vela": pd.Timestamp.now("UTC").floor("5min"),
+         "plan": {"tp": 21528.50, "sl": 21478.75, "n": 96, "fuente": "su grupo", "rr": 1.8}}
     return "🧪 MENSAJE DE PRUEBA (no operar) · así llegarán las señales\n" + texto_alerta(s)
 
 
@@ -692,7 +739,8 @@ def preparar_modelos(estado, forzar=False, cargar_hist=historial):
     """Carga los modelos guardados o entrena si no hay o tienen mas de 24 h."""
     global MODELOS
     MODELOS = estado.d.get("modelos") or {}
-    viejo = time.time() - estado.d.get("modelos_t", 0) > CONFIG["reentrenar_horas"] * 3600
+    viejo = time.time() - estado.d.get("modelos_t", 0) > CONFIG["reentrenar_horas"] * 3600 or any(
+        m.get("grupos") and "alcance" not in m for m in MODELOS.values())       # modelo sin TP inteligente
     if forzar or not MODELOS or viejo:
         print(f"[{datetime.now(NY):%H:%M} NY] Entrenando con {CONFIG['dias_historial']} días de historial...", flush=True)
         MODELOS = entrenar(cargar_hist)

@@ -155,3 +155,27 @@ def test_manda_solo_a_un_chat(monkeypatch):
     monkeypatch.delenv("RIKI_CHAT_IDS", raising=False)
     monkeypatch.setenv("TELEGRAM_CHAT_IDS", "1496321437,5880373359")
     assert br._chats() == ["1496321437"]
+
+
+def test_tp_inteligente_en_el_mensaje(monkeypatch, btc):
+    df, _ = escenario()
+    casos = br.eventos(df, "5m")
+    e = [x for x in casos if x.get("j") == 302][0]
+    assert e["fav"] > 0 and e["adv"] >= 0                                  # alcance medido en ATR
+    al = br.alcances(casos)
+    assert al[f"base|1"]["n"] >= 1
+    m = {"alcance": {f"{e['g']}|1": {"n": 30, "tp": 2.0, "sl": 1.0}}}
+    p = br.plan_inteligente(e, m)
+    assert p["tp"] == pytest.approx(e["entrada"] + 2.0 * e["atr"]) and p["sl"] == pytest.approx(e["entrada"] - e["atr"])
+    assert p["fuente"] == "su grupo" and p["rr"] == pytest.approx(2.0)
+    s = {**e, "activo": "BTC/USD", "tf": "5m", "prob": 70, "casos": 40, "examen": {}, "plan": p}
+    lineas = br.texto_alerta(s).splitlines()
+    assert lineas[-2].startswith("📍 TP inteligente:") and "60% de su grupo llegó hasta ahí en 5 velas" in lineas[-2]
+    assert lineas[-1].startswith("⚠️ SL inteligente:") and "R:R 1:2.0" in lineas[-1]
+
+
+def test_tp_inteligente_usa_todas_las_rupturas_si_el_grupo_tiene_pocos_casos():
+    e = {"g": 5, "dir": -1, "entrada": 100.0, "atr": 2.0}
+    m = {"alcance": {"5|-1": {"n": 3, "tp": 9.0, "sl": 1.0}, "base|-1": {"n": 50, "tp": 1.5, "sl": 1.0}}}
+    p = br.plan_inteligente(e, m)
+    assert p["fuente"] == "todas las rupturas" and p["tp"] == pytest.approx(97.0) and p["sl"] == pytest.approx(102.0)
