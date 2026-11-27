@@ -1,0 +1,279 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+//  🐋 BALLENA CRT · Metodología Streetpips
+//  Mercados: XAU/USD (Oro) · BTC/USD · NASDAQ 100      Gráficos: 5m · 15m · 1H
+//
+//  Qué hace (en este orden, igual que la metodología):
+//   1. TIEMPO      → solo opera en las ventanas H4 de Nueva York (Londres, Pre-NY, NY). BTC puede ir 24/7.
+//   2. BIAS + DOL  → lee la vela de temporalidad mayor: cierre con cuerpo fuera = CONTINUACIÓN,
+//                    toma el extremo y cierra con mecha = REVERSIÓN. El DOL es el siguiente objetivo.
+//   3. RANGO CRT   → la vela anterior del rango (CRT High / CRT Low / 50 %).
+//   4. MANIPULACIÓN→ el precio barre el CRT Low (para comprar) o el CRT High (para vender): Turtle Soup.
+//   5. CONFIRMACIÓN→ la vela del gráfico cierra de vuelta dentro del rango, con cuerpo a favor y
+//                    (opcional) rompiendo estructura (MSS).
+//   6. RIESGO      → SL detrás de la manipulación, TP en el CRT opuesto o el DOL, R:R mínimo 1:2.5,
+//                    máximo de señales por día.
+//
+//  Modelos automáticos (temporalidad del gráfico → rango → sesgo):
+//    5m  → Rango H1 · Sesgo H4   (scalping)
+//    15m → Rango H4 · Sesgo D1   (day trading)
+//    1H  → Rango D1 · Sesgo W1   (intradía largo / swing corto)
+//  Extras: PDH/PDL (liquidez externa), FVG (liquidez interna), Order Blocks por "Dinamita".
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+indicator("Ballena CRT · Streetpips (XAU · BTC · NAS100)", shorttitle = "Ballena CRT", overlay = true,
+     max_lines_count = 500, max_labels_count = 300, max_boxes_count = 300)
+
+// ───────────────────────────────────────────────────────────────────────────────── ENTRADAS
+grpM = "1 · Modelo y temporalidades"
+modoTF     = input.string("Automático", "Temporalidades", options = ["Automático", "Manual"], group = grpM)
+tfRangoMan = input.timeframe("60",  "Rango CRT (si es manual)", group = grpM)
+tfSesgoMan = input.timeframe("240", "Sesgo / DOL (si es manual)", group = grpM)
+
+grpE = "2 · Entrada y riesgo"
+usarSesgo = input.bool(true, "Solo a favor del BIAS", group = grpE)
+exigirMSS = input.bool(true, "Confirmar con ruptura de estructura (MSS)", group = grpE)
+lenMSS    = input.int(5, "Velas para el MSS", minval = 2, group = grpE)
+rrMin     = input.float(2.5, "R:R mínimo", minval = 1.0, step = 0.25, group = grpE)
+objetivo  = input.string("CRT opuesto", "Take Profit", options = ["CRT opuesto", "DOL"], group = grpE,
+     tooltip = "CRT opuesto: el otro extremo del rango. DOL: el objetivo de la temporalidad mayor (si está más lejos).")
+bufATR    = input.float(0.10, "Margen del SL (x ATR)", minval = 0.0, step = 0.05, group = grpE)
+maxDia    = input.int(3, "Máx. señales por día", minval = 1, group = grpE)
+
+grpT = "3 · Tiempo (hora de Nueva York)"
+filtroHora = input.bool(true, "Operar solo dentro de las ventanas", group = grpT)
+vAsia      = input.bool(false, "Asia 21:00 – 01:00", group = grpT)
+vLondres   = input.bool(true,  "Londres 01:00 – 05:00", group = grpT)
+vPre       = input.bool(true,  "Pre-mercado NY 05:00 – 09:00", group = grpT)
+vNY        = input.bool(true,  "Sesión NY 09:00 – 13:00", group = grpT)
+btc247     = input.bool(true,  "BTC: operar 24/7", group = grpT)
+sombrear   = input.bool(true,  "Sombrear ventanas operativas", group = grpT)
+
+grpV = "4 · Visual"
+verRango = input.bool(true, "Rango CRT (High / Low / 50 %)", group = grpV)
+verDOL   = input.bool(true, "DOL de la temporalidad mayor", group = grpV)
+verPD    = input.bool(true, "PDH / PDL (liquidez externa)", group = grpV)
+verFVG   = input.bool(true, "FVG (liquidez interna)", group = grpV)
+maxFVG   = input.int(8, "Máx. FVG en pantalla", minval = 1, maxval = 50, group = grpV)
+verOB    = input.bool(true, "Order Blocks (vela Dinamita)", group = grpV)
+dinMult  = input.float(1.5, "Dinamita: cuerpo mínimo (x ATR)", minval = 0.5, step = 0.1, group = grpV)
+maxOB    = input.int(4, "Máx. Order Blocks en pantalla", minval = 1, maxval = 30, group = grpV)
+verTabla = input.bool(true, "Panel de estado", group = grpV)
+
+// ───────────────────────────────────────────────────────────────────────────────── MERCADO Y MODELO
+string tk   = str.upper(syminfo.ticker)
+bool esOro  = str.contains(tk, "XAU") or str.contains(tk, "GOLD") or str.startswith(tk, "GC")
+bool esBTC  = str.contains(tk, "BTC")
+bool esNas  = str.contains(tk, "NAS") or str.contains(tk, "NQ") or str.contains(tk, "US100") or
+     str.contains(tk, "NDX") or str.contains(tk, "USTEC")
+string mercado = esOro ? "ORO (XAU/USD)" : esBTC ? "BTC/USD" : esNas ? "NASDAQ 100" : syminfo.ticker + " (fuera de los 3)"
+
+int segChart = timeframe.in_seconds()
+string tfR = modoTF == "Manual" ? tfRangoMan : segChart <= 300 ? "60"  : segChart <= 900 ? "240" : "D"
+string tfS = modoTF == "Manual" ? tfSesgoMan : segChart <= 300 ? "240" : segChart <= 900 ? "D"   : "W"
+
+nombreTF(string tf) =>
+    tf == "60" ? "H1" : tf == "240" ? "H4" : tf == "720" ? "H12" : (tf == "D" or tf == "1D") ? "D1" :
+     (tf == "W" or tf == "1W") ? "W1" : tf + "m"
+
+// ───────────────────────────────────────────────────────────────────────────────── DATOS SIN REPINTADO
+// [1] + lookahead_on = la vela mayor YA CERRADA (no cambia en tiempo real)
+[rH, rL] = request.security(syminfo.tickerid, tfR, [high[1], low[1]], lookahead = barmerge.lookahead_on)
+[bH1, bL1, bC1, bH2, bL2] = request.security(syminfo.tickerid, tfS, [high[1], low[1], close[1], high[2], low[2]],
+     lookahead = barmerge.lookahead_on)
+[pdh, pdl] = request.security(syminfo.tickerid, "D", [high[1], low[1]], lookahead = barmerge.lookahead_on)
+
+float atr = ta.atr(14)
+float rMid = (rH + rL) / 2
+
+// ───────────────────────────────────────────────────────────────────────────────── BIAS + DOL (CRT)
+int bias = 0
+float dol = na
+string biasTxt = "Neutral (vela interna)"
+if bC1 > bH2
+    bias := 1
+    dol := bH1
+    biasTxt := "Alcista · continuación (cerró sobre el high)"
+else if bC1 < bL2
+    bias := -1
+    dol := bL1
+    biasTxt := "Bajista · continuación (cerró bajo el low)"
+else if bH1 > bH2 and bC1 < bH2
+    bias := -1
+    dol := bL2
+    biasTxt := "Bajista · reversión (tomó el high con mecha)"
+else if bL1 < bL2 and bC1 > bL2
+    bias := 1
+    dol := bH2
+    biasTxt := "Alcista · reversión (tomó el low con mecha)"
+
+// ───────────────────────────────────────────────────────────────────────────────── TIEMPO (NY)
+int hNY = hour(time, "America/New_York")
+bool enAsia = hNY >= 21 or hNY < 1
+bool enLon  = hNY >= 1 and hNY < 5
+bool enPre  = hNY >= 5 and hNY < 9
+bool enNY   = hNY >= 9 and hNY < 13
+bool enVentana = (vAsia and enAsia) or (vLondres and enLon) or (vPre and enPre) or (vNY and enNY)
+bool horaOK = not filtroHora or enVentana or (esBTC and btc247)
+string ventanaTxt = enLon ? "Londres" : enPre ? "Pre-NY" : enNY ? "Nueva York" : enAsia ? "Asia" : "Fuera de ventana"
+
+bgcolor(sombrear and timeframe.isintraday and enVentana ? color.new(color.blue, 94) : na, title = "Ventana operativa")
+
+// ───────────────────────────────────────────────────────────────────────────────── RANGO EN CURSO
+bool nuevoRango = nz(ta.change(time(tfR)), 1) != 0
+var float minDesde = na
+var float maxDesde = na
+var bool senalL = false
+var bool senalS = false
+if nuevoRango
+    minDesde := low
+    maxDesde := high
+    senalL := false
+    senalS := false
+else
+    minDesde := math.min(nz(minDesde, low), low)
+    maxDesde := math.max(nz(maxDesde, high), high)
+
+int diaNY = dayofmonth(time, "America/New_York")
+var int nDia = 0
+if diaNY != diaNY[1]
+    nDia := 0
+
+float maxPrev = ta.highest(high, lenMSS)[1]
+float minPrev = ta.lowest(low, lenMSS)[1]
+
+// ───────────────────────────────────────────────────────────────────────────────── SEÑALES
+// COMPRA: manipuló el CRT Low, cierra de vuelta dentro con cuerpo alcista y el CRT High sigue pendiente
+bool longBase = minDesde < rL and close > rL and close < rH and close > open and maxDesde < rH and
+     (not exigirMSS or close > maxPrev)
+float slL = minDesde - atr * bufATR
+float tpL = objetivo == "DOL" and bias == 1 and not na(dol) and dol > rH ? dol : rH
+float rrL = (tpL - close) / math.max(close - slL, syminfo.mintick)
+bool compra = longBase and (not usarSesgo or bias == 1) and rrL >= rrMin and horaOK and not senalL and
+     nDia < maxDia and barstate.isconfirmed
+
+// VENTA: manipuló el CRT High, cierra de vuelta dentro con cuerpo bajista y el CRT Low sigue pendiente
+bool shortBase = maxDesde > rH and close < rH and close > rL and close < open and minDesde > rL and
+     (not exigirMSS or close < minPrev)
+float slS = maxDesde + atr * bufATR
+float tpS = objetivo == "DOL" and bias == -1 and not na(dol) and dol < rL ? dol : rL
+float rrS = (close - tpS) / math.max(slS - close, syminfo.mintick)
+bool venta = shortBase and (not usarSesgo or bias == -1) and rrS >= rrMin and horaOK and not senalS and
+     nDia < maxDia and barstate.isconfirmed
+
+dibujarOperacion(bool largo, float ent, float sl, float tp, float rr) =>
+    int x2 = bar_index + 20
+    color cTP = color.new(color.green, 82)
+    color cSL = color.new(color.red, 82)
+    box.new(bar_index, math.max(ent, tp), x2, math.min(ent, tp), border_color = na, bgcolor = cTP)
+    box.new(bar_index, math.max(ent, sl), x2, math.min(ent, sl), border_color = na, bgcolor = cSL)
+    line.new(bar_index, ent, x2, ent, color = color.gray, width = 1)
+    string txt = (largo ? "🟢 COMPRA CRT" : "🔴 VENTA CRT") + "\nEntrada " + str.tostring(ent, format.mintick) +
+         "\nSL " + str.tostring(sl, format.mintick) + "\nTP " + str.tostring(tp, format.mintick) +
+         "\nR:R 1:" + str.tostring(rr, "#.0") + " · BE en 1:1"
+    label.new(bar_index, largo ? low : high, txt, style = largo ? label.style_label_up : label.style_label_down,
+         color = largo ? color.new(color.green, 0) : color.new(color.red, 0), textcolor = color.white, size = size.small)
+
+if compra
+    senalL := true
+    nDia += 1
+    dibujarOperacion(true, close, slL, tpL, rrL)
+    alert("🐋 BALLENA CRT · 🟢 COMPRA " + mercado + " · " + nombreTF(timeframe.period) + " (rango " + nombreTF(tfR) +
+         ")\nBias " + biasTxt + "\nEntrada " + str.tostring(close, format.mintick) + " · SL " +
+         str.tostring(slL, format.mintick) + " · TP " + str.tostring(tpL, format.mintick) + " · R:R 1:" +
+         str.tostring(rrL, "#.0"), alert.freq_once_per_bar_close)
+
+if venta
+    senalS := true
+    nDia += 1
+    dibujarOperacion(false, close, slS, tpS, rrS)
+    alert("🐋 BALLENA CRT · 🔴 VENTA " + mercado + " · " + nombreTF(timeframe.period) + " (rango " + nombreTF(tfR) +
+         ")\nBias " + biasTxt + "\nEntrada " + str.tostring(close, format.mintick) + " · SL " +
+         str.tostring(slS, format.mintick) + " · TP " + str.tostring(tpS, format.mintick) + " · R:R 1:" +
+         str.tostring(rrS, "#.0"), alert.freq_once_per_bar_close)
+
+alertcondition(compra, "Ballena CRT · Compra", "🐋 Ballena CRT: COMPRA en {{ticker}} ({{interval}}) a {{close}}")
+alertcondition(venta,  "Ballena CRT · Venta",  "🐋 Ballena CRT: VENTA en {{ticker}} ({{interval}}) a {{close}}")
+
+// ───────────────────────────────────────────────────────────────────────────────── NIVELES
+plot(verRango and not nuevoRango ? rH : na, "CRT High", color = color.new(color.red, 0), linewidth = 2, style = plot.style_linebr)
+plot(verRango and not nuevoRango ? rL : na, "CRT Low", color = color.new(color.teal, 0), linewidth = 2, style = plot.style_linebr)
+plot(verRango and not nuevoRango ? rMid : na, "CRT 50 %", color = color.new(color.gray, 30), linewidth = 1, style = plot.style_circles)
+plot(verDOL and bias != 0 ? dol : na, "DOL", color = color.new(color.orange, 0), linewidth = 2, style = plot.style_linebr)
+plot(verPD and not ta.change(pdh) ? pdh : na, "PDH", color = color.new(color.purple, 20), style = plot.style_linebr)
+plot(verPD and not ta.change(pdl) ? pdl : na, "PDL", color = color.new(color.purple, 20), style = plot.style_linebr)
+
+// ───────────────────────────────────────────────────────────────────────────────── FVG Y ORDER BLOCKS
+// Cada zona se borra cuando el precio cierra al otro lado (liquidada).
+gestionarZonas(array<box> zonas, array<int> dirs, int maxN) =>
+    while zonas.size() > maxN
+        box.delete(zonas.shift())
+        dirs.shift()
+    if zonas.size() > 0
+        for i = zonas.size() - 1 to 0
+            box b = zonas.get(i)
+            bool liquidada = dirs.get(i) == 1 ? close < box.get_bottom(b) : close > box.get_top(b)
+            if liquidada
+                box.delete(b)
+                zonas.remove(i)
+                dirs.remove(i)
+            else
+                box.set_right(b, bar_index + 3)
+
+var array<box> fvgs  = array.new<box>()
+var array<int> fvgDir = array.new<int>()
+if verFVG and barstate.isconfirmed
+    if low > high[2] and (low - high[2]) > atr * 0.1
+        fvgs.push(box.new(bar_index - 2, low, bar_index + 3, high[2], border_color = na,
+             bgcolor = color.new(color.green, 88), text = "FVG", text_size = size.tiny, text_color = color.new(color.green, 30)))
+        fvgDir.push(1)
+    if high < low[2] and (low[2] - high) > atr * 0.1
+        fvgs.push(box.new(bar_index - 2, low[2], bar_index + 3, high, border_color = na,
+             bgcolor = color.new(color.red, 88), text = "FVG", text_size = size.tiny, text_color = color.new(color.red, 30)))
+        fvgDir.push(-1)
+if verFVG
+    gestionarZonas(fvgs, fvgDir, maxFVG)
+
+// Dinamita: vela de desplazamiento (cuerpo >= dinMult x ATR) que rompe el máximo/mínimo reciente.
+// El Order Block es la última vela contraria antes de ella; la entrada ideal es su 50 %.
+bool dinAlc = close > open and (close - open) >= atr * dinMult and close > ta.highest(high, 10)[1]
+bool dinBaj = close < open and (open - close) >= atr * dinMult and close < ta.lowest(low, 10)[1]
+var array<box> obs   = array.new<box>()
+var array<int> obDir = array.new<int>()
+if verOB and barstate.isconfirmed and (dinAlc or dinBaj)
+    for i = 1 to 5
+        bool contraria = dinAlc ? close[i] < open[i] : close[i] > open[i]
+        if contraria
+            obs.push(box.new(bar_index - i, high[i], bar_index + 3, low[i],
+                 border_color = dinAlc ? color.new(color.green, 40) : color.new(color.red, 40),
+                 bgcolor = dinAlc ? color.new(color.green, 92) : color.new(color.red, 92),
+                 text = "OB 50% " + str.tostring((high[i] + low[i]) / 2, format.mintick), text_size = size.tiny,
+                 text_color = dinAlc ? color.green : color.red))
+            obDir.push(dinAlc ? 1 : -1)
+            break
+if verOB
+    gestionarZonas(obs, obDir, maxOB)
+
+// ───────────────────────────────────────────────────────────────────────────────── PANEL
+fila(table t, int r, string a, string b, color cb) =>
+    table.cell(t, 0, r, a, text_color = color.silver, text_size = size.small, text_halign = text.align_left)
+    table.cell(t, 1, r, b, text_color = cb, text_size = size.small, text_halign = text.align_left)
+
+var table panel = table.new(position.top_right, 2, 9, bgcolor = color.new(#0b1220, 8),
+     border_color = color.new(color.gray, 70), border_width = 1)
+if verTabla and barstate.islast
+    bool tfValido = segChart == 300 or segChart == 900 or segChart == 3600
+    string estado = minDesde < rL and maxDesde > rH ? "Barrió ambos extremos (esperar nuevo rango)" :
+         minDesde < rL ? "Manipuló CRT Low → buscar COMPRA" : maxDesde > rH ? "Manipuló CRT High → buscar VENTA" :
+         "Esperando manipulación"
+    fila(panel, 0, "🐋 BALLENA CRT", "Streetpips", color.aqua)
+    fila(panel, 1, "Mercado", mercado, esOro or esBTC or esNas ? color.white : color.orange)
+    fila(panel, 2, "Modelo", nombreTF(timeframe.period) + " · Rango " + nombreTF(tfR) + " · Sesgo " + nombreTF(tfS),
+         tfValido ? color.white : color.orange)
+    fila(panel, 3, "BIAS " + nombreTF(tfS), biasTxt, bias > 0 ? color.lime : bias < 0 ? color.red : color.gray)
+    fila(panel, 4, "DOL", na(dol) ? "—" : str.tostring(dol, format.mintick), color.orange)
+    fila(panel, 5, "Rango " + nombreTF(tfR), str.tostring(rH, format.mintick) + " / " + str.tostring(rL, format.mintick),
+         color.white)
+    fila(panel, 6, "Estado", estado, color.yellow)
+    fila(panel, 7, "Tiempo (NY)", ventanaTxt + (horaOK ? " ✅" : " ⛔"), horaOK ? color.lime : color.gray)
+    fila(panel, 8, "Señales hoy", str.tostring(nDia) + " / " + str.tostring(maxDia) + " · R:R mín 1:" +
+         str.tostring(rrMin, "#.0#"), color.white)
