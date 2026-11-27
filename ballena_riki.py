@@ -74,7 +74,7 @@ CONFIG = {
     "parte_examen": 0.25, "min_ops": 30, "min_ops_examen": 8, "min_r_op": 0.15,
     "veto_min_ops": 8, "veto_r": -0.10,
     "dias_historial": 365, "reentrenar_horas": 24,
-    "practica": os.environ.get("BALLENA_PRACTICA", "") == "1",   # 1 = tambien manda las senales en practica
+    "practica": os.environ.get("BALLENA_PRACTICA", "1") != "0",  # tambien manda las de practica (marcadas 🧪)
     "pausa_min": 30,
     "tfs": ["5m"],                # el bucle pasa al cierre de cada vela de 5m (mira 5m, 15m y 1h)
     "imagen": False,
