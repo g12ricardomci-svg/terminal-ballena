@@ -311,3 +311,13 @@ def test_rango_madre_no_opera_si_el_tp_esta_pegado():
     df = _velas([(p + 8, p + 9, p - 1, p), (p + 7.0, p + 8.95, p + 6.5, p + 8.9)], df)   # cierra casi en el maximo
     s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
     assert s is None and "TP demasiado cerca" in motivo
+
+
+def test_linea_de_dolares_con_001_lotes():
+    s = {"activo": "BTC/USD", "tf": "15m", "dir": 1, "reves": False, "madre_color": -1, "madre_l": 59256.3,
+         "madre_h": 59399.9, "dentro": 100, "entrada": 59315.7, "tp": 59399.9, "sl": 59211.54, "riesgo": 104.16,
+         "rr": 0.8, "hist": {"n": 0}, "vela": pd.Timestamp("2026-11-28 15:30", tz="UTC"), "estrategia": "rango_madre_15m"}
+    t = bd.texto_alerta(s)
+    assert "💵 Con 0,01 lotes: SL $1.24 · TP $0.64 · ⛔ no cabe en $1" in t
+    s.update(activo="NASDAQ 100", entrada=21000, tp=21080, sl=20950, riesgo=50)
+    assert "💵 Con 0,01 lotes: SL $0.51 · TP $0.79 · ✅ cabe en $1" in bd.texto_alerta(s)
