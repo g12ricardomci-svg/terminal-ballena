@@ -1,0 +1,20 @@
+name: Biblioteca de patrones
+
+# Mide con datos reales 12 patrones clasicos (compra y venta, a favor y en contra de la tendencia). No envia nada a Telegram.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  biblioteca:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - run: python biblioteca_patrones.py
