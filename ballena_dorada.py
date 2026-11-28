@@ -62,6 +62,8 @@ CONFIG = {
     "patrones": True, "pat_min_casos": 30, "pat_min_pct": 60.0, "pat_min_prueba": 20, "pat_haz": 20,
     "pat_max_casos": 4500,
     # las madres 50/50 o con pocos casos no tienen plan y no mandan mensaje
+    # ⚡ BARRIDO + ENVOLVENTE (Turtle Soup / CRT de reversion), en compra y en venta
+    "envolvente": True, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
     "pausa_min": 0,                             # cada madre manda su mensaje
     "tfs": ["5m"],                              # el bucle pasa al cierre de cada vela de 5m (mira 5m, 15m y 1h)
     "imagen": False,
@@ -605,6 +607,97 @@ def senal_dorada(nombre, tf, df):
     return s, ""
 
 
+# ----------------------------------------------------------------- ⚡ BARRIDO + ENVOLVENTE
+def envolventes(df):
+    """Arrays (compra, venta) por vela: barre la liquidez de las 2 velas anteriores y envuelve el cuerpo de la
+    anterior con cuerpo grande, despues de venir en contra (compra tras bajada, venta tras subida)."""
+    o, h, l, c = (df[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    a = atr(df).to_numpy()
+    n = len(c)
+    compra, venta = np.zeros(n, bool), np.zeros(n, bool)
+    if n < 8:
+        return compra, venta
+    i = np.arange(6, n)
+    grande = np.abs(c[i] - o[i]) >= CONFIG["env_cuerpo_atr"] * a[i]
+    compra[i] = ((c[i - 1] < c[i - 5]) & (c[i - 1] < o[i - 1]) & (l[i] < np.minimum(l[i - 1], l[i - 2]))
+                 & (c[i] > o[i]) & (c[i] > o[i - 1]) & grande)
+    venta[i] = ((c[i - 1] > c[i - 5]) & (c[i - 1] > o[i - 1]) & (h[i] > np.maximum(h[i - 1], h[i - 2]))
+                & (c[i] < o[i]) & (c[i] < o[i - 1]) & grande)
+    return compra, venta
+
+
+def _r_envolvente(df, idx, d, spread):
+    """Resultado en R de cada caso pasado: SL detras de la mecha (+0,1 ATR), TP a env_rr R, max env_velas velas."""
+    h, l, c = (df[x].to_numpy(float) for x in ("high", "low", "close"))
+    a = atr(df).to_numpy()
+    nv, rr = CONFIG["env_velas"], CONFIG["env_rr"]
+    idx = idx[idx + nv < len(c)]
+    if len(idx) == 0:
+        return np.array([])
+    off = np.arange(1, nv + 1)
+    H, L, C = h[idx[:, None] + off], l[idx[:, None] + off], c[idx[:, None] + off]
+    e = c[idx]
+    sl = ((e - l[idx]) if d > 0 else (h[idx] - e)) + 0.1 * a[idx]
+    fav = np.maximum.accumulate((H - e[:, None]) if d > 0 else (e[:, None] - L), axis=1)
+    adv = np.maximum.accumulate((e[:, None] - L) if d > 0 else (H - e[:, None]), axis=1)
+    t_sl = np.where((adv >= sl[:, None]).any(1), (adv >= sl[:, None]).argmax(1), 10 ** 6)
+    t_tp = np.where((fav >= rr * sl[:, None]).any(1), (fav >= rr * sl[:, None]).argmax(1), 10 ** 6)
+    fin = (C[:, -1] - e) * d / sl
+    return np.where((t_sl < nv) & (t_sl <= t_tp), -1.0, np.where(t_tp < nv, rr, fin)) - spread / sl
+
+
+def tendencia_mayor(df, tf):
+    """+1 / -1: la ultima vela MAYOR cerrada (H1 o H4) cierra sobre / bajo su EMA 50."""
+    mayor = CONFIG["temporalidades"][tf]
+    h = df["close"].resample(mayor, label="left", closed="left").last().dropna()
+    h = h[h.index + pd.Timedelta(minutes=TF_MIN[mayor]) <= df.index[-1] + pd.Timedelta(minutes=TF_MIN[tf])]
+    if len(h) < 60:
+        return 0
+    return 1 if h.iloc[-1] > ema(h, 50).iloc[-1] else -1
+
+
+def senal_envolvente(nombre, tf, df):
+    if not CONFIG["envolvente"] or df is None or len(df) < 120:
+        return None, "sin datos"
+    compra, venta = envolventes(df)
+    i = len(df) - 1
+    d = 1 if compra[i] else -1 if venta[i] else 0
+    if d == 0:
+        return None, "sin barrido + envolvente"
+    o, h, l, c = (float(df[x].iloc[i]) for x in ("open", "high", "low", "close"))
+    a = float(atr(df).iloc[-1])
+    sl = (l - 0.1 * a) if d > 0 else (h + 0.1 * a)
+    riesgo = abs(c - sl)
+    pasados = np.nonzero(compra if d > 0 else venta)[0]
+    r = _r_envolvente(df, pasados[pasados < i], d, MERCADOS[nombre]["spread"])
+    tm = tendencia_mayor(df, tf)
+    return {"activo": nombre, "tipo": MERCADOS[nombre]["tipo"], "tf": tf, "estrategia": f"envolvente_{tf}",
+            "dir": d, "bias": d, "entrada": c, "sl": sl, "riesgo": riesgo,
+            "tp1": c + d * riesgo, "tp2": c + d * CONFIG["env_rr"] * riesgo, "tp3": c + d * 3 * riesgo,
+            "nivel": l if d > 0 else h, "cuerpo_atr": abs(c - o) / a if a > 0 else 0.0,
+            "a_favor": tm == d, "tendencia": tm, "casos": len(r),
+            "ev": float(r.mean()) if len(r) else None, "gana": float(100 * (r > 0).mean()) if len(r) else None,
+            "vela": df.index[i], "id": f"envolvente|{tf}|{nombre}|{df.index[i]}"}, ""
+
+
+def texto_envolvente(s):
+    compra = s["dir"] > 0
+    hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[s["tf"]])
+    mayor = NOMBRE_TF[CONFIG["temporalidades"][s["tf"]]].replace("1H", "H1")
+    hist = (f"📊 En el historial ({s['casos']} casos): TP {CONFIG['env_rr']:g}R {s['ev']:+.2f} R por operación · "
+            f"gana {s['gana']:.0f}%" if s.get("casos") else "📊 Primer caso en el historial cargado")
+    return "\n".join([
+        f"🟡 ⚡ {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · BARRIDO + ENVOLVENTE {NOMBRE_TF[s['tf']]}",
+        f"🧹 Barrió el {'mínimo' if compra else 'máximo'} {fmt(s['nivel'])} y envolvió la vela anterior "
+        f"(cuerpo {s['cuerpo_atr']:.1f} ATR)",
+        f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)",
+        f"🛑 SL: {fmt(s['sl'])} (detrás de la mecha del barrido · {fmt(s['riesgo'])})",
+        f"✅ TP {CONFIG['env_rr']:g}R: {fmt(s['tp2'])} · TP 1R: {fmt(s['tp1'])} · TP 3R: {fmt(s['tp3'])}",
+        (f"📈 Tendencia {mayor}: A FAVOR ✅" if s["a_favor"] else
+         f"⚠ Tendencia {mayor}: EN CONTRA (en la medición, a favor de la tendencia funcionó mejor)"),
+        hist])
+
+
 # ----------------------------------------------------------------- DATOS (historial + velas recientes)
 _HIST = {}
 
@@ -637,12 +730,14 @@ def analizar_todas(nombre, tf=None, cargar=historial, ahora=None):
     senales, motivos = [], {}
     for t in CONFIG["temporalidades"]:
         try:
-            s, motivo = senal_dorada(nombre, t, solo_cerradas(cargar(nombre, t), t, ahora))
-        except Exception as e:
-            s, motivo = None, f"error: {e}"
+            df = solo_cerradas(cargar(nombre, t), t, ahora)
+            s, motivo = senal_dorada(nombre, t, df)
+            e, motivo_e = senal_envolvente(nombre, t, df)
+        except Exception as ex:
+            s, motivo, e, motivo_e = None, f"error: {ex}", None, ""
         motivos[NOMBRE_TF[t]] = motivo
-        if s:
-            senales.append(s)
+        motivos[f"⚡{NOMBRE_TF[t]}"] = motivo_e
+        senales += [x for x in (s, e) if x]
     return senales, motivos
 
 
@@ -652,6 +747,8 @@ def imagen_alerta(s, df):
 
 
 def texto_alerta(s):
+    if s.get("estrategia", "").startswith("envolvente"):
+        return texto_envolvente(s)
     compra = s["dir"] > 0
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[s["tf"]])
     nv, flecha = CONFIG["velas_adelante"], "▲" if compra else "▼"
