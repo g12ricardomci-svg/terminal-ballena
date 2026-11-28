@@ -18,5 +18,5 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pandas numpy requests pytest matplotlib
+      - run: pip install pandas numpy requests pytest matplotlib TA-Lib
       - run: python -m pytest -q tests
