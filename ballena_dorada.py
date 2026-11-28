@@ -1234,6 +1234,66 @@ def hay_version_nueva(cada_min=10, _ult={"t": 0.0}):
         return False
 
 
+# ----------------------------------------------------------------- UNA OPERACION A LA VEZ + RESULTADO
+def _resultado(op, df):
+    """¿La operacion activa ya llego al TP, toco el SL o se acabo su tiempo? Devuelve (texto, R) o None."""
+    vela = pd.Timestamp(op["vela"])
+    desp = df[df.index > vela]
+    if desp.empty:
+        return None
+    d, tp, sl, e = op["dir"], op["tp"], op["sl"], op["entrada"]
+    riesgo = abs(e - sl) or 1e-9
+    for _, v in desp.iterrows():
+        if (v["low"] <= sl) if d > 0 else (v["high"] >= sl):
+            return f"🛑 tocó el SL {fmt(sl)}", -1.0
+        if (v["high"] >= tp) if d > 0 else (v["low"] <= tp):
+            return f"✅ llegó al TP {fmt(tp)}", abs(tp - e) / riesgo
+    if len(desp) >= CONFIG["rm_velas"]:
+        px = float(desp["close"].iloc[CONFIG["rm_velas"] - 1])
+        return f"⌛ {CONFIG['rm_velas']} velas sin llegar · cerrar en {fmt(px)}", (px - e) * d / riesgo
+    return None
+
+
+def escanear(estado, cargar=historial, ahora=None, enviar=True, verbose=True):
+    """Como el escaneo general, pero con UNA operacion a la vez por mercado y temporalidad: mientras la anterior
+    siga abierta no se manda otra; cuando termina se avisa como termino."""
+    activas = estado.d.setdefault("activas", {})
+    nuevas = 0
+    for clave, op in list(activas.items()):
+        try:
+            df = solo_cerradas(cargar(op["activo"], op["tf"]), op["tf"], ahora)
+            res = _resultado(op, df) if df is not None else None
+        except Exception:
+            res = None
+        if res:
+            txt, r = res
+            msg = (f"🟡 {'🟢 COMPRA' if op['dir'] > 0 else '🔴 VENTA'} {op['activo']} {NOMBRE_TF[op['tf']]} "
+                   f"(entrada {fmt(op['entrada'])}): {txt} · {r:+.1f} R\nYa puede llegar la siguiente señal.")
+            if not enviar or enviar_telegram(msg)[0]:
+                del activas[clave]
+    for nombre in MERCADOS:
+        for tf in CONFIG["tfs"]:
+            try:
+                senales, motivos = analizar_todas(nombre, tf, cargar, ahora)
+            except Exception as e:
+                senales, motivos = [], {"error": str(e)}
+            if verbose:
+                lista = [f"🚨 {s['estrategia']} {s['dir']}" for s in senales] or [f"{k}: {v}" for k, v in motivos.items()]
+                print(f"  {nombre:<14} {tf:<4} " + " · ".join(lista), flush=True)
+            for s in senales:
+                clave = f"{s['activo']}|{s['tf']}"
+                if clave in activas:
+                    if verbose:
+                        print(f"    (espera: ya hay una operación abierta en {clave})", flush=True)
+                    continue
+                if _enviar_senal(s, estado, cargar, ahora, enviar):
+                    nuevas += 1
+                    activas[clave] = {k: (str(v) if k == "vela" else v) for k, v in s.items()
+                                      if k in ("activo", "tf", "dir", "entrada", "tp", "sl", "vela")}
+    estado.guardar()
+    return nuevas
+
+
 def mensaje_prueba():
     s = {"activo": "XAU/USD (Oro)", "tf": "15m", "dir": 1, "pct": 63.0, "casos": 142, "fuente": "misma tendencia",
          "entrada": 2650.40, "tp": 2658.90, "sl": 2645.10, "rr": 1.6, "ev": 0.12, "acierto": 52.0, "dentro": 100.0,

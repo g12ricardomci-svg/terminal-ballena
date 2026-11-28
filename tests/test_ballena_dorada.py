@@ -274,3 +274,32 @@ def test_madre_al_reves_sigue_el_color_de_la_vela_que_envuelve():
 def test_dorada_solo_con_rango_madre():
     assert bd.CONFIG["rango_madre"] and not bd.CONFIG["madre_pct"]
     assert not bd.CONFIG["envolvente"] and not bd.CONFIG["japonesas"]
+
+
+def test_una_operacion_a_la_vez_y_aviso_del_resultado(monkeypatch, tmp_path):
+    df = mercado(300)
+    p = float(df["close"].iloc[-3])
+    df = _velas([(p + 8, p + 9, p - 1, p), (p + 0.5, p + 3, p - 0.5, p + 2.5)], df)   # COMPRA hacia p + 9
+    monkeypatch.setitem(bd.CONFIG, "temporalidades", {"5m": "1h"})
+    monkeypatch.setattr(bd, "MERCADOS", {"BTC/USD": bd.MERCADOS["BTC/USD"]})
+    enviados = []
+    monkeypatch.setattr(bd, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
+    e = bd.Estado(str(tmp_path / "e.json"))
+    datos = {"df": df}
+    cargar = lambda nm, tf: datos["df"]
+    sig = lambda: datos["df"].index[-1] + pd.Timedelta(minutes=5)
+
+    def agregar(filas):
+        idx = [datos["df"].index[-1] + pd.Timedelta(minutes=5 * (k + 1)) for k in range(len(filas))]
+        o, h, l, c = zip(*filas)
+        datos["df"] = pd.concat([datos["df"], pd.DataFrame(dict(open=o, high=h, low=l, close=c, volume=1.0), index=idx)])
+
+    assert bd.escanear(e, cargar, sig(), verbose=False) == 1 and "BTC/USD|5m" in e.d["activas"]
+    # nueva madre verde + vela roja dentro (VENTA) sin tocar ni el TP ni el SL de la compra: no se manda
+    agregar([(p + 2.6, p + 7.0, p + 2.4, p + 6.8), (p + 6.5, p + 6.7, p + 4.0, p + 4.5)])
+    assert bd.escanear(e, cargar, sig(), verbose=False) == 0 and "BTC/USD|5m" in e.d["activas"]
+    # la compra llega al TP: aviso del resultado y queda libre
+    agregar([(p + 4.5, p + 9.5, p + 4.4, p + 9.2)])
+    bd.escanear(e, cargar, sig(), verbose=False)
+    assert any("llegó al TP" in x for x in enviados) and "Ya puede llegar la siguiente señal" in enviados[-1] \
+        or any("llegó al TP" in x for x in enviados[1:])
