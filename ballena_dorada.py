@@ -70,6 +70,8 @@ CONFIG = {
     # 📦 ESTRATEGIA ACTIVA: RANGO DE LA VELA MADRE (las demas quedan guardadas, apagadas)
     "rango_madre": True, "rm_pct_dentro": 50.0, "rm_velas": 20, "rm_margen_sl": 0.1,
     "rm_min_rr": 0.5,             # si el TP queda a menos de la mitad del riesgo, no se opera
+    # 💵 dolares con 0,01 lotes en Vantage (BTC 0,01 BTC · Oro 1 onza · NAS100 $0,01 por punto) y riesgo maximo
+    "valor_001": {"XAU/USD (Oro)": 1.0, "BTC/USD": 0.01, "NASDAQ 100": 0.01}, "riesgo_usd": 1.0,
     "madre_pct": False,
     "envolvente": False, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
     # 🎌 DICCIONARIO DE VELAS JAPONESAS (61 patrones de TA-Lib), cada uno aprendido como la vela madre
@@ -1082,6 +1084,13 @@ def texto_rango_madre(s):
                f"{fmt(abs(s['tp'] - s['entrada']))}"]
     lineas = cab + [
         f"🛑 SL: {fmt(s['sl'])} ({'bajo' if compra else 'sobre'} el rango · {fmt(s['riesgo'])}) · R:R 1:{s['rr']:.1f}"]
+    v = CONFIG["valor_001"].get(s["activo"])
+    if v:
+        sp = MERCADOS[s["activo"]]["spread"]
+        sl_usd, tp_usd = (s["riesgo"] + sp) * v, max(abs(s["tp"] - s["entrada"]) - sp, 0) * v
+        lineas.append(f"💵 Con 0,01 lotes: SL ${sl_usd:.2f} · TP ${tp_usd:.2f} · "
+                      + (f"✅ cabe en ${CONFIG['riesgo_usd']:g}" if sl_usd <= CONFIG["riesgo_usd"] else
+                         f"⛔ no cabe en ${CONFIG['riesgo_usd']:g}"))
     if hst["n"]:
         lineas.append(
             f"📊 Historial ({hst['n']} casos{', todas las madres' if hst.get('todas') else ', misma madre'}): llegó al "
