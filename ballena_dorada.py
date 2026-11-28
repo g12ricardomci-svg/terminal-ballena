@@ -73,6 +73,10 @@ CONFIG = {
     # 💵 dolares con 0,01 lotes en Vantage (BTC 0,01 BTC · Oro 1 onza · NAS100 $0,01 por punto) y riesgo maximo
     # 🧭 ANALISIS ESTILO VANTAGE AI (4H): 4 EMAs + 6 osciladores votan; solo se manda lo que va a favor del voto
     "filtro_vantage": True, "vantage_tf": "4h", "vantage_margen": 2,
+    # ₿ BTC: el rango de la madre SOLO en 15M y con 3 filtros (Vantage 4H + momentum 30 dias + SL >= 10 x spread)
+    "reglas_mercado": {"BTC/USD": {"rango_tfs": ["15m"], "spread_x": 10, "momentum": 30}},
+    # ₿ BTC TENDENCIA (libros): Larry Williams k=0,7 + EMA 50 diaria · Donchian 20/10 y Tortugas 55/20 en 4H + EMA 200
+    "btc_tendencia": True, "williams_k": 0.7,
     "valor_001": {"XAU/USD (Oro)": 1.0, "BTC/USD": 0.01, "NASDAQ 100": 0.01}, "riesgo_usd": 1.0,
     "madre_pct": False,
     "envolvente": False, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
@@ -1038,6 +1042,9 @@ def historial_rango(df, senal, d, mismo_color_madre, coste, hasta):
 def senal_rango_madre(nombre, tf, df):
     if not CONFIG["rango_madre"] or df is None or len(df) < 60:
         return None, "sin datos"
+    reglas = CONFIG.get("reglas_mercado", {}).get(nombre, {})
+    if reglas.get("rango_tfs") and tf not in reglas["rango_tfs"]:
+        return None, f"rango madre de {nombre} solo en {', '.join(reglas['rango_tfs'])}"
     senal = rango_madre(df)
     i = len(df) - 1
     tipo = int(senal[i])
@@ -1050,6 +1057,15 @@ def senal_rango_madre(nombre, tf, df):
     riesgo = abs(e - sl)
     if riesgo <= 0 or abs(tp - e) / riesgo < CONFIG["rm_min_rr"]:
         return None, f"TP demasiado cerca (R:R 1:{abs(tp - e) / max(riesgo, 1e-9):.1f})"
+    if reglas.get("spread_x") and riesgo < reglas["spread_x"] * MERCADOS[nombre]["spread"]:
+        return None, f"SL chico frente al spread (< {reglas['spread_x']}× spread)"
+    if reglas.get("momentum"):
+        d1 = df["close"].resample("1D").last().dropna()
+        d1 = d1[d1.index < df.index[i].floor("1D")]                     # solo dias ya cerrados
+        if len(d1) <= reglas["momentum"]:
+            return None, "sin historial para el momentum"
+        if int(np.sign(d1.iloc[-1] - d1.iloc[-1 - reglas["momentum"]])) != d:
+            return None, f"contra el momentum de {reglas['momentum']} días"
     top, bot = max(o[i], c[i]), min(o[i], c[i])
     dentro = 100 * max(0.0, min(top, h[i - 1]) - max(bot, l[i - 1])) / (top - bot) if top > bot else 0.0
     color_madre = int(np.sign(c[i - 1] - o[i - 1]))
@@ -1327,6 +1343,121 @@ def hay_version_nueva(cada_min=10, _ult={"t": 0.0}):
         return False
 
 
+# ----------------------------------------------------------------- ₿ BTC TENDENCIA (Williams, Donchian, Tortugas)
+SISTEMAS_4H = {"donchian": {"nombre": "DONCHIAN 20/10 4H + EMA 200", "entrar": 20, "salir": 10,
+                            "estudio": "+$149 en 1 año · 44 ops · gana 32% · caída máx $183"},
+               "tortugas": {"nombre": "TORTUGAS 55/20 4H + EMA 200", "entrar": 55, "salir": 20,
+                            "estudio": "+$220 en 1 año · 21 ops · gana 33% · caída máx $156"}}
+ESTUDIO_WILLIAMS = "+$104 en 1 año · 98 ops · gana 48% · caída máx $90"
+
+
+def velas_4h(h1):
+    h4 = h1.resample("4h", label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+    return h4[h4.index + pd.Timedelta(hours=4) <= h1.index[-1] + pd.Timedelta(hours=1)]     # solo cerradas
+
+
+def donchian_estado(h4, n_in, n_out):
+    """Senal de la ULTIMA vela 4H cerrada: entrada (+1/-1 si rompe el canal de n_in a favor de la EMA 200),
+    y niveles de salida (canal de n_out)."""
+    h, l, c = h4["high"], h4["low"], h4["close"]
+    i = len(h4) - 1
+    hi, lo = h.iloc[i - n_in:i].max(), l.iloc[i - n_in:i].min()
+    e200 = float(ema(c, 200).iloc[i])
+    entra = 1 if c.iloc[i] > hi and c.iloc[i] > e200 else -1 if c.iloc[i] < lo and c.iloc[i] < e200 else 0
+    return {"entra": entra, "precio": float(c.iloc[i]), "nivel": float(hi if entra > 0 else lo),
+            "sal_largo": float(l.iloc[i - n_out:i].min()), "sal_corto": float(h.iloc[i - n_out:i].max()),
+            "vela": str(h4.index[i])}
+
+
+def williams_hoy(h1, k):
+    """Larry Williams: hoy, ¿el precio supero la apertura + k x rango de ayer (a favor de la EMA 50 diaria)?"""
+    d = h1.resample("1D").agg({"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+    if len(d) < 52:
+        return None
+    hoy = h1.index[-1].floor("1D")
+    prev = d[d.index < hoy]
+    rango = prev["high"].iloc[-1] - prev["low"].iloc[-1]
+    tend = 1 if prev["close"].iloc[-1] > ema(prev["close"], 50).iloc[-1] else -1
+    velas = h1[h1.index >= hoy]
+    if velas.empty:
+        return None
+    ap = float(velas["open"].iloc[0])
+    gatillo = ap + tend * k * rango
+    toca = velas["high"] >= gatillo if tend > 0 else velas["low"] <= gatillo
+    return {"dia": str(hoy.date()), "dir": tend, "gatillo": float(gatillo), "apertura": ap, "rango": float(rango),
+            "disparo": bool(toca.any()), "hora": str(velas.index[toca.to_numpy().argmax()]) if toca.any() else None}
+
+
+def _usd(px):
+    return px * CONFIG["valor_001"].get("BTC/USD", 0.01)
+
+
+def tendencia_btc(estado, cargar=historial, ahora=None, enviar=True):
+    """Revisa los 3 sistemas de tendencia de BTC: avisa ENTRADAS y SALIDAS (guarda la posicion en el estado)."""
+    if not CONFIG.get("btc_tendencia") or "BTC/USD" not in MERCADOS:
+        return 0
+    h1 = solo_cerradas(cargar("BTC/USD", "1h"), "1h", ahora)
+    if h1 is None or len(h1) < 24 * 60:
+        return 0
+    st = estado.d.setdefault("btc_tendencia", {})
+    mandar = (lambda txt: enviar_telegram(txt)[0]) if enviar else (lambda txt: True)
+    n = 0
+    h4 = velas_4h(h1)
+    for clave, cfg in SISTEMAS_4H.items():
+        s = donchian_estado(h4, cfg["entrar"], cfg["salir"])
+        pos = st.get(clave)
+        if st.get(f"{clave}_vela") == s["vela"]:
+            continue
+        st[f"{clave}_vela"] = s["vela"]
+        if pos:
+            sale = s["precio"] < s["sal_largo"] if pos["dir"] > 0 else s["precio"] > s["sal_corto"]
+            if sale:
+                g = (s["precio"] - pos["entrada"]) * pos["dir"] - MERCADOS["BTC/USD"]["spread"]
+                if mandar(f"🟡 🐢 {cfg['nombre']}: CERRAR la {'COMPRA' if pos['dir'] > 0 else 'VENTA'} de BTC/USD "
+                          f"(entrada {fmt(pos['entrada'])}) → salida {fmt(s['precio'])} · con 0,01 lotes "
+                          f"{_usd(g):+.2f}$\nYa puede llegar la siguiente señal de este sistema."):
+                    st[clave] = None
+                    n += 1
+            continue
+        if s["entra"]:
+            d = s["entra"]
+            salida = s["sal_largo"] if d > 0 else s["sal_corto"]
+            txt = (f"🟡 🐢 {'🟢 COMPRA' if d > 0 else '🔴 VENTA'} BTC/USD · {cfg['nombre']}\n"
+                   f"📈 Cerró {'sobre el máximo' if d > 0 else 'bajo el mínimo'} de {cfg['entrar']} velas de 4H "
+                   f"({fmt(s['nivel'])}) y {'sobre' if d > 0 else 'bajo'} la EMA 200\n"
+                   f"🎯 Entrada: {fmt(s['precio'])}\n"
+                   f"🚪 Salida: cuando una vela 4H cierre {'bajo el mínimo' if d > 0 else 'sobre el máximo'} de "
+                   f"{cfg['salir']} velas (hoy {fmt(salida)}) · te aviso\n"
+                   f"💵 Con 0,01 lotes: hasta la salida de hoy ${_usd(abs(s['precio'] - salida)):.2f}\n"
+                   f"📊 Estudio: {cfg['estudio']} · ⚠ SL ancho: pensado para bank de $300 o más")
+            if mandar(txt):
+                st[clave] = {"dir": d, "entrada": s["precio"], "t": s["vela"]}
+                n += 1
+    w = williams_hoy(h1, CONFIG["williams_k"])
+    wp = st.get("williams")
+    if wp and w and wp["dia"] != w["dia"]:
+        g = (w["apertura"] - wp["entrada"]) * wp["dir"] - MERCADOS["BTC/USD"]["spread"]
+        if mandar(f"🟡 ⚡ LARRY WILLIAMS: CERRAR la {'COMPRA' if wp['dir'] > 0 else 'VENTA'} de BTC/USD "
+                  f"(entrada {fmt(wp['entrada'])}) en la apertura de hoy {fmt(w['apertura'])} · con 0,01 lotes "
+                  f"{_usd(g):+.2f}$"):
+            st["williams"] = None
+            n += 1
+    elif w and w["disparo"] and not wp and st.get("williams_dia") != w["dia"]:
+        d = w["dir"]
+        txt = (f"🟡 ⚡ {'🟢 COMPRA' if d > 0 else '🔴 VENTA'} BTC/USD · LARRY WILLIAMS (ruptura de volatilidad)\n"
+               f"📈 Superó apertura {fmt(w['apertura'])} {'+' if d > 0 else '−'} 0,7 × rango de ayer "
+               f"({fmt(w['rango'])}) = {fmt(w['gatillo'])} · EMA 50 diaria a favor\n"
+               f"🎯 Entrada: {fmt(w['gatillo'])}\n"
+               f"🚪 Salida: en la apertura de mañana (00:00 UTC · 19:00 NY) · te aviso\n"
+               f"📊 Estudio: {ESTUDIO_WILLIAMS} · ⚠ sin SL en el estudio: pensado para bank de $300 o más")
+        if mandar(txt):
+            st["williams"] = {"dir": d, "entrada": w["gatillo"], "dia": w["dia"]}
+            st["williams_dia"] = w["dia"]
+            n += 1
+    return n
+
+
 # ----------------------------------------------------------------- UNA OPERACION A LA VEZ + RESULTADO
 def _resultado(op, df):
     """¿La operacion activa ya llego al TP, toco el SL o se acabo su tiempo? Devuelve (texto, R) o None."""
@@ -1383,6 +1514,10 @@ def escanear(estado, cargar=historial, ahora=None, enviar=True, verbose=True):
                     nuevas += 1
                     activas[clave] = {k: (str(v) if k == "vela" else v) for k, v in s.items()
                                       if k in ("activo", "tf", "dir", "entrada", "tp", "sl", "vela")}
+    try:
+        nuevas += tendencia_btc(estado, cargar, ahora, enviar)
+    except Exception as e:
+        print(f"  ! tendencia BTC: {e}", flush=True)
     estado.guardar()
     return nuevas
 

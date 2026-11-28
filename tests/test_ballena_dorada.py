@@ -246,7 +246,7 @@ def test_rango_madre_verde_dentro_busca_el_maximo():
     df = mercado(300)
     p = float(df["close"].iloc[-3])
     df = _velas([(p + 8, p + 9, p - 1, p), (p + 0.5, p + 3, p - 0.5, p + 2.5)], df)   # madre roja grande, vela verde dentro
-    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    s, motivo = bd.senal_rango_madre("NASDAQ 100", "15m", df)
     assert s and s["dir"] == 1 and not s["reves"], motivo
     assert s["tp"] == pytest.approx(p + 9) and s["sl"] < p - 1
     t = bd.texto_alerta(s)
@@ -257,7 +257,7 @@ def test_rango_madre_roja_dentro_busca_el_minimo():
     df = mercado(300)
     p = float(df["close"].iloc[-3])
     df = _velas([(p, p + 9, p - 1, p + 8), (p + 7.5, p + 8.5, p + 5, p + 5.5)], df)  # madre verde, vela roja dentro
-    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    s, motivo = bd.senal_rango_madre("NASDAQ 100", "15m", df)
     assert s and s["dir"] == -1 and s["tp"] == pytest.approx(p - 1), motivo
 
 
@@ -265,7 +265,7 @@ def test_madre_al_reves_sigue_el_color_de_la_vela_que_envuelve():
     df = mercado(300)
     p = float(df["close"].iloc[-3])
     df = _velas([(p, p + 4, p - 0.5, p + 3), (p + 3.2, p + 4.5, p - 6, p - 5.5)], df)  # madre verde, roja la envuelve
-    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    s, motivo = bd.senal_rango_madre("NASDAQ 100", "15m", df)
     assert s and s["dir"] == -1 and s["reves"], motivo
     altura = (p + 4.5) - (p - 6)
     assert s["tp"] == pytest.approx(p - 5.5 - altura) and s["sl"] > p + 4.5
@@ -284,6 +284,8 @@ def test_una_operacion_a_la_vez_y_aviso_del_resultado(monkeypatch, tmp_path):
     monkeypatch.setitem(bd.CONFIG, "temporalidades", {"5m": "1h"})
     monkeypatch.setattr(bd, "MERCADOS", {"BTC/USD": bd.MERCADOS["BTC/USD"]})
     monkeypatch.setitem(bd.CONFIG, "filtro_vantage", False)
+    monkeypatch.setitem(bd.CONFIG, "reglas_mercado", {})
+    monkeypatch.setitem(bd.CONFIG, "btc_tendencia", False)
     enviados = []
     monkeypatch.setattr(bd, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
     e = bd.Estado(str(tmp_path / "e.json"))
@@ -311,7 +313,7 @@ def test_rango_madre_no_opera_si_el_tp_esta_pegado():
     df = mercado(300)
     p = float(df["close"].iloc[-3])
     df = _velas([(p + 8, p + 9, p - 1, p), (p + 7.0, p + 8.95, p + 6.5, p + 8.9)], df)   # cierra casi en el maximo
-    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    s, motivo = bd.senal_rango_madre("NASDAQ 100", "15m", df)
     assert s is None and "TP demasiado cerca" in motivo
 
 
@@ -339,3 +341,41 @@ def test_analisis_estilo_vantage():
     for c in ("open", "high", "low", "close"):
         baja[c] = df[c] + tend
     assert bd.analisis_vantage(baja)["emas_venta"] >= 3
+
+
+def test_btc_rango_solo_15m_y_con_filtros():
+    df = mercado(300)
+    p = float(df["close"].iloc[-3])
+    df = _velas([(p + 8, p + 9, p - 1, p), (p + 0.5, p + 3, p - 0.5, p + 2.5)], df)
+    s, motivo = bd.senal_rango_madre("BTC/USD", "5m", df)
+    assert s is None and "solo en 15m" in motivo
+    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    assert s is None and ("spread" in motivo or "momentum" in motivo)     # SL chico frente a $20 de spread
+    s, _ = bd.senal_rango_madre("XAU/USD (Oro)", "5m", df)
+    assert s is not None                                                    # los otros mercados no cambian
+
+
+def _btc_1h(dias=90, tendencia=0.0, semilla=3):
+    rng = np.random.default_rng(semilla)
+    n = 24 * dias
+    c = 60000 + np.cumsum(rng.normal(tendencia, 150, n))
+    o = np.r_[c[0], c[:-1]]
+    return pd.DataFrame(dict(open=o, high=np.maximum(o, c) + rng.exponential(60, n),
+                             low=np.minimum(o, c) - rng.exponential(60, n), close=c, volume=1.0),
+                        index=pd.date_range("2026-08-01", periods=n, freq="1h", tz="UTC"))
+
+
+def test_tendencia_btc_entradas_y_salidas(monkeypatch, tmp_path):
+    enviados = []
+    monkeypatch.setattr(bd, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
+    h1 = _btc_1h(120, tendencia=25.0)
+    e = bd.Estado(str(tmp_path / "e.json"))
+    for fin in range(24 * 100, len(h1), 4):
+        sub = h1.iloc[:fin]
+        bd.tendencia_btc(e, lambda nm, tf: sub, sub.index[-1] + pd.Timedelta(hours=1))
+    assert any("DONCHIAN 20/10 4H" in x or "TORTUGAS 55/20 4H" in x for x in enviados)
+    assert any("LARRY WILLIAMS" in x for x in enviados)
+    entradas = [x for x in enviados if x.startswith("🟡 🐢 🟢") or x.startswith("🟡 🐢 🔴")]
+    assert entradas and "🚪 Salida" in entradas[0] and "💵 Con 0,01 lotes" in entradas[0]
+    st = e.d["btc_tendencia"]
+    assert set(st) >= {"donchian_vela", "tortugas_vela"}
