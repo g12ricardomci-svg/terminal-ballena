@@ -69,7 +69,8 @@ CONFIG = {
     # ⚡ BARRIDO + ENVOLVENTE (Turtle Soup / CRT de reversion), en compra y en venta
     "envolvente": True, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
     # 🎌 DICCIONARIO DE VELAS JAPONESAS (61 patrones de TA-Lib), cada uno aprendido como la vela madre
-    "japonesas": False, "jp_min_casos": 30, "jp_min_pct": 60.0,  # APAGADO: en vivo y en la medicion no dieron ventaja
+    "japonesas": True, "jp_min_casos": 20, "jp_min_pct": 55.0,
+    "jp_contexto": True,          # como dicen Nison y Bulkowski: CONFIRMADA + en soporte/resistencia + a favor de la tendencia
     # FILTRO ESTRICTO: solo llega lo que gana en el historial, a favor de la tendencia, con R:R >= 1 y sin noticia
     "filtro_estricto": True, "min_ev": 0.10, "min_rr": 1.0,
     "pausa_min": 0,                             # cada madre manda su mensaje
@@ -756,7 +757,86 @@ def plan_casos(P, sel, i, coste):
     return {"dir": d, "pct": pct, "casos": len(sel), "nivel": nivel, "plan": plan}
 
 
+def contexto_japones(df, tf):
+    """Ubicacion (Nison/Bulkowski): soporte = minimo de 20 velas, PDL o minimo de la vela mayor (a 0,5 ATR) o tercio
+    bajo del rango de 100 velas; resistencia = lo mismo arriba."""
+    h, l, c = (df[x].to_numpy(float) for x in ("high", "low", "close"))
+    a = atr(df).to_numpy()
+    s = pd.Series
+    min20, max20 = s(l).rolling(20).min().shift(1).to_numpy(), s(h).rolling(20).max().shift(1).to_numpy()
+    d = df.resample("1D").agg({"high": "max", "low": "min"}).shift(1)
+    pdh = d["high"].reindex(df.index.floor("1D")).to_numpy()
+    pdl = d["low"].reindex(df.index.floor("1D")).to_numpy()
+    _, hH, hL = _vela_mayor_anterior(df, tf)
+    with np.errstate(invalid="ignore"):
+        cerca = lambda x, nivel: np.abs(x - nivel) <= 0.5 * a
+        hi100, lo100 = s(h).rolling(100).max().to_numpy(), s(l).rolling(100).min().to_numpy()
+        pos = (c - lo100) / np.where(hi100 > lo100, hi100 - lo100, np.nan)
+        soporte = cerca(l, min20) | cerca(l, pdl) | cerca(l, hL) | (l < min20) | (pos < 1 / 3)
+        resistencia = cerca(h, max20) | cerca(h, pdh) | cerca(h, hH) | (h > max20) | (pos > 2 / 3)
+    return soporte, resistencia
+
+
 def senal_japonesa(nombre, tf, df):
+    if CONFIG.get("jp_contexto"):
+        return senal_japonesa_contexto(nombre, tf, df)
+    return senal_japonesa_cruda(nombre, tf, df)
+
+
+def senal_japonesa_contexto(nombre, tf, df):
+    """La vela ANTERIOR forma un patron japones en su sitio (alcista en soporte, bajista en resistencia), la ULTIMA lo
+    CONFIRMA (cierra sobre su maximo / bajo su minimo) y va a favor de la tendencia. El %, el TP y el SL salen solo
+    de los casos del historial con ese MISMO patron y ese MISMO contexto."""
+    if not CONFIG["japonesas"] or talib is None or df is None or len(df) < 150:
+        return None, "sin diccionario o sin datos"
+    J = velas_japonesas(df)
+    P = preparar(df, tf)
+    sop, res = contexto_japones(df, tf)
+    h, l, c = (df[x].to_numpy(float) for x in ("high", "low", "close"))
+    i, nv = len(df) - 1, CONFIG["velas_adelante"]
+    tend = np.array([0, 1, -1])[P["tend"]]
+    hechos = np.nonzero(J[i - 1])[0]
+    if not len(hechos):
+        return None, "sin patrón japonés en la vela anterior"
+    validos = np.isfinite(P["cierre"]) & np.isfinite(P["sube"])
+    validos[i - nv + 1:] = False
+    k = np.arange(1, len(c))
+    coste, lista = MERCADOS[nombre]["spread"], []
+    for f in hechos:
+        d = int(J[i - 1, f])
+        def en_contexto(j):                                          # j = vela de confirmacion
+            conf = (c[j] > h[j - 1]) if d > 0 else (c[j] < l[j - 1])
+            sitio = sop[j - 1] if d > 0 else res[j - 1]
+            return conf & sitio & (tend[j] == d)
+        if not en_contexto(i):
+            continue
+        sel = k[(J[k - 1, f] == d) & en_contexto(k) & validos[k]]
+        if len(sel) < CONFIG["jp_min_casos"]:
+            continue
+        cl = P["cierre"][sel]
+        pct = 100 * ((cl * d) > 0).sum() / max(np.count_nonzero(cl), 1)
+        plan = tp_sl(P["sube"][sel], P["baja"][sel], cl, d, P["atr"][i], coste)
+        if plan:
+            lista.append({"dir": d, "pct": pct, "casos": len(sel), "nivel": 0, "plan": plan,
+                          "patron": JAPONESAS[list(JAPONESAS)[f]], "version": "alcista" if d > 0 else "bajista"})
+    if not lista:
+        return None, "patrón sin confirmación, fuera de su sitio, contra la tendencia o con pocos casos"
+    lista.sort(key=lambda x: (-x["plan"]["ev"], -x["casos"]))
+    b = lista[0]
+    if b["pct"] < CONFIG["jp_min_pct"]:
+        return None, f"mejor patrón {b['patron']} {b['pct']:.0f}% (< {CONFIG['jp_min_pct']:.0f}%)"
+    px, a, d = float(P["c"][i]), float(P["atr"][i]), b["dir"]
+    return {"activo": nombre, "tipo": MERCADOS[nombre]["tipo"], "tf": tf, "estrategia": f"japonesa_{tf}", "dir": d,
+            "bias": d, "pct": b["pct"], "casos": b["casos"], "patron": b["patron"], "version": b["version"],
+            "fuente": "confirmada · " + ("en soporte" if d > 0 else "en resistencia") + " · a favor de la tendencia",
+            "entrada": px, "tp": px + d * b["plan"]["tp"] * a, "sl": px - d * b["plan"]["sl"] * a,
+            "rr": b["plan"]["tp"] / b["plan"]["sl"], "ev": b["plan"]["ev"], "acierto": b["plan"]["acierto"],
+            "otros": lista[1:4], "noticia": noticia(P, i, tf), "tendencia": TENDENCIA_TXT[P["tend"][i]],
+            "vola": VOL_TXT[P["vola"][i]], "vol_r": float(P["vol_r"][i]), "tend_num": [0, 1, -1][P["tend"][i]],
+            "adx": float(P["adx"][i]), "vela": P["idx"][i], "id": f"japonesa|{tf}|{nombre}|{P['idx'][i]}"}, ""
+
+
+def senal_japonesa_cruda(nombre, tf, df):
     """En la ULTIMA vela cerrada: que patrones japoneses hay, que hizo el precio con cada uno en el historial y,
     si el mejor da >= jp_min_pct, el plan completo (entrada, TP inteligente, SL, prueba en el historial)."""
     if not CONFIG["japonesas"] or talib is None or df is None or len(df) < 150:

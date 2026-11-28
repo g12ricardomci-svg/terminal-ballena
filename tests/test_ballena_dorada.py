@@ -179,6 +179,9 @@ def test_diccionario_de_61_velas_japonesas():
 def test_senal_japonesa_como_la_vela_madre(monkeypatch):
     pytest.importorskip("talib")
     monkeypatch.setitem(bd.CONFIG, "japonesas", True)
+    monkeypatch.setitem(bd.CONFIG, "jp_contexto", False)
+    monkeypatch.setitem(bd.CONFIG, "jp_min_casos", 30)
+    monkeypatch.setitem(bd.CONFIG, "jp_min_pct", 60.0)
     df = mercado(4000, 4)
     s = next((x for fin in range(3800, 4000) for x in [bd.senal_japonesa("XAU/USD (Oro)", "5m", df.iloc[:fin])[0]]
               if x), None)
@@ -202,4 +205,24 @@ def test_filtro_estricto_solo_deja_pasar_lo_que_tiene_ventaja():
     assert not bd.pasa_filtro({**base, "noticia": "⏰ horario de noticias"})[0]
     env = {"estrategia": "envolvente_5m", "dir": 1, "a_favor": True, "ev": 0.3, "noticia": ""}
     assert bd.pasa_filtro(env)[0] and not bd.pasa_filtro({**env, "a_favor": False})[0]
-    assert bd.CONFIG["japonesas"] is False
+    assert bd.CONFIG["japonesas"] is True and bd.CONFIG["jp_contexto"] is True
+
+
+
+def test_japonesas_con_contexto_confirmada_en_su_sitio_y_a_favor(monkeypatch):
+    pytest.importorskip("talib")
+    monkeypatch.setitem(bd.CONFIG, "jp_min_casos", 3)                  # umbrales bajos: aqui se prueba la logica
+    monkeypatch.setitem(bd.CONFIG, "jp_min_pct", 0.0)
+    df = mercado(5000, 6)
+    vistos = 0
+    for fin in range(4700, 5000):
+        s, motivo = bd.senal_japonesa("XAU/USD (Oro)", "5m", df.iloc[:fin])
+        if s:
+            vistos += 1
+            sub = df.iloc[:fin]
+            i = len(sub) - 1
+            conf = sub["close"].iloc[i] > sub["high"].iloc[i - 1] if s["dir"] > 0 else \
+                sub["close"].iloc[i] < sub["low"].iloc[i - 1]
+            assert conf and s["tend_num"] == s["dir"] and "confirmada" in s["fuente"]
+            assert "confirmada" in bd.texto_alerta(s).splitlines()[1]
+    assert vistos >= 1
