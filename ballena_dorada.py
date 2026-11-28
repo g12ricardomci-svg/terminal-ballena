@@ -1097,7 +1097,7 @@ def mensaje_prueba():
     return "🧪 MENSAJE DE PRUEBA (no operar) · así llegarán las señales\n" + texto_alerta(s)
 
 
-def diagnostico(n_velas=12):
+def diagnostico(n_velas=24):
     """Sin enviar nada: datos que llegan y que dice el bot en las ultimas velas de cada mercado y temporalidad."""
     for nombre in MERCADOS:
         for tf in CONFIG["temporalidades"]:
@@ -1109,9 +1109,16 @@ def diagnostico(n_velas=12):
                 print(f"{nombre:<14} {tf:<4} {len(df)} velas · {df.index[0]:%m-%d %H:%M} -> {df.index[-1]:%m-%d %H:%M} UTC",
                       flush=True)
                 for k in range(n_velas, 0, -1):
-                    s, m = senal_dorada(nombre, tf, df.iloc[:len(df) - k + 1])
-                    print(f"    {df.index[-k]:%m-%d %H:%M} " + (f"SEÑAL {'COMPRA' if s['dir'] > 0 else 'VENTA'} "
-                          f"{s['pct']:.0f}%" if s else m), flush=True)
+                    sub = df.iloc[:len(df) - k + 1]
+                    partes = []
+                    for tipo, fn in (("madre", senal_dorada), ("envolvente", senal_envolvente),
+                                     ("japonesa", senal_japonesa)):
+                        s, m = fn(nombre, tf, sub)
+                        if s:
+                            ok, por = pasa_filtro(s)
+                            partes.append(f"{tipo}: {'COMPRA' if s['dir'] > 0 else 'VENTA'} "
+                                          + ("✅ SE ENVÍA" if ok else f"⛔ filtrada ({por})"))
+                    print(f"    {sub.index[-1]:%m-%d %H:%M} " + (" | ".join(partes) or "nada"), flush=True)
             except Exception as e:
                 print(f"{nombre:<14} {tf:<4} ERROR {type(e).__name__}: {e}", flush=True)
 
