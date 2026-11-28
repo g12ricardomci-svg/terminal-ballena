@@ -129,3 +129,40 @@ def test_el_programa_arranca():
     raiz = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     r = subprocess.run([sys.executable, os.path.join(raiz, "ballena_dorada.py"), "--help"], capture_output=True, text=True)
     assert r.returncode == 0 and "--avisar-estado" in r.stdout
+
+
+def _con_envolvente(compra=True):
+    """Bajada de 6 velas (o subida) y al final una vela grande que barre los minimos y envuelve a la anterior."""
+    df = mercado(600)
+    o, h, l, c = (df[x].to_numpy(float).copy() for x in ("open", "high", "low", "close"))
+    p, d = c[-8], (-1 if compra else 1)
+    for k in range(-7, -1):
+        o[k], c[k] = p, p + d * 1.0
+        h[k], l[k] = max(o[k], c[k]) + 0.2, min(o[k], c[k]) - 0.2
+        p = c[k]
+    # vela del patron: barre el extremo de las 2 anteriores y envuelve con cuerpo grande
+    o[-1] = c[-2] + d * 0.1
+    c[-1] = o[-2] - d * 3.0
+    if compra:
+        l[-1], h[-1] = min(l[-2], l[-3]) - 1.5, c[-1] + 0.2
+    else:
+        h[-1], l[-1] = max(h[-2], h[-3]) + 1.5, c[-1] - 0.2
+    return pd.DataFrame(dict(open=o, high=h, low=l, close=c, volume=1.0), index=df.index)
+
+
+def test_barrido_envolvente_compra_y_venta():
+    for compra in (True, False):
+        df = _con_envolvente(compra)
+        s, motivo = bd.senal_envolvente("BTC/USD", "5m", df)
+        d = 1 if compra else -1
+        assert s and s["dir"] == d, motivo
+        assert (s["entrada"] - s["sl"]) * d > 0 and s["tp2"] == pytest.approx(s["entrada"] + d * 2 * s["riesgo"])
+        lineas = bd.texto_alerta(s).splitlines()
+        assert lineas[0] == f"🟡 ⚡ {'🟢 COMPRA' if compra else '🔴 VENTA'} BTC/USD · BARRIDO + ENVOLVENTE 5M"
+        assert lineas[3].startswith("🛑 SL:") and "detrás de la mecha" in lineas[3]
+        assert lineas[4].startswith("✅ TP 2R:") and "Tendencia H1" in lineas[5] and lineas[6].startswith("📊")
+
+
+def test_sin_patron_no_hay_envolvente():
+    s, motivo = bd.senal_envolvente("BTC/USD", "5m", mercado(600).iloc[:-1])
+    assert s is None or s["estrategia"] == "envolvente_5m"
