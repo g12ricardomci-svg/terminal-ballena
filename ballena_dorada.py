@@ -69,6 +69,7 @@ CONFIG = {
     # ⚡ BARRIDO + ENVOLVENTE (Turtle Soup / CRT de reversion), en compra y en venta
     # 📦 ESTRATEGIA ACTIVA: RANGO DE LA VELA MADRE (las demas quedan guardadas, apagadas)
     "rango_madre": True, "rm_pct_dentro": 50.0, "rm_velas": 20, "rm_margen_sl": 0.1,
+    "rm_min_rr": 0.5,             # si el TP queda a menos de la mitad del riesgo, no se opera
     "madre_pct": False,
     "envolvente": False, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
     # 🎌 DICCIONARIO DE VELAS JAPONESAS (61 patrones de TA-Lib), cada uno aprendido como la vela madre
@@ -1010,7 +1011,7 @@ def historial_rango(df, senal, d, mismo_color_madre, coste, hasta):
     for i in idx:
         e, tp, sl = _plan_rango(o, h, l, c, a, i, d, reves)
         riesgo = abs(e - sl)
-        if riesgo <= 0:
+        if riesgo <= 0 or abs(tp - e) / riesgo < CONFIG["rm_min_rr"]:
             continue
         r = None
         for k in range(i + 1, i + 1 + nv):
@@ -1043,6 +1044,8 @@ def senal_rango_madre(nombre, tf, df):
     a = atr(df).to_numpy()
     e, tp, sl = _plan_rango(o, h, l, c, a, i, d, reves)
     riesgo = abs(e - sl)
+    if riesgo <= 0 or abs(tp - e) / riesgo < CONFIG["rm_min_rr"]:
+        return None, f"TP demasiado cerca (R:R 1:{abs(tp - e) / max(riesgo, 1e-9):.1f})"
     top, bot = max(o[i], c[i]), min(o[i], c[i])
     dentro = 100 * max(0.0, min(top, h[i - 1]) - max(bot, l[i - 1])) / (top - bot) if top > bot else 0.0
     color_madre = int(np.sign(c[i - 1] - o[i - 1]))

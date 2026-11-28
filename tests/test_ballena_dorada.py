@@ -303,3 +303,11 @@ def test_una_operacion_a_la_vez_y_aviso_del_resultado(monkeypatch, tmp_path):
     bd.escanear(e, cargar, sig(), verbose=False)
     assert any("llegó al TP" in x for x in enviados) and "Ya puede llegar la siguiente señal" in enviados[-1] \
         or any("llegó al TP" in x for x in enviados[1:])
+
+
+def test_rango_madre_no_opera_si_el_tp_esta_pegado():
+    df = mercado(300)
+    p = float(df["close"].iloc[-3])
+    df = _velas([(p + 8, p + 9, p - 1, p), (p + 7.0, p + 8.95, p + 6.5, p + 8.9)], df)   # cierra casi en el maximo
+    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    assert s is None and "TP demasiado cerca" in motivo
