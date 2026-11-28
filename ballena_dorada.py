@@ -71,6 +71,8 @@ CONFIG = {
     "rango_madre": True, "rm_pct_dentro": 50.0, "rm_velas": 20, "rm_margen_sl": 0.1,
     "rm_min_rr": 0.5,             # si el TP queda a menos de la mitad del riesgo, no se opera
     # 💵 dolares con 0,01 lotes en Vantage (BTC 0,01 BTC · Oro 1 onza · NAS100 $0,01 por punto) y riesgo maximo
+    # 🧭 ANALISIS ESTILO VANTAGE AI (4H): 4 EMAs + 6 osciladores votan; solo se manda lo que va a favor del voto
+    "filtro_vantage": True, "vantage_tf": "4h", "vantage_margen": 2,
     "valor_001": {"XAU/USD (Oro)": 1.0, "BTC/USD": 0.01, "NASDAQ 100": 0.01}, "riesgo_usd": 1.0,
     "madre_pct": False,
     "envolvente": False, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
@@ -1084,6 +1086,8 @@ def texto_rango_madre(s):
                f"{fmt(abs(s['tp'] - s['entrada']))}"]
     lineas = cab + [
         f"🛑 SL: {fmt(s['sl'])} ({'bajo' if compra else 'sobre'} el rango · {fmt(s['riesgo'])}) · R:R 1:{s['rr']:.1f}"]
+    if s.get("vantage"):
+        lineas.append(linea_vantage(s["vantage"]) + " ✅ a favor")
     v = CONFIG["valor_001"].get(s["activo"])
     if v:
         sp = MERCADOS[s["activo"]]["spread"]
@@ -1098,6 +1102,71 @@ def texto_rango_madre(s):
             + (f" · tardó ~{hst['velas']:.0f} velas" if hst.get("velas") else "")
             + f" · {hst['ev']:+.2f} R por operación {'✓' if hst['ev'] > 0 else '⚠'}")
     return "\n".join(lineas)
+
+
+# ----------------------------------------------------------------- 🧭 ANALISIS ESTILO VANTAGE AI
+def vantage_series(df):
+    """Para cada vela: el voto de la ultima vela de 4H CERRADA, como el medidor de Vantage AI.
+    EMA 5/20/50/100 (precio encima = comprar) + RSI, StochRSI, Williams %R, MACD, CCI y Momentum.
+    Devuelve DataFrame con compra, venta, neutral, emas_venta, emas_compra y dir (+1 comprar, -1 vender, 0 neutral)."""
+    v_tf = CONFIG["vantage_tf"]
+    h4 = df.resample(v_tf, label="left", closed="left").agg(
+        {"open": "first", "high": "max", "low": "min", "close": "last"}).dropna()
+    c, h, l = h4["close"], h4["high"], h4["low"]
+    votos = [np.sign(c - ema(c, n)) for n in (5, 20, 50, 100)]
+    r = rsi(c)
+    votos.append(np.where(r < 30, 1, np.where(r > 70, -1, 0)))
+    st = (r - r.rolling(14).min()) / (r.rolling(14).max() - r.rolling(14).min()).replace(0, np.nan) * 100
+    k = st.rolling(3).mean()
+    votos.append(np.where(k < 20, 1, np.where(k > 80, -1, 0)))
+    wr = -100 * (h.rolling(14).max() - c) / (h.rolling(14).max() - l.rolling(14).min()).replace(0, np.nan)
+    votos.append(np.where(wr < -80, 1, np.where(wr > -20, -1, 0)))
+    macd = ema(c, 12) - ema(c, 26)
+    votos.append(np.sign(macd - ema(macd, 9)))
+    tp = (h + l + c) / 3
+    md = tp.rolling(20).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)
+    cci = (tp - tp.rolling(20).mean()) / (0.015 * md.replace(0, np.nan))
+    votos.append(np.where(cci < -100, 1, np.where(cci > 100, -1, 0)))
+    votos.append(np.sign(c - c.shift(10)))
+    V = np.nan_to_num(np.column_stack([np.asarray(x, float) for x in votos]))
+    compra, venta = (V > 0).sum(1), (V < 0).sum(1)
+    emas_c, emas_v = (V[:, :4] > 0).sum(1), (V[:, :4] < 0).sum(1)
+    m = CONFIG["vantage_margen"]
+    d = np.where(compra - venta >= m, 1, np.where(venta - compra >= m, -1, 0))
+    cierre = h4.index + pd.Timedelta(minutes=TF_MIN.get(v_tf, 240))
+    tf_min = int(round((df.index[1] - df.index[0]).total_seconds() / 60)) if len(df) > 1 else 5
+    pos = cierre.searchsorted(df.index + pd.Timedelta(minutes=tf_min), side="right") - 1
+    ok = pos >= 0
+    pos = np.clip(pos, 0, None)
+    col = lambda x: np.where(ok, np.asarray(x)[pos], 0)
+    return pd.DataFrame({"compra": col(compra), "venta": col(venta), "neutral": col(V.shape[1] - compra - venta),
+                         "emas_compra": col(emas_c), "emas_venta": col(emas_v), "dir": col(d)}, index=df.index)
+
+
+def pivotes(df):
+    """Pivotes clasicos del dia anterior (PP, R1, R2, S1, S2)."""
+    d = df.resample("1D").agg({"high": "max", "low": "min", "close": "last"}).dropna()
+    if len(d) < 2:
+        return None
+    H, L, C = (float(d[x].iloc[-2]) for x in ("high", "low", "close"))
+    pp = (H + L + C) / 3
+    return {"PP": pp, "R1": 2 * pp - L, "S1": 2 * pp - H, "R2": pp + (H - L), "S2": pp - (H - L)}
+
+
+def analisis_vantage(df):
+    v = vantage_series(df).iloc[-1]
+    total = int(v["compra"] + v["venta"])
+    return {"dir": int(v["dir"]), "compra": int(v["compra"]), "venta": int(v["venta"]), "neutral": int(v["neutral"]),
+            "emas_compra": int(v["emas_compra"]), "emas_venta": int(v["emas_venta"]),
+            "bajista": 100 * v["venta"] / total if total else 50.0, "pivotes": pivotes(df)}
+
+
+def linea_vantage(va):
+    txt = {1: "COMPRAR", -1: "VENDER", 0: "NEUTRAL"}[va["dir"]]
+    p = va.get("pivotes")
+    piv = f" · PP {fmt(p['PP'])} · R1 {fmt(p['R1'])} · S1 {fmt(p['S1'])}" if p else ""
+    return (f"🧭 Estilo Vantage 4H: {txt} (vender {va['venta']} · neutral {va['neutral']} · comprar {va['compra']}) · "
+            f"EMAs {va['emas_venta']}/4 venden{piv}")
 
 
 def analizar_todas(nombre, tf=None, cargar=historial, ahora=None):
@@ -1118,7 +1187,19 @@ def analizar_todas(nombre, tf=None, cargar=historial, ahora=None):
         motivos[f"⚡{NOMBRE_TF[t]}"] = motivo_e
         motivos[f"🎌{NOMBRE_TF[t]}"] = motivo_j
         motivos[f"📦{NOMBRE_TF[t]}"] = motivo_r
+        if CONFIG["filtro_vantage"] and any((s, e, j, r)):
+            try:
+                va = analisis_vantage(df)
+            except Exception:
+                va = None
+            for x in (s, e, j, r):
+                if x and va:
+                    x["vantage"] = va
         for x in (s, e, j, r):
+            if x and CONFIG["filtro_vantage"] and x.get("vantage") and x["vantage"]["dir"] != x["dir"]:
+                motivos[f"filtro {x['estrategia']}"] = (
+                    f"contra el análisis estilo Vantage 4H ({ {1: 'comprar', -1: 'vender', 0: 'neutral'}[x['vantage']['dir']] })")
+                continue
             if x:
                 ok, por = pasa_filtro(x)
                 if ok:

@@ -15,16 +15,19 @@ import ballena_dorada as bd
 VALOR = {"XAU/USD (Oro)": 1.0, "BTC/USD": 0.01, "NASDAQ 100": 0.01}     # $ por cada 1 de precio con 0,01 lotes
 
 
-def simular(df, nombre):
+def simular(df, nombre, filtro_vantage=False):
     o, h, l, c = (df[x].to_numpy(float) for x in ("open", "high", "low", "close"))
     a = bd.atr(df).to_numpy()
     senal = bd.rango_madre(df)
     v, sp, nv = VALOR[nombre], bd.MERCADOS[nombre]["spread"], bd.CONFIG["rm_velas"]
     ops, libre = [], 0
+    vdir = bd.vantage_series(df)["dir"].to_numpy() if filtro_vantage else None
     for i in np.nonzero(senal)[0]:
         if i < max(libre, 15) or i + nv >= len(c):
             continue
         d, rev = int(np.sign(senal[i])), abs(senal[i]) == 2
+        if vdir is not None and vdir[i] != d:
+            continue
         e, tp, sl = bd._plan_rango(o, h, l, c, a, i, d, rev)
         riesgo = abs(e - sl)
         if riesgo <= 0 or abs(tp - e) / riesgo < bd.CONFIG["rm_min_rr"]:
@@ -58,7 +61,7 @@ def caida(x):
 
 
 def main():
-    todas = []
+    todas, con_vantage = [], []
     print(f"{'mercado':<15}{'tf':<5}{'ops':>5}{'SL típico':>11}{'SL 95%':>9}{'SL máx':>9}{'racha':>7}{'caída máx':>11}"
           f"{'resultado':>11}")
     for nombre in bd.MERCADOS:
@@ -66,6 +69,7 @@ def main():
             try:
                 df = bd.solo_cerradas(bd.historial(nombre, tf), tf)
                 t = simular(df, nombre)
+                tv = simular(df, nombre, filtro_vantage=True)
             except Exception as e:
                 print(f"{nombre} {tf}: ERROR {e}")
                 continue
@@ -73,6 +77,12 @@ def main():
                 continue
             t["mtf"] = f"{nombre} {tf}"
             todas.append(t)
+            if not tv.empty:
+                tv["mtf"] = f"{nombre} {tf}"
+                con_vantage.append(tv)
+                print(f"{'  + estilo Vantage':<20}{len(tv):>5}{tv['sl_usd'].median():>10.2f}${tv['sl_usd'].quantile(.95):>8.2f}$"
+                      f"{tv['sl_usd'].max():>8.2f}${racha(tv['usd']):>7}{caida(tv['usd']):>10.2f}${tv['usd'].sum():>+10.2f}$"
+                      f"   R/op {tv['usd'].sum() / max(len(tv), 1):+.3f}$")
             print(f"{nombre:<15}{tf:<5}{len(t):>5}{t['sl_usd'].median():>10.2f}${t['sl_usd'].quantile(.95):>8.2f}$"
                   f"{t['sl_usd'].max():>8.2f}${racha(t['usd']):>7}{caida(t['usd']):>10.2f}${t['usd'].sum():>+10.2f}$"
                   f"   ({df.index[0]:%Y-%m-%d} -> {df.index[-1]:%Y-%m-%d})")
@@ -83,6 +93,11 @@ def main():
               f"caida maxima {caida(u['usd']):.2f}$ · resultado {u['usd'].sum():+.2f}$")
         por_dia = u.groupby(u["t"].dt.date)["usd"].sum()
         print(f"peor dia: {por_dia.min():+.2f}$ · mejor dia: {por_dia.max():+.2f}$ · operaciones por dia ~{len(u) / 30:.0f}")
+    if con_vantage:
+        t = pd.concat(con_vantage).sort_values("t")
+        u = t[t["t"] >= t["t"].max() - pd.Timedelta(days=30)]
+        print(f"CON ESTILO VANTAGE (ultimos 30 dias): {len(u)} operaciones · peor racha {racha(u['usd'])} · "
+              f"caida maxima {caida(u['usd']):.2f}$ · resultado {u['usd'].sum():+.2f}$")
 
 
 if __name__ == "__main__":

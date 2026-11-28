@@ -118,6 +118,7 @@ def test_envia_y_no_repite(monkeypatch, tmp_path):
     monkeypatch.setitem(bd.CONFIG, "filtro_estricto", False)
     monkeypatch.setitem(bd.CONFIG, "madre_pct", True)
     monkeypatch.setitem(bd.CONFIG, "rango_madre", False)
+    monkeypatch.setitem(bd.CONFIG, "filtro_vantage", False)
     enviados = []
     monkeypatch.setattr(bd, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
     monkeypatch.setattr(bd, "MERCADOS", {"BTC/USD": bd.MERCADOS["BTC/USD"]})
@@ -282,6 +283,7 @@ def test_una_operacion_a_la_vez_y_aviso_del_resultado(monkeypatch, tmp_path):
     df = _velas([(p + 8, p + 9, p - 1, p), (p + 0.5, p + 3, p - 0.5, p + 2.5)], df)   # COMPRA hacia p + 9
     monkeypatch.setitem(bd.CONFIG, "temporalidades", {"5m": "1h"})
     monkeypatch.setattr(bd, "MERCADOS", {"BTC/USD": bd.MERCADOS["BTC/USD"]})
+    monkeypatch.setitem(bd.CONFIG, "filtro_vantage", False)
     enviados = []
     monkeypatch.setattr(bd, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
     e = bd.Estado(str(tmp_path / "e.json"))
@@ -321,3 +323,19 @@ def test_linea_de_dolares_con_001_lotes():
     assert "💵 Con 0,01 lotes: SL $1.24 · TP $0.64 · ⛔ no cabe en $1" in t
     s.update(activo="NASDAQ 100", entrada=21000, tp=21080, sl=20950, riesgo=50)
     assert "💵 Con 0,01 lotes: SL $0.51 · TP $0.79 · ✅ cabe en $1" in bd.texto_alerta(s)
+
+
+def test_analisis_estilo_vantage():
+    df = mercado(3000)
+    V = bd.vantage_series(df)
+    assert len(V) == len(df) and set(np.unique(V["dir"])) <= {-1, 0, 1}
+    assert ((V["compra"] + V["venta"] + V["neutral"]) == 10).iloc[-500:].all()
+    va = bd.analisis_vantage(df)
+    assert va["pivotes"] and va["pivotes"]["R1"] > va["pivotes"]["PP"] > va["pivotes"]["S1"]
+    assert bd.linea_vantage(va).startswith("🧭 Estilo Vantage 4H: ")
+    # tendencia bajista clara -> el voto dice vender
+    baja = df.copy()
+    tend = np.linspace(0, -400, len(df))
+    for c in ("open", "high", "low", "close"):
+        baja[c] = df[c] + tend
+    assert bd.analisis_vantage(baja)["emas_venta"] >= 3
