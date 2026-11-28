@@ -116,6 +116,8 @@ def test_envia_y_no_repite(monkeypatch, tmp_path):
     datos = df.iloc[:fin]
     monkeypatch.setitem(bd.CONFIG, "temporalidades", {"5m": "1h"})
     monkeypatch.setitem(bd.CONFIG, "filtro_estricto", False)
+    monkeypatch.setitem(bd.CONFIG, "madre_pct", True)
+    monkeypatch.setitem(bd.CONFIG, "rango_madre", False)
     enviados = []
     monkeypatch.setattr(bd, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
     monkeypatch.setattr(bd, "MERCADOS", {"BTC/USD": bd.MERCADOS["BTC/USD"]})
@@ -151,7 +153,8 @@ def _con_envolvente(compra=True):
     return pd.DataFrame(dict(open=o, high=h, low=l, close=c, volume=1.0), index=df.index)
 
 
-def test_barrido_envolvente_compra_y_venta():
+def test_barrido_envolvente_compra_y_venta(monkeypatch):
+    monkeypatch.setitem(bd.CONFIG, "envolvente", True)
     for compra in (True, False):
         df = _con_envolvente(compra)
         s, motivo = bd.senal_envolvente("BTC/USD", "5m", df)
@@ -205,12 +208,13 @@ def test_filtro_estricto_solo_deja_pasar_lo_que_tiene_ventaja():
     assert not bd.pasa_filtro({**base, "noticia": "⏰ horario de noticias"})[0]
     env = {"estrategia": "envolvente_5m", "dir": 1, "a_favor": True, "ev": 0.3, "noticia": ""}
     assert bd.pasa_filtro(env)[0] and not bd.pasa_filtro({**env, "a_favor": False})[0]
-    assert bd.CONFIG["japonesas"] is True and bd.CONFIG["jp_contexto"] is True
+    assert bd.CONFIG["jp_contexto"] is True
 
 
 
 def test_japonesas_con_contexto_confirmada_en_su_sitio_y_a_favor(monkeypatch):
     pytest.importorskip("talib")
+    monkeypatch.setitem(bd.CONFIG, "japonesas", True)
     monkeypatch.setitem(bd.CONFIG, "jp_min_casos", 3)                  # umbrales bajos: aqui se prueba la logica
     monkeypatch.setitem(bd.CONFIG, "jp_min_pct", 0.0)
     df = mercado(5000, 6)
@@ -226,3 +230,47 @@ def test_japonesas_con_contexto_confirmada_en_su_sitio_y_a_favor(monkeypatch):
             assert conf and s["tend_num"] == s["dir"] and "confirmada" in s["fuente"]
             assert "confirmada" in bd.texto_alerta(s).splitlines()[1]
     assert vistos >= 1
+
+
+def _velas(filas, base=None):
+    df = mercado(300) if base is None else base
+    o, h, l, c = (df[x].to_numpy(float).copy() for x in ("open", "high", "low", "close"))
+    for j, (a, b, cc, d) in enumerate(filas):
+        k = len(filas) - j
+        o[-k], h[-k], l[-k], c[-k] = a, b, cc, d
+    return pd.DataFrame(dict(open=o, high=h, low=l, close=c, volume=1.0), index=df.index)
+
+
+def test_rango_madre_verde_dentro_busca_el_maximo():
+    df = mercado(300)
+    p = float(df["close"].iloc[-3])
+    df = _velas([(p + 8, p + 9, p - 1, p), (p + 0.5, p + 3, p - 0.5, p + 2.5)], df)   # madre roja grande, vela verde dentro
+    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    assert s and s["dir"] == 1 and not s["reves"], motivo
+    assert s["tp"] == pytest.approx(p + 9) and s["sl"] < p - 1
+    t = bd.texto_alerta(s)
+    assert "RANGO MADRE 15M" in t and "busca el MÁXIMO del rango" in t and "✅ TP (máximo de la madre)" in t
+
+
+def test_rango_madre_roja_dentro_busca_el_minimo():
+    df = mercado(300)
+    p = float(df["close"].iloc[-3])
+    df = _velas([(p, p + 9, p - 1, p + 8), (p + 7.5, p + 8.5, p + 5, p + 5.5)], df)  # madre verde, vela roja dentro
+    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    assert s and s["dir"] == -1 and s["tp"] == pytest.approx(p - 1), motivo
+
+
+def test_madre_al_reves_sigue_el_color_de_la_vela_que_envuelve():
+    df = mercado(300)
+    p = float(df["close"].iloc[-3])
+    df = _velas([(p, p + 4, p - 0.5, p + 3), (p + 3.2, p + 4.5, p - 6, p - 5.5)], df)  # madre verde, roja la envuelve
+    s, motivo = bd.senal_rango_madre("BTC/USD", "15m", df)
+    assert s and s["dir"] == -1 and s["reves"], motivo
+    altura = (p + 4.5) - (p - 6)
+    assert s["tp"] == pytest.approx(p - 5.5 - altura) and s["sl"] > p + 4.5
+    assert "MADRE AL REVÉS 15M" in bd.texto_alerta(s) and "para ABAJO" in bd.texto_alerta(s)
+
+
+def test_dorada_solo_con_rango_madre():
+    assert bd.CONFIG["rango_madre"] and not bd.CONFIG["madre_pct"]
+    assert not bd.CONFIG["envolvente"] and not bd.CONFIG["japonesas"]

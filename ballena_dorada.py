@@ -67,9 +67,12 @@ CONFIG = {
     "pat_max_casos": 4500,
     # las madres 50/50 o con pocos casos no tienen plan y no mandan mensaje
     # ⚡ BARRIDO + ENVOLVENTE (Turtle Soup / CRT de reversion), en compra y en venta
-    "envolvente": True, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
+    # 📦 ESTRATEGIA ACTIVA: RANGO DE LA VELA MADRE (las demas quedan guardadas, apagadas)
+    "rango_madre": True, "rm_pct_dentro": 50.0, "rm_velas": 20, "rm_margen_sl": 0.1,
+    "madre_pct": False,
+    "envolvente": False, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
     # 🎌 DICCIONARIO DE VELAS JAPONESAS (61 patrones de TA-Lib), cada uno aprendido como la vela madre
-    "japonesas": True, "jp_min_casos": 20, "jp_min_pct": 55.0,
+    "japonesas": False, "jp_min_casos": 20, "jp_min_pct": 55.0,
     "jp_contexto": True,          # como dicen Nison y Bulkowski: CONFIRMADA + en soporte/resistencia + a favor de la tendencia
     # FILTRO ESTRICTO: solo llega lo que gana en el historial, a favor de la tendencia, con R:R >= 1 y sin noticia
     "filtro_estricto": True, "min_ev": 0.10, "min_rr": 1.0,
@@ -928,8 +931,8 @@ def historial(nombre, tf):
 def pasa_filtro(s):
     """Solo senales con ventaja medida: gana en el historial (>= min_ev R), a favor de la tendencia, R:R >= min_rr
     y sin noticia. Devuelve (True/False, motivo)."""
-    if not CONFIG["filtro_estricto"]:
-        return True, ""
+    if not CONFIG["filtro_estricto"] or s.get("estrategia", "").startswith("rango_madre"):
+        return True, ""                                               # el rango de la madre manda siempre
     if s.get("noticia"):
         return False, "noticia"
     if s.get("estrategia", "").startswith("envolvente"):
@@ -947,6 +950,144 @@ def pasa_filtro(s):
     return True, ""
 
 
+# ----------------------------------------------------------------- 📦 RANGO DE LA VELA MADRE
+def rango_madre(df):
+    """Por vela (la SIGUIENTE a la madre): +1 si es VERDE con > rm_pct_dentro % de su cuerpo dentro del rango de la
+    madre (maximo-minimo, con mechas) y aun no llego al maximo; -1 si es ROJA y aun no llego al minimo; 0 nada."""
+    o, h, l, c = (df[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    a = atr(df).to_numpy()
+    n = len(c)
+    out = np.zeros(n, int)
+    if n < 20:
+        return out
+    mH, mL = np.r_[np.nan, h[:-1]], np.r_[np.nan, l[:-1]]
+    mO, mC, a1 = np.r_[np.nan, o[:-1]], np.r_[np.nan, c[:-1]], np.r_[np.nan, a[:-1]]
+    rango = mH - mL
+    with np.errstate(invalid="ignore", divide="ignore"):
+        madre = (rango >= CONFIG["atr_madre"] * a1) & (np.abs(mC - mO) >= CONFIG["cuerpo_min"] / 100 * rango)
+        top, bot = np.maximum(o, c), np.minimum(o, c)
+        cuerpo = top - bot
+        dentro = np.clip(np.minimum(top, mH) - np.maximum(bot, mL), 0, None) / np.where(cuerpo > 0, cuerpo, np.nan)
+        ok = madre & (dentro * 100 > CONFIG["rm_pct_dentro"])
+    out[ok & (c > o) & (c < mH)] = 1
+    out[ok & (c < o) & (c > mL)] = -1
+    # MADRE AL REVES: la vela siguiente es del color contrario y ENVUELVE todo el cuerpo de la madre (y es grande):
+    # el precio sigue su color, rompe el rango y recorre su tamaño. Se marca con +2 / -2.
+    with np.errstate(invalid="ignore"):
+        mtop, mbot = np.maximum(mO, mC), np.minimum(mO, mC)
+        envuelve = (top >= mtop) & (bot <= mbot) & (cuerpo > mtop - mbot) & ((h - l) >= CONFIG["atr_madre"] * a)
+    out[envuelve & (c > o) & (mC < mO)] = 2
+    out[envuelve & (c < o) & (mC > mO)] = -2
+    return out
+
+
+def _plan_rango(o, h, l, c, a, i, d, reves=False):
+    """DENTRO: entrada al cierre de la vela siguiente, TP en el extremo del rango de la madre, SL al otro lado.
+    AL REVES: TP = entrada + el tamaño del rango (madre + vela que envuelve), SL al otro lado del rango.
+    El SL queda al menos a 0,3 ATR de la entrada."""
+    hi, lo = max(h[i], h[i - 1]), min(l[i], l[i - 1])
+    if reves:
+        tp = c[i] + d * (hi - lo)
+    else:
+        tp = h[i - 1] if d > 0 else l[i - 1]
+    sl = (lo - CONFIG["rm_margen_sl"] * a[i]) if d > 0 else (hi + CONFIG["rm_margen_sl"] * a[i])
+    if abs(c[i] - sl) < 0.3 * a[i]:
+        sl = c[i] - d * 0.3 * a[i]
+    return c[i], tp, sl
+
+
+def historial_rango(df, senal, d, mismo_color_madre, coste, hasta):
+    """Casos pasados con la misma direccion (y el mismo color de madre): llego al objetivo antes que al SL?"""
+    o, h, l, c = (df[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    a = atr(df).to_numpy()
+    nv = CONFIG["rm_velas"]
+    idx = np.nonzero(senal == d)[0]
+    idx = idx[(idx + nv < hasta) & (idx > 15)]
+    reves, d = abs(d) == 2, int(np.sign(d))
+    if mismo_color_madre is not None:
+        idx = idx[np.sign(c[idx - 1] - o[idx - 1]) == mismo_color_madre]
+    rs, gana, velas = [], 0, []
+    for i in idx:
+        e, tp, sl = _plan_rango(o, h, l, c, a, i, d, reves)
+        riesgo = abs(e - sl)
+        if riesgo <= 0:
+            continue
+        r = None
+        for k in range(i + 1, i + 1 + nv):
+            if (l[k] <= sl) if d > 0 else (h[k] >= sl):
+                r = -1.0
+                break
+            if (h[k] >= tp) if d > 0 else (l[k] <= tp):
+                r = abs(tp - e) / riesgo
+                gana += 1
+                velas.append(k - i)
+                break
+        if r is None:
+            r = (c[i + nv] - e) * d / riesgo
+        rs.append(r - coste / riesgo)
+    n = len(rs)
+    return {"n": n, "llega": 100 * gana / n if n else 0.0, "ev": float(np.mean(rs)) if n else 0.0,
+            "velas": float(np.median(velas)) if velas else None}
+
+
+def senal_rango_madre(nombre, tf, df):
+    if not CONFIG["rango_madre"] or df is None or len(df) < 60:
+        return None, "sin datos"
+    senal = rango_madre(df)
+    i = len(df) - 1
+    tipo = int(senal[i])
+    if tipo == 0:
+        return None, "sin madre con vela siguiente dentro de su rango ni madre al revés"
+    d, reves = int(np.sign(tipo)), abs(tipo) == 2
+    o, h, l, c = (df[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    a = atr(df).to_numpy()
+    e, tp, sl = _plan_rango(o, h, l, c, a, i, d, reves)
+    riesgo = abs(e - sl)
+    top, bot = max(o[i], c[i]), min(o[i], c[i])
+    dentro = 100 * max(0.0, min(top, h[i - 1]) - max(bot, l[i - 1])) / (top - bot) if top > bot else 0.0
+    color_madre = int(np.sign(c[i - 1] - o[i - 1]))
+    coste = MERCADOS[nombre]["spread"]
+    hist = historial_rango(df, senal, tipo, color_madre, coste, i)
+    if hist["n"] < CONFIG["min_casos"]:                                 # pocos casos con ese color de madre
+        hist = {**historial_rango(df, senal, tipo, None, coste, i), "todas": True}
+    return {"activo": nombre, "tipo": MERCADOS[nombre]["tipo"], "tf": tf, "estrategia": f"rango_madre_{tf}",
+            "dir": d, "bias": d, "entrada": e, "tp": tp, "sl": sl, "riesgo": riesgo,
+            "rr": abs(tp - e) / riesgo if riesgo > 0 else 0.0, "madre_h": h[i - 1], "madre_l": l[i - 1],
+            "madre_color": color_madre, "dentro": dentro, "hist": hist, "vela": df.index[i], "reves": reves,
+            "rango_h": max(h[i], h[i - 1]), "rango_l": min(l[i], l[i - 1]),
+            "id": f"rango_madre|{tf}|{nombre}|{df.index[i]}"}, ""
+
+
+def texto_rango_madre(s):
+    compra = s["dir"] > 0
+    hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[s["tf"]])
+    hst = s["hist"]
+    if s.get("reves"):
+        cab = [f"🟡 🔄 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · MADRE AL REVÉS {NOMBRE_TF[s['tf']]}",
+               f"🕯 Madre {'alcista' if s['madre_color'] > 0 else 'bajista'} envuelta por una vela "
+               f"{'verde' if compra else 'roja'} · rango {fmt(s['rango_l'])} – {fmt(s['rango_h'])} → va "
+               f"{'para ARRIBA' if compra else 'para ABAJO'} el tamaño del rango",
+               f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)",
+               f"✅ TP (tamaño del rango): {fmt(s['tp'])} · {fmt(abs(s['tp'] - s['entrada']))}"]
+    else:
+        cab = [f"🟡 📦 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · RANGO MADRE {NOMBRE_TF[s['tf']]}",
+               f"🕯 Madre {'alcista' if s['madre_color'] > 0 else 'bajista'} {fmt(s['madre_l'])} – {fmt(s['madre_h'])} · "
+               f"vela {'verde' if compra else 'roja'} con {s['dentro']:.0f}% del cuerpo dentro → busca el "
+               f"{'MÁXIMO' if compra else 'MÍNIMO'} del rango",
+               f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)",
+               f"✅ TP ({'máximo' if compra else 'mínimo'} de la madre): {fmt(s['tp'])} · "
+               f"{fmt(abs(s['tp'] - s['entrada']))}"]
+    lineas = cab + [
+        f"🛑 SL: {fmt(s['sl'])} ({'bajo' if compra else 'sobre'} el rango · {fmt(s['riesgo'])}) · R:R 1:{s['rr']:.1f}"]
+    if hst["n"]:
+        lineas.append(
+            f"📊 Historial ({hst['n']} casos{', todas las madres' if hst.get('todas') else ', misma madre'}): llegó al "
+            f"objetivo antes que al SL el {hst['llega']:.0f}%"
+            + (f" · tardó ~{hst['velas']:.0f} velas" if hst.get("velas") else "")
+            + f" · {hst['ev']:+.2f} R por operación {'✓' if hst['ev'] > 0 else '⚠'}")
+    return "\n".join(lineas)
+
+
 def analizar_todas(nombre, tf=None, cargar=historial, ahora=None):
     meta = MERCADOS[nombre]
     if not mercado_abierto(meta["tipo"], ahora):
@@ -955,15 +1096,17 @@ def analizar_todas(nombre, tf=None, cargar=historial, ahora=None):
     for t in CONFIG["temporalidades"]:
         try:
             df = solo_cerradas(cargar(nombre, t), t, ahora)
-            s, motivo = senal_dorada(nombre, t, df)
+            s, motivo = senal_dorada(nombre, t, df) if CONFIG["madre_pct"] else (None, "apagada")
             e, motivo_e = senal_envolvente(nombre, t, df)
             j, motivo_j = senal_japonesa(nombre, t, df)
+            r, motivo_r = senal_rango_madre(nombre, t, df)
         except Exception as ex:
-            s, motivo, e, motivo_e, j, motivo_j = None, f"error: {ex}", None, "", None, ""
+            s, motivo, e, motivo_e, j, motivo_j, r, motivo_r = None, f"error: {ex}", None, "", None, "", None, ""
         motivos[NOMBRE_TF[t]] = motivo
         motivos[f"⚡{NOMBRE_TF[t]}"] = motivo_e
         motivos[f"🎌{NOMBRE_TF[t]}"] = motivo_j
-        for x in (s, e, j):
+        motivos[f"📦{NOMBRE_TF[t]}"] = motivo_r
+        for x in (s, e, j, r):
             if x:
                 ok, por = pasa_filtro(x)
                 if ok:
@@ -983,6 +1126,8 @@ def texto_alerta(s):
         return texto_envolvente(s)
     if s.get("estrategia", "").startswith("japonesa"):
         return texto_japonesa(s)
+    if s.get("estrategia", "").startswith("rango_madre"):
+        return texto_rango_madre(s)
     compra = s["dir"] > 0
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[s["tf"]])
     nv, flecha = CONFIG["velas_adelante"], "▲" if compra else "▼"
@@ -1111,7 +1256,7 @@ def diagnostico(n_velas=24):
                 for k in range(n_velas, 0, -1):
                     sub = df.iloc[:len(df) - k + 1]
                     partes = []
-                    for tipo, fn in (("madre", senal_dorada), ("envolvente", senal_envolvente),
+                    for tipo, fn in (("rango madre", senal_rango_madre), ("envolvente", senal_envolvente),
                                      ("japonesa", senal_japonesa)):
                         s, m = fn(nombre, tf, sub)
                         if s:
