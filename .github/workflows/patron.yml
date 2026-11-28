@@ -1,0 +1,20 @@
+name: Patron envolvente
+
+# Mide con datos reales el patron barrido de liquidez + vela envolvente. No envia nada a Telegram.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  patron:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pandas numpy requests ccxt yfinance
+      - run: python patron.py
