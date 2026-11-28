@@ -69,7 +69,9 @@ CONFIG = {
     # ⚡ BARRIDO + ENVOLVENTE (Turtle Soup / CRT de reversion), en compra y en venta
     "envolvente": True, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
     # 🎌 DICCIONARIO DE VELAS JAPONESAS (61 patrones de TA-Lib), cada uno aprendido como la vela madre
-    "japonesas": True, "jp_min_casos": 30, "jp_min_pct": 60.0,   # manda si el mejor patron de la vela da >= 60 %
+    "japonesas": False, "jp_min_casos": 30, "jp_min_pct": 60.0,  # APAGADO: en vivo y en la medicion no dieron ventaja
+    # FILTRO ESTRICTO: solo llega lo que gana en el historial, a favor de la tendencia, con R:R >= 1 y sin noticia
+    "filtro_estricto": True, "min_ev": 0.10, "min_rr": 1.0,
     "pausa_min": 0,                             # cada madre manda su mensaje
     "tfs": ["5m"],                              # el bucle pasa al cierre de cada vela de 5m (mira 5m, 15m y 1h)
     "imagen": False,
@@ -608,8 +610,8 @@ def senal_dorada(nombre, tf, df):
          "ocupa": float(P["ocupa"][i]), "lado": int(P["lado"][i]), "patron": pat and nombre_patron(pat["codigos"]),
          "patron_prueba": pat and pat["prueba"], "probados": probados, "conflicto": conflicto,
          "noticia": noticia(P, i, tf), "tendencia": TENDENCIA_TXT[P["tend"][i]], "vola": VOL_TXT[P["vola"][i]],
-         "vol_r": float(P["vol_r"][i]), "adx": float(P["adx"][i]), "vela": P["idx"][i],
-         "id": f"dorada|{tf}|{nombre}|{P['idx'][i]}"}
+         "tend_num": [0, 1, -1][P["tend"][i]], "vol_r": float(P["vol_r"][i]), "adx": float(P["adx"][i]),
+         "vela": P["idx"][i], "id": f"dorada|{tf}|{nombre}|{P['idx'][i]}"}
     return s, ""
 
 
@@ -789,7 +791,8 @@ def senal_japonesa(nombre, tf, df):
             "sl": px - d * b["plan"]["sl"] * a, "rr": b["plan"]["tp"] / b["plan"]["sl"], "ev": b["plan"]["ev"],
             "acierto": b["plan"]["acierto"], "otros": lista[1:4], "noticia": noticia(P, i, tf),
             "tendencia": TENDENCIA_TXT[P["tend"][i]], "vola": VOL_TXT[P["vola"][i]], "vol_r": float(P["vol_r"][i]),
-            "adx": float(P["adx"][i]), "vela": P["idx"][i], "id": f"japonesa|{tf}|{nombre}|{P['idx'][i]}"}, ""
+            "tend_num": [0, 1, -1][P["tend"][i]], "adx": float(P["adx"][i]), "vela": P["idx"][i],
+            "id": f"japonesa|{tf}|{nombre}|{P['idx'][i]}"}, ""
 
 
 def texto_japonesa(s):
@@ -842,6 +845,28 @@ def historial(nombre, tf):
     return d[~d.index.duplicated(keep="last")].sort_index()
 
 
+def pasa_filtro(s):
+    """Solo senales con ventaja medida: gana en el historial (>= min_ev R), a favor de la tendencia, R:R >= min_rr
+    y sin noticia. Devuelve (True/False, motivo)."""
+    if not CONFIG["filtro_estricto"]:
+        return True, ""
+    if s.get("noticia"):
+        return False, "noticia"
+    if s.get("estrategia", "").startswith("envolvente"):
+        if not s["a_favor"]:
+            return False, "envolvente en contra de la tendencia"
+        if s.get("ev") is None or s["ev"] < CONFIG["min_ev"]:
+            return False, "envolvente sin ventaja en el historial"
+        return True, ""
+    if s.get("tend_num", 0) != s["dir"]:
+        return False, f"en contra de la tendencia ({s.get('tendencia', '')})"
+    if s["ev"] < CONFIG["min_ev"]:
+        return False, f"sin ventaja en el historial ({s['ev']:+.2f} R)"
+    if s["rr"] < CONFIG["min_rr"]:
+        return False, f"R:R 1:{s['rr']:.1f} < 1:{CONFIG['min_rr']:g}"
+    return True, ""
+
+
 def analizar_todas(nombre, tf=None, cargar=historial, ahora=None):
     meta = MERCADOS[nombre]
     if not mercado_abierto(meta["tipo"], ahora):
@@ -858,7 +883,13 @@ def analizar_todas(nombre, tf=None, cargar=historial, ahora=None):
         motivos[NOMBRE_TF[t]] = motivo
         motivos[f"⚡{NOMBRE_TF[t]}"] = motivo_e
         motivos[f"🎌{NOMBRE_TF[t]}"] = motivo_j
-        senales += [x for x in (s, e, j) if x]
+        for x in (s, e, j):
+            if x:
+                ok, por = pasa_filtro(x)
+                if ok:
+                    senales.append(x)
+                else:
+                    motivos[f"filtro {x['estrategia']}"] = por
     return senales, motivos
 
 
