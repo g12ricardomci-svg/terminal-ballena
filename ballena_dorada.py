@@ -766,6 +766,25 @@ def mensaje_prueba():
     return "🧪 MENSAJE DE PRUEBA (no operar) · así llegarán las señales\n" + texto_alerta(s)
 
 
+def diagnostico(n_velas=12):
+    """Sin enviar nada: datos que llegan y que dice el bot en las ultimas velas de cada mercado y temporalidad."""
+    for nombre in MERCADOS:
+        for tf in CONFIG["temporalidades"]:
+            try:
+                df = solo_cerradas(historial(nombre, tf), tf)
+                if df is None or df.empty:
+                    print(f"{nombre:<14} {tf:<4} SIN DATOS", flush=True)
+                    continue
+                print(f"{nombre:<14} {tf:<4} {len(df)} velas · {df.index[0]:%m-%d %H:%M} -> {df.index[-1]:%m-%d %H:%M} UTC",
+                      flush=True)
+                for k in range(n_velas, 0, -1):
+                    s, m = senal_dorada(nombre, tf, df.iloc[:len(df) - k + 1])
+                    print(f"    {df.index[-k]:%m-%d %H:%M} " + (f"SEÑAL {'COMPRA' if s['dir'] > 0 else 'VENTA'} "
+                          f"{s['pct']:.0f}%" if s else m), flush=True)
+            except Exception as e:
+                print(f"{nombre:<14} {tf:<4} ERROR {type(e).__name__}: {e}", flush=True)
+
+
 def correr_bot(a):
     estado = Estado(a.estado)
     t0 = time.time()
@@ -801,12 +820,16 @@ def cli():
     ap.add_argument("--estado", default="estado.json")
     ap.add_argument("--prueba", action="store_true", help="envia un mensaje de prueba a Telegram y termina")
     ap.add_argument("--avisar-estado", action="store_true", help="envia '✅ activo y analizando' a Telegram y termina")
+    ap.add_argument("--diagnostico", action="store_true", help="analiza las ultimas velas sin enviar nada y lo explica")
     a = ap.parse_args()
     if a.avisar_estado:
         ok, msg = enviar_telegram(f"✅ ACTIVO Y ANALIZANDO · {VERSION}\n5M, 15M y 1H · 24/7 · escaneo cada 5 minutos\n"
                                   f"Mercados: {', '.join(MERCADOS)}\nTe aviso en cada vela madre con dirección.")
         print(f"Estado a Telegram: {'OK' if ok else msg}", flush=True)
         raise SystemExit(0 if ok else 1)
+    if a.diagnostico:
+        diagnostico()
+        return
     if a.prueba:
         ok, msg = enviar_telegram(mensaje_prueba())
         print(f"Prueba de Telegram: {'OK' if ok else msg}", flush=True)
