@@ -115,6 +115,7 @@ def test_envia_y_no_repite(monkeypatch, tmp_path):
     fin = next(f for f in range(2800, 3000) if bd.senal_dorada("BTC/USD", "5m", df.iloc[:f])[0])
     datos = df.iloc[:fin]
     monkeypatch.setitem(bd.CONFIG, "temporalidades", {"5m": "1h"})
+    monkeypatch.setitem(bd.CONFIG, "filtro_estricto", False)
     enviados = []
     monkeypatch.setattr(bd, "enviar_telegram", lambda txt, png=None: enviados.append(txt) or (True, "ok"))
     monkeypatch.setattr(bd, "MERCADOS", {"BTC/USD": bd.MERCADOS["BTC/USD"]})
@@ -175,8 +176,9 @@ def test_diccionario_de_61_velas_japonesas():
     assert J.shape == (500, 61) and set(np.unique(J)) <= {-1, 0, 1} and np.abs(J).sum() > 0
 
 
-def test_senal_japonesa_como_la_vela_madre():
+def test_senal_japonesa_como_la_vela_madre(monkeypatch):
     pytest.importorskip("talib")
+    monkeypatch.setitem(bd.CONFIG, "japonesas", True)
     df = mercado(4000, 4)
     s = next((x for fin in range(3800, 4000) for x in [bd.senal_japonesa("XAU/USD (Oro)", "5m", df.iloc[:fin])[0]]
               if x), None)
@@ -186,3 +188,18 @@ def test_senal_japonesa_como_la_vela_madre():
     assert lineas[0].startswith("🟡 🎌 ") and "VELAS JAPONESAS 5M" in lineas[0]
     assert lineas[1].startswith("🕯 ") and "de las veces en 5 velas" in lineas[1]
     assert lineas[5].startswith(("✓ GANA", "⚠ NO OPERAR")) and lineas[-1].startswith("📊 ")
+
+
+
+def test_filtro_estricto_solo_deja_pasar_lo_que_tiene_ventaja():
+    base = {"estrategia": "dorada_5m", "dir": -1, "tend_num": -1, "ev": 0.2, "rr": 1.4, "noticia": "",
+            "tendencia": "TENDENCIA ▼"}
+    assert bd.pasa_filtro(base)[0]
+    assert not bd.pasa_filtro({**base, "tend_num": 1})[0]                     # venta con tendencia alcista
+    assert not bd.pasa_filtro({**base, "ev": -0.18})[0]                       # ⚠ NO OPERAR
+    assert not bd.pasa_filtro({**base, "ev": 0.03})[0]                        # casi cero
+    assert not bd.pasa_filtro({**base, "rr": 0.4})[0]                         # R:R 1:0.4
+    assert not bd.pasa_filtro({**base, "noticia": "⏰ horario de noticias"})[0]
+    env = {"estrategia": "envolvente_5m", "dir": 1, "a_favor": True, "ev": 0.3, "noticia": ""}
+    assert bd.pasa_filtro(env)[0] and not bd.pasa_filtro({**env, "a_favor": False})[0]
+    assert bd.CONFIG["japonesas"] is False
