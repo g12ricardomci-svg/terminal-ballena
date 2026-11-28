@@ -166,3 +166,23 @@ def test_barrido_envolvente_compra_y_venta():
 def test_sin_patron_no_hay_envolvente():
     s, motivo = bd.senal_envolvente("BTC/USD", "5m", mercado(600).iloc[:-1])
     assert s is None or s["estrategia"] == "envolvente_5m"
+
+
+def test_diccionario_de_61_velas_japonesas():
+    talib = pytest.importorskip("talib")
+    assert set(bd.JAPONESAS) == set(talib.get_function_groups()["Pattern Recognition"]) and len(bd.JAPONESAS) == 61
+    J = bd.velas_japonesas(mercado(500))
+    assert J.shape == (500, 61) and set(np.unique(J)) <= {-1, 0, 1} and np.abs(J).sum() > 0
+
+
+def test_senal_japonesa_como_la_vela_madre():
+    pytest.importorskip("talib")
+    df = mercado(4000, 4)
+    s = next((x for fin in range(3800, 4000) for x in [bd.senal_japonesa("XAU/USD (Oro)", "5m", df.iloc[:fin])[0]]
+              if x), None)
+    assert s and s["pct"] >= bd.CONFIG["jp_min_pct"] and s["casos"] >= bd.CONFIG["min_casos"]
+    assert (s["tp"] - s["entrada"]) * s["dir"] > 0 and (s["entrada"] - s["sl"]) * s["dir"] > 0
+    lineas = bd.texto_alerta(s).splitlines()
+    assert lineas[0].startswith("🟡 🎌 ") and "VELAS JAPONESAS 5M" in lineas[0]
+    assert lineas[1].startswith("🕯 ") and "de las veces en 5 velas" in lineas[1]
+    assert lineas[5].startswith(("✓ GANA", "⚠ NO OPERAR")) and lineas[-1].startswith("📊 ")

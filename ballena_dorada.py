@@ -35,6 +35,10 @@ try:
 except Exception:  # pragma: no cover
     ccxt = None
 try:
+    import talib            # diccionario de 61 patrones de velas japonesas (TA-Lib)
+except Exception:  # pragma: no cover
+    talib = None
+try:
     import yfinance as yf
 except Exception:  # pragma: no cover
     yf = None
@@ -64,6 +68,8 @@ CONFIG = {
     # las madres 50/50 o con pocos casos no tienen plan y no mandan mensaje
     # ⚡ BARRIDO + ENVOLVENTE (Turtle Soup / CRT de reversion), en compra y en venta
     "envolvente": True, "env_cuerpo_atr": 1.0, "env_rr": 2.0, "env_velas": 20,
+    # 🎌 DICCIONARIO DE VELAS JAPONESAS (61 patrones de TA-Lib), cada uno aprendido como la vela madre
+    "japonesas": True, "jp_min_casos": 30, "jp_min_pct": 60.0,   # manda si el mejor patron de la vela da >= 60 %
     "pausa_min": 0,                             # cada madre manda su mensaje
     "tfs": ["5m"],                              # el bucle pasa al cierre de cada vela de 5m (mira 5m, 15m y 1h)
     "imagen": False,
@@ -698,6 +704,119 @@ def texto_envolvente(s):
         hist])
 
 
+# ----------------------------------------------------------------- 🎌 DICCIONARIO DE VELAS JAPONESAS
+JAPONESAS = {
+    "CDL2CROWS": "Dos cuervos", "CDL3BLACKCROWS": "Tres cuervos negros", "CDL3INSIDE": "Tres dentro",
+    "CDL3LINESTRIKE": "Three line strike", "CDL3OUTSIDE": "Tres fuera", "CDL3STARSINSOUTH": "Tres estrellas en el sur",
+    "CDL3WHITESOLDIERS": "Tres soldados blancos", "CDLABANDONEDBABY": "Bebé abandonado",
+    "CDLADVANCEBLOCK": "Bloque de avance", "CDLBELTHOLD": "Belt hold (cinturón)", "CDLBREAKAWAY": "Breakaway (ruptura)",
+    "CDLCLOSINGMARUBOZU": "Marubozu de cierre", "CDLCONCEALBABYSWALL": "Golondrina bebé oculta",
+    "CDLCOUNTERATTACK": "Contraataque", "CDLDARKCLOUDCOVER": "Nube oscura", "CDLDOJI": "Doji",
+    "CDLDOJISTAR": "Estrella doji", "CDLDRAGONFLYDOJI": "Doji libélula", "CDLENGULFING": "Envolvente",
+    "CDLEVENINGDOJISTAR": "Estrella doji del atardecer", "CDLEVENINGSTAR": "Estrella del atardecer",
+    "CDLGAPSIDESIDEWHITE": "Huecos laterales blancos", "CDLGRAVESTONEDOJI": "Doji lápida", "CDLHAMMER": "Martillo",
+    "CDLHANGINGMAN": "Hombre colgado", "CDLHARAMI": "Harami", "CDLHARAMICROSS": "Harami cruz",
+    "CDLHIGHWAVE": "Ola alta", "CDLHIKKAKE": "Hikkake", "CDLHIKKAKEMOD": "Hikkake modificado",
+    "CDLHOMINGPIGEON": "Paloma mensajera", "CDLIDENTICAL3CROWS": "Tres cuervos idénticos",
+    "CDLINNECK": "En el cuello (in-neck)", "CDLINVERTEDHAMMER": "Martillo invertido", "CDLKICKING": "Patada (kicking)",
+    "CDLKICKINGBYLENGTH": "Patada por longitud", "CDLLADDERBOTTOM": "Escalera inferior",
+    "CDLLONGLEGGEDDOJI": "Doji de piernas largas", "CDLLONGLINE": "Vela larga", "CDLMARUBOZU": "Marubozu",
+    "CDLMATCHINGLOW": "Mínimos iguales", "CDLMATHOLD": "Mat hold", "CDLMORNINGDOJISTAR": "Estrella doji de la mañana",
+    "CDLMORNINGSTAR": "Estrella de la mañana", "CDLONNECK": "Sobre el cuello (on-neck)", "CDLPIERCING": "Pauta penetrante",
+    "CDLRICKSHAWMAN": "Hombre del rickshaw", "CDLRISEFALL3METHODS": "Tres métodos",
+    "CDLSEPARATINGLINES": "Líneas separadas", "CDLSHOOTINGSTAR": "Estrella fugaz", "CDLSHORTLINE": "Vela corta",
+    "CDLSPINNINGTOP": "Peonza (spinning top)", "CDLSTALLEDPATTERN": "Patrón estancado",
+    "CDLSTICKSANDWICH": "Sándwich", "CDLTAKURI": "Takuri", "CDLTASUKIGAP": "Hueco tasuki",
+    "CDLTHRUSTING": "Empuje (thrusting)", "CDLTRISTAR": "Tri-estrella", "CDLUNIQUE3RIVER": "Tres ríos",
+    "CDLUPSIDEGAP2CROWS": "Dos cuervos con hueco", "CDLXSIDEGAP3METHODS": "Tres métodos con hueco"}
+
+
+def velas_japonesas(df):
+    """Matriz vela x patron: +1 version alcista, -1 version bajista, 0 nada (reglas oficiales de TA-Lib)."""
+    if talib is None:
+        return None
+    o, h, l, c = (df[x].to_numpy(float) for x in ("open", "high", "low", "close"))
+    return np.column_stack([np.sign(getattr(talib, f)(o, h, l, c)) for f in JAPONESAS]).astype(int)
+
+
+def plan_casos(P, sel, i, coste):
+    """Como la vela madre: direccion, % y TP/SL con esos casos del historial y, si alcanza, el MISMO contexto."""
+    mc = CONFIG["min_casos"]
+    misma_t = sel[P["tend"][sel] == P["tend"][i]]
+    misma_tv = misma_t[P["vola"][misma_t] == P["vola"][i]]
+    nivel = 2 if len(misma_tv) >= mc else 1 if len(misma_t) >= mc else 0
+    sel = [sel, misma_t, misma_tv][nivel]
+    cl = P["cierre"][sel]
+    nu, nd = int((cl > 0).sum()), int((cl < 0).sum())
+    d = (1 if nu > nd else -1) if len(sel) >= mc and nu != nd else 0
+    pct = 100 * max(nu, nd) / (nu + nd) if nu + nd else 0.0
+    plan = tp_sl(P["sube"][sel], P["baja"][sel], cl, d, P["atr"][i], coste) if d else None
+    return {"dir": d, "pct": pct, "casos": len(sel), "nivel": nivel, "plan": plan}
+
+
+def senal_japonesa(nombre, tf, df):
+    """En la ULTIMA vela cerrada: que patrones japoneses hay, que hizo el precio con cada uno en el historial y,
+    si el mejor da >= jp_min_pct, el plan completo (entrada, TP inteligente, SL, prueba en el historial)."""
+    if not CONFIG["japonesas"] or talib is None or df is None or len(df) < 150:
+        return None, "sin diccionario o sin datos"
+    J = velas_japonesas(df)
+    P = preparar(df, tf)
+    i, nv = len(df) - 1, CONFIG["velas_adelante"]
+    hechos = np.nonzero(J[i])[0]
+    if not len(hechos):
+        return None, "sin patrón japonés en la vela"
+    validos = np.isfinite(P["cierre"]) & np.isfinite(P["sube"])
+    validos[i - nv + 1:] = False                                     # solo casos ya terminados
+    coste, lista = MERCADOS[nombre]["spread"], []
+    for f in hechos:
+        sel = np.nonzero(validos & (J[:, f] == J[i, f]))[0]
+        if len(sel) < CONFIG["jp_min_casos"]:
+            continue
+        gp = plan_casos(P, sel, i, coste)
+        if gp["dir"] and gp["plan"]:
+            codigo = list(JAPONESAS)[f]
+            lista.append({**gp, "patron": JAPONESAS[codigo], "version": "alcista" if J[i, f] > 0 else "bajista"})
+    if not lista:
+        return None, "patrones sin casos suficientes"
+    lista.sort(key=lambda x: (-x["pct"], -x["casos"]))
+    b = lista[0]
+    if b["pct"] < CONFIG["jp_min_pct"]:
+        return None, f"mejor patrón {b['patron']} {b['pct']:.0f}% (< {CONFIG['jp_min_pct']:.0f}%)"
+    px, a, d = float(P["c"][i]), float(P["atr"][i]), b["dir"]
+    return {"activo": nombre, "tipo": MERCADOS[nombre]["tipo"], "tf": tf, "estrategia": f"japonesa_{tf}", "dir": d,
+            "bias": d, "pct": b["pct"], "casos": b["casos"], "fuente": NIVEL_TXT[b["nivel"]], "patron": b["patron"],
+            "version": b["version"], "entrada": px, "tp": px + d * b["plan"]["tp"] * a,
+            "sl": px - d * b["plan"]["sl"] * a, "rr": b["plan"]["tp"] / b["plan"]["sl"], "ev": b["plan"]["ev"],
+            "acierto": b["plan"]["acierto"], "otros": lista[1:4], "noticia": noticia(P, i, tf),
+            "tendencia": TENDENCIA_TXT[P["tend"][i]], "vola": VOL_TXT[P["vola"][i]], "vol_r": float(P["vol_r"][i]),
+            "adx": float(P["adx"][i]), "vela": P["idx"][i], "id": f"japonesa|{tf}|{nombre}|{P['idx'][i]}"}, ""
+
+
+def texto_japonesa(s):
+    compra = s["dir"] > 0
+    hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[s["tf"]])
+    nv, flecha = CONFIG["velas_adelante"], "▲" if compra else "▼"
+    lineas = [
+        f"🟡 🎌 {'🟢 COMPRA' if compra else '🔴 VENTA'} {s['activo']} · VELAS JAPONESAS {NOMBRE_TF[s['tf']]} · "
+        f"{flecha}{s['pct']:.0f}%",
+        f"🕯 {s['patron']} ({s['version']}) · {s['casos']} casos ({s['fuente']}): "
+        f"{'subió' if compra else 'bajó'} el {s['pct']:.0f}% de las veces en {nv} velas",
+        f"🎯 Entrada: {fmt(s['entrada'])} ({hora:%H:%M} NY)",
+        (f"🎯 OBJETIVO: {fmt(s['tp'])} · lo alcanzó el {CONFIG['alcance_tp']}% de los casos en {nv} velas"
+         if s["pct"] >= CONFIG["objetivo_min"] else
+         f"✅ TP: {fmt(s['tp'])} · el {CONFIG['alcance_tp']}% de los casos llegó en {nv} velas"),
+        f"🛑 SL: {fmt(s['sl'])} · solo el {100 - CONFIG['alcance_sl']}% fue más allá · R:R 1:{s['rr']:.1f}",
+        (f"✓ GANA en el historial: {s['ev']:+.2f} R por operación · acierta {s['acierto']:.0f}%" if s["ev"] > 0 else
+         f"⚠ NO OPERAR: en el historial pierde {s['ev']:.2f} R por operación · acierta {s['acierto']:.0f}%")]
+    if s.get("otros"):
+        lineas.append("📚 También en esta vela: " + " · ".join(
+            f"{o['patron']} {'▲' if o['dir'] > 0 else '▼'}{o['pct']:.0f}% ({o['casos']})" for o in s["otros"]))
+    if s.get("noticia"):
+        lineas.append(f"⚡ NOTICIA: mejor NO operar ahora ({s['noticia']})")
+    lineas.append(f"📊 {s['tendencia']} (ADX {s['adx']:.0f}) · volatilidad {s['vola']} ({s['vol_r']:.1f}× lo normal)")
+    return "\n".join(lineas)
+
+
 # ----------------------------------------------------------------- DATOS (historial + velas recientes)
 _HIST = {}
 
@@ -733,11 +852,13 @@ def analizar_todas(nombre, tf=None, cargar=historial, ahora=None):
             df = solo_cerradas(cargar(nombre, t), t, ahora)
             s, motivo = senal_dorada(nombre, t, df)
             e, motivo_e = senal_envolvente(nombre, t, df)
+            j, motivo_j = senal_japonesa(nombre, t, df)
         except Exception as ex:
-            s, motivo, e, motivo_e = None, f"error: {ex}", None, ""
+            s, motivo, e, motivo_e, j, motivo_j = None, f"error: {ex}", None, "", None, ""
         motivos[NOMBRE_TF[t]] = motivo
         motivos[f"⚡{NOMBRE_TF[t]}"] = motivo_e
-        senales += [x for x in (s, e) if x]
+        motivos[f"🎌{NOMBRE_TF[t]}"] = motivo_j
+        senales += [x for x in (s, e, j) if x]
     return senales, motivos
 
 
@@ -749,6 +870,8 @@ def imagen_alerta(s, df):
 def texto_alerta(s):
     if s.get("estrategia", "").startswith("envolvente"):
         return texto_envolvente(s)
+    if s.get("estrategia", "").startswith("japonesa"):
+        return texto_japonesa(s)
     compra = s["dir"] > 0
     hora = pd.Timestamp(s["vela"]).tz_convert(NY) + pd.Timedelta(minutes=TF_MIN[s["tf"]])
     nv, flecha = CONFIG["velas_adelante"], "▲" if compra else "▼"
